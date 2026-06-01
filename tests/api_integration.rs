@@ -3,9 +3,9 @@
 use axum::body::Body;
 use http_body_util::BodyExt;
 use sqlx::sqlite::SqlitePoolOptions;
-use tgTool::state::{AppState, DbPool};
 use tgTool::config::Config;
 use tgTool::services::crypto;
+use tgTool::state::{AppState, DbPool};
 use tower::ServiceExt;
 
 use std::path::PathBuf;
@@ -54,8 +54,7 @@ fn make_test_state(db: DbPool) -> AppState {
 
 /// 构建 axum 测试 Router
 fn build_test_app(state: AppState) -> axum::Router {
-    tgTool::routes::build_router(state)
-        .layer(tgTool::middleware::cors::cors_layer())
+    tgTool::routes::build_router(state).layer(tgTool::middleware::cors::cors_layer())
 }
 
 /// 从 Response body 读取并解析 JSON
@@ -66,13 +65,13 @@ async fn parse_body(body: Body) -> serde_json::Value {
 
 /// 构建一个 HTTP request
 fn build_request(method: &str, uri: &str, body: Option<String>) -> axum::http::Request<Body> {
-    let mut builder = axum::http::Request::builder()
-        .method(method)
-        .uri(uri);
+    let mut builder = axum::http::Request::builder().method(method).uri(uri);
     if body.is_some() {
         builder = builder.header("content-type", "application/json");
     }
-    builder.body(body.map_or_else(Body::empty, Body::from)).unwrap()
+    builder
+        .body(body.map_or_else(Body::empty, Body::from))
+        .unwrap()
 }
 
 /// 从 JSON Value 提取 success 字段
@@ -134,7 +133,11 @@ async fn test_register_duplicate_user_fails() {
     // 第一次注册成功
     let resp1 = app
         .clone()
-        .oneshot(build_request("POST", "/api/auth/register", Some(req_body.clone())))
+        .oneshot(build_request(
+            "POST",
+            "/api/auth/register",
+            Some(req_body.clone()),
+        ))
         .await
         .unwrap();
     assert_eq!(resp1.status(), 200);
@@ -233,7 +236,10 @@ async fn test_create_and_delete_user() {
         .oneshot(build_request(
             "POST",
             "/api/users",
-            Some(serde_json::json!({"username": "newuser", "password": "pass123", "role": 1}).to_string()),
+            Some(
+                serde_json::json!({"username": "newuser", "password": "pass123", "role": 1})
+                    .to_string(),
+            ),
         ))
         .await
         .unwrap();
@@ -287,13 +293,16 @@ async fn test_rule_crud() {
         .oneshot(build_request(
             "POST",
             "/api/rules",
-            Some(serde_json::json!({
-                "source_chat_id": 123456,
-                "source_chat_name": "Test Channel",
-                "forward_method": "Chat",
-                "forward_target": "-100999",
-                "is_active": true
-            }).to_string()),
+            Some(
+                serde_json::json!({
+                    "source_chat_id": 123456,
+                    "source_chat_name": "Test Channel",
+                    "forward_method": "Chat",
+                    "forward_target": "-100999",
+                    "is_active": true
+                })
+                .to_string(),
+            ),
         ))
         .await
         .unwrap();
@@ -337,13 +346,16 @@ async fn test_collector_crud() {
         .oneshot(build_request(
             "POST",
             "/api/collectors",
-            Some(serde_json::json!({
-                "channel_id": 999888,
-                "channel_name": "News Channel",
-                "collector_type": "origin",
-                "is_active": true,
-                "remark": "test collector"
-            }).to_string()),
+            Some(
+                serde_json::json!({
+                    "channel_id": 999888,
+                    "channel_name": "News Channel",
+                    "collector_type": "origin",
+                    "is_active": true,
+                    "remark": "test collector"
+                })
+                .to_string(),
+            ),
         ))
         .await
         .unwrap();
@@ -352,7 +364,11 @@ async fn test_collector_crud() {
     // 列出采集器
     let response = app
         .clone()
-        .oneshot(build_request("GET", "/api/collectors?page=1&page_size=10", None))
+        .oneshot(build_request(
+            "GET",
+            "/api/collectors?page=1&page_size=10",
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
@@ -405,7 +421,11 @@ async fn test_client_add_and_remove() {
     // 获取客户端状态（应为 new，因为 TgClientMap 中没有）
     let response = app
         .clone()
-        .oneshot(build_request("GET", &format!("/api/clients/{client_id}"), None))
+        .oneshot(build_request(
+            "GET",
+            &format!("/api/clients/{client_id}"),
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
@@ -414,7 +434,11 @@ async fn test_client_add_and_remove() {
 
     // 删除客户端
     let response = app
-        .oneshot(build_request("DELETE", &format!("/api/clients/{client_id}"), None))
+        .oneshot(build_request(
+            "DELETE",
+            &format!("/api/clients/{client_id}"),
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
@@ -440,7 +464,10 @@ async fn test_options_crud() {
         .oneshot(build_request(
             "PUT",
             "/api/options",
-            Some(serde_json::json!({"push_api_url": "https://example.com", "push_interval": "30"}).to_string()),
+            Some(
+                serde_json::json!({"push_api_url": "https://example.com", "push_interval": "30"})
+                    .to_string(),
+            ),
         ))
         .await
         .unwrap();
@@ -477,7 +504,11 @@ async fn test_push_endpoints() {
     // 推送历史
     let response = app
         .clone()
-        .oneshot(build_request("GET", "/api/push/histories?page=1&page_size=10", None))
+        .oneshot(build_request(
+            "GET",
+            "/api/push/histories?page=1&page_size=10",
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
@@ -485,14 +516,22 @@ async fn test_push_endpoints() {
     // 触发推送
     let response = app
         .clone()
-        .oneshot(build_request("POST", "/api/push/trigger", Some("{}".to_string())))
+        .oneshot(build_request(
+            "POST",
+            "/api/push/trigger",
+            Some("{}".to_string()),
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
 
     // 更新调度
     let response = app
-        .oneshot(build_request("PUT", "/api/push/scheduler", Some("{}".to_string())))
+        .oneshot(build_request(
+            "PUT",
+            "/api/push/scheduler",
+            Some("{}".to_string()),
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), 200);

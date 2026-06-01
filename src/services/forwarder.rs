@@ -6,8 +6,8 @@ use crate::errors::AppError;
 /// Forward a message to the target
 pub async fn forward_message(
     _rule_id: i64,
-    _method: &str,      // "Chat" or "Webhook"
-    _target: &str,       // chat_id or webhook_url
+    _method: &str,         // "Chat" or "Webhook"
+    _target: &str,         // chat_id or webhook_url
     _config: Option<&str>, // JSON config for webhook
     _content: &str,
 ) -> Result<(), AppError> {

@@ -38,7 +38,11 @@ pub struct Config {
     pub redis_conn_string: String,
 
     /// Session 密钥
-    #[arg(long, default_value = "change-me-to-a-random-string", env = "SESSION_SECRET")]
+    #[arg(
+        long,
+        default_value = "change-me-to-a-random-string",
+        env = "SESSION_SECRET"
+    )]
     pub session_secret: String,
 }
 

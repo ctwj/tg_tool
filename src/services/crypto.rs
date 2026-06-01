@@ -1,12 +1,12 @@
-use bcrypt::{hash, verify, DEFAULT_COST};
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use bcrypt::{DEFAULT_COST, hash, verify};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 
 use crate::errors::AppError;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TokenClaims {
-    pub sub: i64,  // user id
+    pub sub: i64, // user id
     pub username: String,
     pub role: i32,
     pub exp: usize,
@@ -19,12 +19,16 @@ pub fn hash_password(password: &str) -> Result<String, AppError> {
 
 /// Verify a password against its bcrypt hash
 pub fn verify_password(password: &str, password_hash: &str) -> Result<bool, AppError> {
-    verify(password, password_hash)
-        .map_err(|e| AppError::Internal(format!("密码验证失败: {e}")))
+    verify(password, password_hash).map_err(|e| AppError::Internal(format!("密码验证失败: {e}")))
 }
 
 /// Generate a JWT token
-pub fn generate_token(user_id: i64, username: &str, role: i32, secret: &str) -> Result<String, AppError> {
+pub fn generate_token(
+    user_id: i64,
+    username: &str,
+    role: i32,
+    secret: &str,
+) -> Result<String, AppError> {
     let expiration = chrono::Utc::now()
         .checked_add_signed(chrono::Duration::days(7))
         .expect("valid timestamp")
@@ -59,7 +63,8 @@ pub fn verify_token_with_secret(token: &str, secret: &str) -> Result<TokenClaims
 
 /// Verify and decode a JWT token (reads secret from env)
 pub fn verify_token(token: &str) -> Result<TokenClaims, AppError> {
-    let secret = std::env::var("SESSION_SECRET").unwrap_or_else(|_| "change-me-to-a-random-string".to_string());
+    let secret = std::env::var("SESSION_SECRET")
+        .unwrap_or_else(|_| "change-me-to-a-random-string".to_string());
     verify_token_with_secret(token, &secret)
 }
 
@@ -155,8 +160,10 @@ mod tests {
     fn test_migration_hash_is_valid() {
         // First generate a fresh hash and verify it round-trips correctly
         let fresh_hash = hash_password("123456").unwrap();
-        assert!(verify_password("123456", &fresh_hash).unwrap(),
-            "Freshly generated bcrypt hash should verify correctly");
+        assert!(
+            verify_password("123456", &fresh_hash).unwrap(),
+            "Freshly generated bcrypt hash should verify correctly"
+        );
 
         // The migration hash is generated at runtime in integration tests.
         // For the unit test, we just verify bcrypt works correctly.

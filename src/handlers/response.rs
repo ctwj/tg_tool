@@ -1,5 +1,5 @@
 use axum::Json;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Build a success JSON response
 pub fn success_response(data: Value) -> Json<Value> {

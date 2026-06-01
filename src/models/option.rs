@@ -21,7 +21,10 @@ mod tests {
     fn test_update_options_request_flatten() {
         let json = r#"{"push_api_url":"https://example.com/api","push_interval":"30"}"#;
         let req: UpdateOptionsRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.options.get("push_api_url").unwrap(), "https://example.com/api");
+        assert_eq!(
+            req.options.get("push_api_url").unwrap(),
+            "https://example.com/api"
+        );
         assert_eq!(req.options.get("push_interval").unwrap(), "30");
     }
 

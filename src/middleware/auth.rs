@@ -9,13 +9,12 @@ use crate::models::user::User;
 use crate::state::AppState;
 
 /// Extract user from Authorization header or session cookie
-pub async fn extract_current_user(
-    state: &AppState,
-    req: &Request,
-) -> Result<User, AppError> {
+pub async fn extract_current_user(state: &AppState, req: &Request) -> Result<User, AppError> {
     // Try Authorization header first
     if let Some(auth_header) = req.headers().get("Authorization") {
-        let auth_str = auth_header.to_str().map_err(|_| AppError::Unauthorized("Invalid auth header".into()))?;
+        let auth_str = auth_header
+            .to_str()
+            .map_err(|_| AppError::Unauthorized("Invalid auth header".into()))?;
 
         if let Some(token) = auth_str.strip_prefix("Bearer ") {
             return validate_token(state, token).await;
@@ -24,7 +23,9 @@ pub async fn extract_current_user(
 
     // Try session cookie
     if let Some(cookie) = req.headers().get("cookie") {
-        let cookie_str = cookie.to_str().map_err(|_| AppError::Unauthorized("Invalid cookie".into()))?;
+        let cookie_str = cookie
+            .to_str()
+            .map_err(|_| AppError::Unauthorized("Invalid cookie".into()))?;
         if let Some(token) = extract_session_token(cookie_str) {
             return validate_token(state, &token).await;
         }
@@ -115,10 +116,7 @@ async fn validate_token(state: &AppState, token: &str) -> Result<User, AppError>
 
 /// User auth middleware (role >= 1)
 /// Gets AppState from request extensions (set via Extension layer)
-pub async fn user_auth_middleware(
-    req: Request,
-    next: Next,
-) -> Response {
+pub async fn user_auth_middleware(req: Request, next: Next) -> Response {
     let state = req
         .extensions()
         .get::<AppState>()

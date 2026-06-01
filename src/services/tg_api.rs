@@ -12,23 +12,21 @@ pub struct ChatInfo {
 }
 
 /// Send a message to a chat
-pub async fn send_message(
-    _client_id: &str,
-    _chat_id: i64,
-    _text: &str,
-) -> Result<(), AppError> {
+pub async fn send_message(_client_id: &str, _chat_id: i64, _text: &str) -> Result<(), AppError> {
     // TODO: Implement with grammers-client
     // 1. Get client from tg_manager
     // 2. Resolve chat_id to Chat
     // 3. Call client.send_message(chat, text)
-    tracing::info!("Sending message to chat {} via client {}", _chat_id, _client_id);
+    tracing::info!(
+        "Sending message to chat {} via client {}",
+        _chat_id,
+        _client_id
+    );
     Ok(())
 }
 
 /// Get chat list for a client
-pub async fn get_chat_list(
-    _client_id: &str,
-) -> Result<Vec<ChatInfo>, AppError> {
+pub async fn get_chat_list(_client_id: &str) -> Result<Vec<ChatInfo>, AppError> {
     // TODO: Implement with grammers-client
     // 1. Get client from tg_manager
     // 2. Iterate through dialogs
@@ -52,19 +50,13 @@ pub async fn get_chat_history(
 }
 
 /// Download a file from Telegram
-pub async fn download_file(
-    _client_id: &str,
-    _file_id: i64,
-    _path: &str,
-) -> Result<(), AppError> {
+pub async fn download_file(_client_id: &str, _file_id: i64, _path: &str) -> Result<(), AppError> {
     // TODO: Implement with grammers-client
     Ok(())
 }
 
 /// Get current user info
-pub async fn get_me(
-    _client_id: &str,
-) -> Result<serde_json::Value, AppError> {
+pub async fn get_me(_client_id: &str) -> Result<serde_json::Value, AppError> {
     // TODO: Implement with grammers-client
     Ok(serde_json::json!({}))
 }

@@ -53,7 +53,9 @@ mod tests {
     }
 
     fn naive_now() -> NaiveDateTime {
-        chrono::DateTime::from_timestamp(1700000000, 0).unwrap().naive_utc()
+        chrono::DateTime::from_timestamp(1700000000, 0)
+            .unwrap()
+            .naive_utc()
     }
 
     #[test]

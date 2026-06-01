@@ -26,10 +26,7 @@ pub fn create_scheduler() -> SchedulerHandle {
 }
 
 /// Start the scheduler with a given interval
-pub async fn start_scheduler(
-    scheduler: SchedulerHandle,
-    _interval_minutes: u64,
-) {
+pub async fn start_scheduler(scheduler: SchedulerHandle, _interval_minutes: u64) {
     let mut state = scheduler.write().await;
     if state.running {
         return;

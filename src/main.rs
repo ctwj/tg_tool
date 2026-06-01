@@ -16,7 +16,10 @@ async fn main() {
         )
         .init();
 
-    tracing::info!("TG Forwarding Tool v{} starting...", env!("CARGO_PKG_VERSION"));
+    tracing::info!(
+        "TG Forwarding Tool v{} starting...",
+        env!("CARGO_PKG_VERSION")
+    );
 
     // Initialize database
     let db_pool = init_database(&config).await;
@@ -118,17 +121,19 @@ async fn ensure_root_user(pool: &DbPool) {
     // Check if root user exists
     let exists: bool = match pool {
         DbPool::Sqlite(pool) => {
-            let row: Option<(i64,)> = sqlx::query_as("SELECT id FROM users WHERE username = 'root'")
-                .fetch_optional(pool)
-                .await
-                .unwrap_or(None);
+            let row: Option<(i64,)> =
+                sqlx::query_as("SELECT id FROM users WHERE username = 'root'")
+                    .fetch_optional(pool)
+                    .await
+                    .unwrap_or(None);
             row.is_some()
         }
         DbPool::Postgres(pool) => {
-            let row: Option<(i64,)> = sqlx::query_as("SELECT id FROM users WHERE username = 'root'")
-                .fetch_optional(pool)
-                .await
-                .unwrap_or(None);
+            let row: Option<(i64,)> =
+                sqlx::query_as("SELECT id FROM users WHERE username = 'root'")
+                    .fetch_optional(pool)
+                    .await
+                    .unwrap_or(None);
             row.is_some()
         }
     };

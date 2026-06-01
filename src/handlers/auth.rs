@@ -1,9 +1,9 @@
-use axum::{extract::State, Json};
-use serde_json::{json, Value};
 use crate::errors::AppError;
-use crate::state::AppState;
-use crate::models::user::{LoginRequest, CreateUserRequest, User, UserInfo};
+use crate::models::user::{CreateUserRequest, LoginRequest, User, UserInfo};
 use crate::services::crypto;
+use crate::state::AppState;
+use axum::{Json, extract::State};
+use serde_json::{Value, json};
 
 pub async fn register(
     State(state): State<AppState>,
@@ -31,7 +31,8 @@ pub async fn register(
             })?;
 
             let user_id = result.last_insert_rowid();
-            let token = crypto::generate_token(user_id, &req.username, 1, &state.config.session_secret)?;
+            let token =
+                crypto::generate_token(user_id, &req.username, 1, &state.config.session_secret)?;
             Ok(Json(json!({ "success": true, "data": { "token": token } })))
         }
         crate::state::DbPool::Postgres(pool) => {
@@ -45,7 +46,8 @@ pub async fn register(
             .fetch_one(pool)
             .await?;
 
-            let token = crypto::generate_token(row, &req.username, 1, &state.config.session_secret)?;
+            let token =
+                crypto::generate_token(row, &req.username, 1, &state.config.session_secret)?;
             Ok(Json(json!({ "success": true, "data": { "token": token } })))
         }
     }
@@ -75,7 +77,12 @@ pub async fn login(
         return Err(AppError::Unauthorized("用户名或密码错误".into()));
     }
 
-    let token = crypto::generate_token(user.id, &user.username, user.role, &state.config.session_secret)?;
+    let token = crypto::generate_token(
+        user.id,
+        &user.username,
+        user.role,
+        &state.config.session_secret,
+    )?;
     Ok(Json(json!({ "success": true, "data": { "token": token } })))
 }
 

@@ -1,6 +1,6 @@
+use sqlx::{Pool, Postgres, Sqlite};
 use std::collections::HashMap;
 use std::sync::Arc;
-use sqlx::{Pool, Sqlite, Postgres};
 use tokio::sync::RwLock;
 
 /// Type alias for the database pool (supports both SQLite and Postgres)

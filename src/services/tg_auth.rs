@@ -33,10 +33,7 @@ pub async fn request_login_code(
 }
 
 /// Submit verification code received via Telegram
-pub async fn submit_code(
-    _client_id: &str,
-    _code: &str,
-) -> Result<AuthState, AppError> {
+pub async fn submit_code(_client_id: &str, _code: &str) -> Result<AuthState, AppError> {
     // TODO: Implement with grammers-client
     // 1. Get client from tg_manager
     // 2. Call client.sign_in(token, code)
@@ -47,10 +44,7 @@ pub async fn submit_code(
 }
 
 /// Submit 2FA password
-pub async fn submit_password(
-    _client_id: &str,
-    _password: &str,
-) -> Result<AuthState, AppError> {
+pub async fn submit_password(_client_id: &str, _password: &str) -> Result<AuthState, AppError> {
     // TODO: Implement with grammers-client
     // 1. Get client from tg_manager
     // 2. Call client.check_password(password)

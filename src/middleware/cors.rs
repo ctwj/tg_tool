@@ -1,4 +1,4 @@
-use tower_http::cors::{CorsLayer, Any};
+use tower_http::cors::{Any, CorsLayer};
 
 pub fn cors_layer() -> CorsLayer {
     CorsLayer::new()

@@ -1,12 +1,12 @@
 // Telegram client lifecycle management
 // Manages multiple grammers-client instances using tokio tasks
 
+use crate::config::Config;
+use crate::errors::AppError;
+use crate::state::TgClientEntry;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use crate::errors::AppError;
-use crate::config::Config;
-use crate::state::TgClientEntry;
 
 /// Manager for Telegram client instances
 pub struct TgManager {
@@ -64,7 +64,10 @@ impl TgManager {
     /// Get client status
     pub async fn get_status(&self, client_id: &str) -> String {
         let clients = self.clients.read().await;
-        clients.get(client_id).map(|e| e.status.clone()).unwrap_or_else(|| "new".to_string())
+        clients
+            .get(client_id)
+            .map(|e| e.status.clone())
+            .unwrap_or_else(|| "new".to_string())
     }
 
     /// Get the TG config

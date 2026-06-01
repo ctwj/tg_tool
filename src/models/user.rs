@@ -85,7 +85,9 @@ mod tests {
     use super::*;
 
     fn naive_now() -> NaiveDateTime {
-        chrono::DateTime::from_timestamp(1700000000, 0).unwrap().naive_utc()
+        chrono::DateTime::from_timestamp(1700000000, 0)
+            .unwrap()
+            .naive_utc()
     }
 
     fn make_user(role: i32, status: i32) -> User {

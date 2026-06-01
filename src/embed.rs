@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    http::{header, Request, Response, StatusCode},
+    http::{Request, Response, StatusCode, header},
 };
 use rust_embed::Embed;
 
@@ -44,6 +44,8 @@ pub async fn static_handler(req: Request<Body>) -> Response<Body> {
 
     Response::builder()
         .status(StatusCode::NOT_FOUND)
-        .body(Body::from("Not Found - Frontend not built. Run: cd web && npm run build"))
+        .body(Body::from(
+            "Not Found - Frontend not built. Run: cd web && npm run build",
+        ))
         .unwrap()
 }
