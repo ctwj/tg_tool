@@ -25,8 +25,8 @@ grammers-session = "0.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# HTTP client (webhook, push)
-reqwest = { version = "0.12", features = ["json"] }
+# HTTP client (webhook, push) — use rustls to avoid OpenSSL dependency
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # Auth & crypto
 bcrypt = "0.16"
