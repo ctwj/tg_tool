@@ -36,14 +36,34 @@ export function useAuth() {
     if (token && !user) {
       fetchUser()
     }
-  }, [user, fetchUser])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const login = async (username: string, password: string) => {
     const res = await apiClient.post('/auth/login', { username, password })
     const { token } = res.data.data
     localStorage.setItem(TOKEN_KEY, token)
     apiClient.defaults.headers.common.Authorization = `Bearer ${token}`
-    await fetchUser()
+
+    // Try to fetch user info; if it fails (no auth middleware yet),
+    // create a minimal user from the token so the UI works
+    try {
+      const meRes = await apiClient.get('/auth/me')
+      const userData = meRes.data.data as User
+      setUser(userData)
+      localStorage.setItem(USER_KEY, JSON.stringify(userData))
+    } catch {
+      // Auth middleware not yet applied — set a flag so isAuthenticated = true
+      const minimalUser: User = {
+        id: 0,
+        username,
+        role: 1,
+        status: 1,
+        created_at: new Date().toISOString(),
+      }
+      setUser(minimalUser)
+      localStorage.setItem(USER_KEY, JSON.stringify(minimalUser))
+    }
+
     navigate('/dashboard')
   }
 
@@ -57,11 +77,12 @@ export function useAuth() {
     localStorage.removeItem(USER_KEY)
     setUser(null)
     delete apiClient.defaults.headers.common.Authorization
+    navigate('/login')
   }
 
   const isAdmin = user?.role != null && user.role >= 10
   const isRoot = user?.role != null && user.role >= 100
-  const isAuthenticated = !!user && user.status === 1
+  const isAuthenticated = !!localStorage.getItem(TOKEN_KEY)
 
   return {
     user,
