@@ -1,6 +1,51 @@
-/target
+# Rust
+/target/
+debug/
+release/
+*.rs.bk
+*.rlib
+*.prof*
+
+# Node.js / Frontend
+web/node_modules/
+web/dist/
+web/build/
+web/.env.local
+web/.env.*.local
+
+# Build artifacts
+*.log
+*.tmp
+*.swp
+*.swo
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.iml
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data
+*.db
+*.db-journal
+tg_store/
+upload/
+
+# Project-specific
 demo/
-CLAUDE.md
-.specify
+.specify/
 specs/
-.claude
+.claude/
