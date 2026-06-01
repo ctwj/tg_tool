@@ -13,7 +13,7 @@ const Collectors: React.FC = () => {
   const fetchCollectors = async () => {
     setLoading(true)
     try {
-      const res = await apiClient.get('/api/collectors')
+      const res = await apiClient.get('/collectors')
       setCollectors(res.data.data?.list ?? [])
     } catch { message.error('获取采集器失败') }
     finally { setLoading(false) }
@@ -23,7 +23,7 @@ const Collectors: React.FC = () => {
 
   const createCollector = async (values: any) => {
     try {
-      await apiClient.post('/api/collectors', values)
+      await apiClient.post('/collectors', values)
       message.success('采集器已创建')
       setModalOpen(false)
       form.resetFields()
@@ -32,17 +32,17 @@ const Collectors: React.FC = () => {
   }
 
   const toggleCollector = async (id: number) => {
-    try { await apiClient.put(`/api/collectors/${id}/toggle`); fetchCollectors() }
+    try { await apiClient.put(`/collectors/${id}/toggle`); fetchCollectors() }
     catch (e: any) { message.error(e.message || '切换失败') }
   }
 
   const deleteCollector = async (id: number) => {
-    try { await apiClient.delete(`/api/collectors/${id}`); message.success('已删除'); fetchCollectors() }
+    try { await apiClient.delete(`/collectors/${id}`); message.success('已删除'); fetchCollectors() }
     catch (e: any) { message.error(e.message || '删除失败') }
   }
 
   const fetchHistory = async (id: number) => {
-    try { await apiClient.post(`/api/collectors/${id}/fetch`); message.success('采集已触发') }
+    try { await apiClient.post(`/collectors/${id}/fetch`); message.success('采集已触发') }
     catch (e: any) { message.error(e.message || '触发失败') }
   }
 

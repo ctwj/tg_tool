@@ -9,7 +9,7 @@ const Files: React.FC = () => {
 
   const fetchFiles = async () => {
     setLoading(true)
-    try { const res = await apiClient.get('/api/files'); setFiles(res.data.data?.list ?? []) }
+    try { const res = await apiClient.get('/files'); setFiles(res.data.data?.list ?? []) }
     catch { message.error('获取文件列表失败') }
     finally { setLoading(false) }
   }
@@ -17,13 +17,13 @@ const Files: React.FC = () => {
   useEffect(() => { fetchFiles() }, [])
 
   const deleteFile = async (id: number) => {
-    try { await apiClient.delete(`/api/files/${id}`); message.success('已删除'); fetchFiles() }
+    try { await apiClient.delete(`/files/${id}`); message.success('已删除'); fetchFiles() }
     catch (e: any) { message.error(e.message || '删除失败') }
   }
 
   const uploadProps = {
     name: 'file',
-    action: '/api/files',
+    action: '/files',
     headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
     onChange: (info: any) => {
       if (info.file.status === 'done') { message.success('上传成功'); fetchFiles() }
@@ -39,7 +39,7 @@ const Files: React.FC = () => {
     { title: '操作', key: 'actions', width: 120,
       render: (_: any, r: any) => (
         <Space>
-          <Button size="small" icon={<DownloadOutlined />} href={`/api/files/download/${r.filename}`} target="_blank">下载</Button>
+          <Button size="small" icon={<DownloadOutlined />} href={`/files/download/${r.filename}`} target="_blank">下载</Button>
           <Popconfirm title="确定删除？" onConfirm={() => deleteFile(r.id)}>
             <Button size="small" danger icon={<DeleteOutlined />} />
           </Popconfirm>

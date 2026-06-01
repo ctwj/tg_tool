@@ -13,7 +13,7 @@ const Rules: React.FC = () => {
   const fetchRules = async () => {
     setLoading(true)
     try {
-      const res = await apiClient.get('/api/rules')
+      const res = await apiClient.get('/rules')
       setRules(res.data.data?.list ?? [])
     } catch { message.error('获取规则失败') }
     finally { setLoading(false) }
@@ -23,7 +23,7 @@ const Rules: React.FC = () => {
 
   const createRule = async (values: any) => {
     try {
-      await apiClient.post('/api/rules', values)
+      await apiClient.post('/rules', values)
       message.success('规则已创建')
       setModalOpen(false)
       form.resetFields()
@@ -33,14 +33,14 @@ const Rules: React.FC = () => {
 
   const toggleRule = async (id: number) => {
     try {
-      await apiClient.put(`/api/rules/${id}/toggle`)
+      await apiClient.put(`/rules/${id}/toggle`)
       fetchRules()
     } catch (e: any) { message.error(e.message || '切换失败') }
   }
 
   const deleteRule = async (id: number) => {
     try {
-      await apiClient.delete(`/api/rules/${id}`)
+      await apiClient.delete(`/rules/${id}`)
       message.success('已删除')
       fetchRules()
     } catch (e: any) { message.error(e.message || '删除失败') }

@@ -10,14 +10,14 @@ const Push: React.FC = () => {
 
   const fetchStats = async () => {
     try {
-      const res = await apiClient.get('/api/push/stats')
+      const res = await apiClient.get('/push/stats')
       setStats(res.data.data ?? { total: 0, success: 0, failed: 0 })
     } catch {}
   }
 
   const fetchHistories = async () => {
     setLoading(true)
-    try { const res = await apiClient.get('/api/push/histories'); setHistories(res.data.data?.list ?? []) }
+    try { const res = await apiClient.get('/push/histories'); setHistories(res.data.data?.list ?? []) }
     catch { message.error('获取推送历史失败') }
     finally { setLoading(false) }
   }
@@ -25,12 +25,12 @@ const Push: React.FC = () => {
   useEffect(() => { fetchStats(); fetchHistories() }, [])
 
   const triggerPush = async () => {
-    try { await apiClient.post('/api/push/trigger', {}); message.success('推送已触发'); fetchStats(); fetchHistories() }
+    try { await apiClient.post('/push/trigger', {}); message.success('推送已触发'); fetchStats(); fetchHistories() }
     catch (e: any) { message.error(e.message || '推送失败') }
   }
 
   const retryFailed = async () => {
-    try { await apiClient.post('/api/push/retry'); message.success('重试已触发'); fetchStats(); fetchHistories() }
+    try { await apiClient.post('/push/retry'); message.success('重试已触发'); fetchStats(); fetchHistories() }
     catch (e: any) { message.error(e.message || '重试失败') }
   }
 

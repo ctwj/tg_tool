@@ -11,7 +11,7 @@ const Users: React.FC = () => {
 
   const fetchUsers = async () => {
     setLoading(true)
-    try { const res = await apiClient.get('/api/users'); setUsers(res.data.data?.list ?? []) }
+    try { const res = await apiClient.get('/users'); setUsers(res.data.data?.list ?? []) }
     catch { message.error('获取用户列表失败') }
     finally { setLoading(false) }
   }
@@ -20,7 +20,7 @@ const Users: React.FC = () => {
 
   const createUser = async (values: any) => {
     try {
-      await apiClient.post('/api/users', values)
+      await apiClient.post('/users', values)
       message.success('用户已创建')
       setModalOpen(false)
       form.resetFields()
@@ -29,7 +29,7 @@ const Users: React.FC = () => {
   }
 
   const deleteUser = async (id: number) => {
-    try { await apiClient.delete(`/api/users/${id}`); message.success('已删除'); fetchUsers() }
+    try { await apiClient.delete(`/users/${id}`); message.success('已删除'); fetchUsers() }
     catch (e: any) { message.error(e.message || '删除失败') }
   }
 

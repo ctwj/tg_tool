@@ -10,7 +10,7 @@ const CollectorHistory: React.FC = () => {
   const fetch = async (page = 1) => {
     setLoading(true)
     try {
-      const res = await apiClient.get('/api/collectors/histories', { params: { page, page_size: 20 } })
+      const res = await apiClient.get('/collectors/histories', { params: { page, page_size: 20 } })
       setData(res.data.data?.list ?? [])
       setPagination(prev => ({ ...prev, page, total: res.data.data?.pagination?.total ?? 0 }))
     } catch { message.error('获取采集历史失败') }
