@@ -56,4 +56,36 @@ impl AppState {
             option_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
+
+    /// 获取 TG APP ID：优先使用系统配置，回退到环境变量
+    pub async fn tg_app_id(&self) -> i32 {
+        let cache = self.option_cache.read().await;
+        if let Some(v) = cache
+            .get("tg_app_id")
+            .and_then(|v| v.parse::<i32>().ok())
+            && v != 0
+        {
+            return v;
+        }
+        self.config.tg_app_id
+    }
+
+    /// 获取 TG APP Hash：优先使用系统配置，回退到环境变量
+    pub async fn tg_app_hash(&self) -> String {
+        let cache = self.option_cache.read().await;
+        if let Some(v) = cache.get("tg_app_hash")
+            && !v.is_empty()
+        {
+            return v.clone();
+        }
+        self.config.tg_app_hash.clone()
+    }
+
+    /// 获取代理地址：优先使用系统配置，回退到空
+    pub async fn proxy_url(&self) -> Option<String> {
+        let cache = self.option_cache.read().await;
+        cache
+            .get("proxy_url")
+            .and_then(|v| if v.is_empty() { None } else { Some(v.clone()) })
+    }
 }

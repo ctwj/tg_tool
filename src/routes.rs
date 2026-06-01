@@ -102,7 +102,8 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/options",
             get(handlers::option::get_options).put(handlers::option::update_options),
-        );
+        )
+        .route("/options/test-proxy", post(handlers::option::test_proxy));
 
     Router::new()
         .nest("/api", api_routes)
