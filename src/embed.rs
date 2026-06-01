@@ -22,15 +22,15 @@ pub async fn static_handler(req: Request<Body>) -> Response<Body> {
     }
 
     // Try to find the exact file first
-    if !path.is_empty() {
-        if let Some(file) = Assets::get(path) {
-            let mime = mime_guess::from_path(path).first_or_octet_stream();
-            return Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, mime.as_ref())
-                .body(Body::from(file.data.into_owned()))
-                .unwrap();
-        }
+    if !path.is_empty()
+        && let Some(file) = Assets::get(path)
+    {
+        let mime = mime_guess::from_path(path).first_or_octet_stream();
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, mime.as_ref())
+            .body(Body::from(file.data.into_owned()))
+            .unwrap();
     }
 
     // SPA fallback: serve index.html

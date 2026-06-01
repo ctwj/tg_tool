@@ -1,3 +1,5 @@
+#![allow(non_snake_case)]
+
 pub mod config;
 pub mod embed;
 pub mod errors;
