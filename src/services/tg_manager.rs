@@ -430,6 +430,58 @@ impl TgManager {
         }
         tracing::info!("All {} clients shut down gracefully", ids.len());
     }
+
+    /// Spawn a background task that periodically reconnects offline clients
+    pub fn spawn_auto_reconnector(&self, interval_secs: u64) {
+        let clients = self.clients.clone();
+        let db = self.db.clone();
+        let config = self.config.clone();
+        let option_cache = self.option_cache.clone();
+        let peer_cache = self.peer_cache.clone();
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            loop {
+                interval.tick().await;
+
+                // Find offline clients that have a session file (meaning they were once active)
+                let client_ids: Vec<String> = {
+                    let c = clients.read().await;
+                    c.iter()
+                        .filter(|(_, entry)| entry.status == "offline" && Path::new(&entry.session_path).exists())
+                        .map(|(id, _)| id.clone())
+                        .collect()
+                };
+
+                if client_ids.is_empty() {
+                    continue;
+                }
+
+                tracing::info!("Auto-reconnect: checking {} offline client(s)", client_ids.len());
+
+                // Create a temporary TgManager to use start_client
+                let mgr = TgManager {
+                    config: config.clone(),
+                    db: db.clone(),
+                    clients: clients.clone(),
+                    option_cache: option_cache.clone(),
+                    peer_cache: peer_cache.clone(),
+                };
+
+                for id in client_ids {
+                    match mgr.start_client(&id).await {
+                        Ok(status) => {
+                            tracing::info!("Auto-reconnect: client {} → {}", id, status);
+                            mgr.update_db_status(&id, &status).await;
+                        }
+                        Err(_) => {
+                            // Silently skip, will retry next cycle
+                        }
+                    }
+                }
+            }
+        });
+    }
 }
 
 #[cfg(test)]

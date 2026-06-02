@@ -64,6 +64,9 @@ async fn main() {
         tracing::info!("Reconnected {} TG clients", reconnected.len());
     }
 
+    // Start auto-reconnector for offline clients (every 30s)
+    tg_manager.spawn_auto_reconnector(30);
+
     // Check if auto extract is enabled
     {
         let cache = state.option_cache.read().await;
