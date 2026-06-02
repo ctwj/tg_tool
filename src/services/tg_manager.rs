@@ -358,10 +358,38 @@ impl TgManager {
                 }
                 Err(e) => {
                     tracing::warn!("Failed to reconnect client {}: {e}", id);
+                    // Mark as offline in database since reconnection failed
+                    self.update_db_status(&id, "offline").await;
                 }
             }
         }
         reconnected
+    }
+
+    /// Update client status in database
+    async fn update_db_status(&self, client_id: &str, status: &str) {
+        match &self.db {
+            DbPool::Sqlite(pool) => {
+                if let Err(e) = sqlx::query("UPDATE clients SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+                    .bind(status)
+                    .bind(client_id)
+                    .execute(pool)
+                    .await
+                {
+                    tracing::warn!("Failed to update client {} status in DB: {e}", client_id);
+                }
+            }
+            DbPool::Postgres(pool) => {
+                if let Err(e) = sqlx::query("UPDATE clients SET status = $1, updated_at = NOW() WHERE id = $2")
+                    .bind(status)
+                    .bind(client_id)
+                    .execute(pool)
+                    .await
+                {
+                    tracing::warn!("Failed to update client {} status in DB: {e}", client_id);
+                }
+            }
+        }
     }
 
     /// Get the TG config
