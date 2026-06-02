@@ -289,6 +289,30 @@ impl TgManager {
                 entry.status = "offline".to_string();
                 entry.handle = None;
             }
+            drop(c);
+
+            // Sync offline status to database
+            match &db {
+                DbPool::Sqlite(pool) => {
+                    if let Err(e) = sqlx::query("UPDATE clients SET status = 'offline', updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+                        .bind(&client_id_for_listener)
+                        .execute(pool)
+                        .await
+                    {
+                        tracing::warn!("Failed to update client status in DB: {e}");
+                    }
+                }
+                DbPool::Postgres(pool) => {
+                    if let Err(e) = sqlx::query("UPDATE clients SET status = 'offline', updated_at = NOW() WHERE id = $1")
+                        .bind(&client_id_for_listener)
+                        .execute(pool)
+                        .await
+                    {
+                        tracing::warn!("Failed to update client status in DB: {e}");
+                    }
+                }
+            }
+
             tracing::info!("Update listener stopped for client {}", client_id_for_listener);
         });
 
