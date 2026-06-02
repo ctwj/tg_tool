@@ -82,6 +82,7 @@ export interface Rule {
 export interface Collector {
   id: number
   user_id: number
+  client_id?: string
   channel_id: number
   channel_name?: string
   collector_type: string
@@ -149,6 +150,55 @@ export interface Option {
   id: number
   key: string
   value?: string
+}
+
+// AI Endpoint types
+export interface AiEndpoint {
+  url: string
+  key: string
+  model: string
+}
+
+// Resource types
+export interface ExtractedResource {
+  id: number
+  collector_history_id: number
+  title: string
+  url?: string
+  description?: string
+  category?: string
+  tags?: string
+  img?: string
+  source: string
+  extra?: string
+  extract_mode: 'rule' | 'ai'
+  is_pushed: boolean
+  is_edited: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface ResourceStats {
+  total: number
+  pushed: number
+  unpushed: number
+  by_category: Record<string, number>
+  by_extract_mode: Record<string, number>
+}
+
+export interface ExtractConfig {
+  extract_mode: 'rule' | 'ai'
+  auto_extract: boolean
+  extract_interval: number
+  ai_endpoints: string
+  ai_prompt: string
+}
+
+export interface ExtractionResult {
+  total_scanned: number
+  extracted: number
+  skipped: number
+  errors: number
 }
 
 // System status

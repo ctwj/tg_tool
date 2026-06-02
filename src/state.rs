@@ -1,7 +1,21 @@
 use sqlx::{Pool, Postgres, Sqlite};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
+
+/// Telegram 用户信息，认证成功后缓存
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UserInfo {
+    pub user_id: i64,
+    pub username: Option<String>,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub is_bot: bool,
+}
+
+/// 对话目标解析缓存 (chat_id -> (PackedChat, cached_at))
+pub type PeerCache = Arc<RwLock<HashMap<i64, (grammers_client::types::PackedChat, Instant)>>>;
 
 /// Type alias for the database pool (supports both SQLite and Postgres)
 #[derive(Clone)]
@@ -36,6 +50,7 @@ pub struct TgClientEntry {
     pub login_token: Option<grammers_client::types::LoginToken>,
     pub password_token: Option<grammers_client::types::PasswordToken>,
     pub session_path: String,
+    pub user_info: Option<UserInfo>,
 }
 
 impl std::fmt::Debug for TgClientEntry {
@@ -47,6 +62,7 @@ impl std::fmt::Debug for TgClientEntry {
             .field("has_login_token", &self.login_token.is_some())
             .field("has_password_token", &self.password_token.is_some())
             .field("session_path", &self.session_path)
+            .field("has_user_info", &self.user_info.is_some())
             .finish()
     }
 }
@@ -63,6 +79,9 @@ pub struct AppState {
     pub option_cache: OptionCache,
     pub tg_manager: std::sync::Arc<crate::services::tg_manager::TgManager>,
     pub scheduler: crate::services::scheduler::SchedulerHandle,
+    pub extract_scheduler: crate::services::scheduler::ExtractSchedulerHandle,
+    pub peer_cache: PeerCache,
+    pub rate_limiter: crate::middleware::rate_limit::RateLimiter,
 }
 
 impl AppState {
@@ -71,6 +90,10 @@ impl AppState {
         config: crate::config::Config,
         tg_manager: std::sync::Arc<crate::services::tg_manager::TgManager>,
     ) -> Self {
+        let rate_limiter = crate::middleware::rate_limit::RateLimiter::new(
+            config.rate_limit_max,
+            config.rate_limit_window_secs,
+        );
         Self {
             db,
             config,
@@ -78,6 +101,9 @@ impl AppState {
             option_cache: tg_manager.option_cache().clone(),
             tg_manager,
             scheduler: crate::services::scheduler::create_scheduler(),
+            extract_scheduler: crate::services::scheduler::create_extract_scheduler(),
+            peer_cache: Arc::new(RwLock::new(HashMap::new())),
+            rate_limiter,
         }
     }
 
@@ -111,5 +137,56 @@ impl AppState {
         cache
             .get("proxy_url")
             .and_then(|v| if v.is_empty() { None } else { Some(v.clone()) })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_user_info_full_serialization() {
+        let info = UserInfo {
+            user_id: 123456789,
+            username: Some("test_user".to_string()),
+            first_name: Some("John".to_string()),
+            last_name: Some("Doe".to_string()),
+            is_bot: false,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"user_id\":123456789"));
+        assert!(json.contains("\"username\":\"test_user\""));
+        assert!(json.contains("\"first_name\":\"John\""));
+        assert!(json.contains("\"last_name\":\"Doe\""));
+        assert!(json.contains("\"is_bot\":false"));
+    }
+
+    #[test]
+    fn test_user_info_null_username() {
+        let info = UserInfo {
+            user_id: 998877,
+            username: None,
+            first_name: Some("Bot".to_string()),
+            last_name: None,
+            is_bot: true,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"user_id\":998877"));
+        assert!(json.contains("\"username\":null"));
+        assert!(json.contains("\"is_bot\":true"));
+    }
+
+    #[test]
+    fn test_user_info_bot_serialization() {
+        let info = UserInfo {
+            user_id: 111222333,
+            username: Some("my_bot".to_string()),
+            first_name: None,
+            last_name: None,
+            is_bot: true,
+        };
+        let val: serde_json::Value = serde_json::to_value(&info).unwrap();
+        assert_eq!(val["is_bot"], true);
+        assert_eq!(val["username"], "my_bot");
     }
 }

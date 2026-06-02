@@ -31,6 +31,8 @@ TG_APP_HASH=your_api_hash
 PROXY_URL=socks5://127.0.0.1:1080 # 可选代理
 PORT=3000
 SESSION_SECRET=your-random-secret
+RATE_LIMIT_MAX=100                 # 单 IP 请求限制次数（默认 100）
+RATE_LIMIT_WINDOW=60               # 速率限制窗口秒数（默认 60）
 ```
 
 ## Architecture
@@ -123,4 +125,6 @@ cargo test -- --nocapture           # 显示 println! 输出
 
 <!-- SPECKIT START -->
 - [Telegram 核心功能集成](specs/002-telegram-core-integration/plan.md) — 客户端连接、认证、消息收发、转发、采集、推送
+- [生产就绪度改进](specs/004-production-improvements/plan.md) — 客户端信息完善、优雅关闭、健康检查、转发缓存、采集分页、速率限制
+- [推送管理增强 — 资源提取独立化 + AI 分析](specs/005-push-ai-extraction/plan.md) — 资源提取解耦、规则引擎移植、AI 大模型增强、独立资源管理页面、多 API 轮询
 <!-- SPECKIT END -->

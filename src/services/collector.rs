@@ -10,6 +10,7 @@ pub async fn full_collect(
     collector_id: i64,
     client_id: &str,
     channel_id: i64,
+    limit: i64,
     tg_clients: &crate::state::TgClientMap,
     db: &DbPool,
     option_cache: &crate::state::OptionCache,
@@ -38,7 +39,7 @@ pub async fn full_collect(
     let packed = target_packed
         .ok_or_else(|| AppError::NotFound(format!("未找到频道: {channel_id}")))?;
 
-    let mut messages = client.iter_messages(packed).limit(1000);
+    let mut messages = client.iter_messages(packed).limit(limit as usize);
     let mut collected = 0usize;
 
     while let Some(msg) = messages.next().await

@@ -1,6 +1,7 @@
 pub mod client;
 pub mod collector;
 pub mod collector_history;
+pub mod extracted_resource;
 pub mod file;
 pub mod message;
 pub mod option;

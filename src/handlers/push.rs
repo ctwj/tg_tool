@@ -18,12 +18,31 @@ pub async fn trigger_push(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<Value>, AppError> {
-    // Read push config from option_cache
+    // 配置校验 — 检查必要配置项
     let cache = state.option_cache.read().await;
     let api_url = cache.get("push_api_url").cloned().unwrap_or_default();
     let api_token = cache.get("push_api_token").cloned().unwrap_or_default();
     let target = cache.get("push_target").cloned().unwrap_or_default();
     drop(cache);
+
+    let mut missing = Vec::new();
+    if api_url.is_empty() {
+        missing.push("push_api_url");
+    }
+    if api_token.is_empty() {
+        missing.push("push_api_token");
+    }
+    if target.is_empty() {
+        missing.push("push_target");
+    }
+
+    if !missing.is_empty() {
+        return Ok(Json(json!({
+            "success": false,
+            "message": "推送配置不完整",
+            "data": { "missing": missing }
+        })));
+    }
 
     let batch_size: i64 = body.get("batch_size").and_then(|v| v.as_i64()).unwrap_or(1000);
 
@@ -155,4 +174,38 @@ pub async fn update_scheduler(
     }
 
     Ok(Json(json!({ "success": true, "message": "调度配置已更新" })))
+}
+
+/// 推送配置校验 — 检查必要配置是否完整
+pub async fn config_check(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+    let cache = state.option_cache.read().await;
+
+    let checks = [
+        ("push_api_url", "请配置推送 API 地址"),
+        ("push_api_token", "请配置 API Token"),
+        ("push_target", "请配置推送目标"),
+    ];
+
+    let mut missing = Vec::new();
+    let mut hints = serde_json::Map::new();
+
+    for (key, hint) in &checks {
+        let val = cache.get(*key).cloned().unwrap_or_default();
+        if val.is_empty() {
+            missing.push(*key);
+            hints.insert(key.to_string(), json!(hint));
+        }
+    }
+    drop(cache);
+
+    let is_valid = missing.is_empty();
+
+    Ok(Json(json!({
+        "success": true,
+        "data": {
+            "is_valid": is_valid,
+            "missing": missing,
+            "hints": hints,
+        }
+    })))
 }

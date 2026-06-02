@@ -11,6 +11,7 @@ import Rules from './pages/Rules'
 import Collectors from './pages/Collectors'
 import CollectorHistory from './pages/CollectorHistory'
 import Push from './pages/Push'
+import Resources from './pages/Resources'
 import Users from './pages/Users'
 import Files from './pages/Files'
 import Settings from './pages/Settings'
@@ -30,6 +31,7 @@ function App() {
             <Route path="collectors" element={<Collectors />} />
             <Route path="collector-history" element={<CollectorHistory />} />
             <Route path="push" element={<Push />} />
+            <Route path="resources" element={<Resources />} />
             <Route path="users" element={<Users />} />
             <Route path="files" element={<Files />} />
             <Route path="settings" element={<Settings />} />

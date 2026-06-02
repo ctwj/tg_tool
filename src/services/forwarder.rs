@@ -2,9 +2,10 @@
 // Supports Chat (grammers send_message) and Webhook (reqwest POST) modes
 
 use crate::errors::AppError;
-use crate::state::{DbPool, TgClientMap};
+use crate::state::{DbPool, PeerCache, TgClientMap};
 
 /// Forward a message to the target
+#[allow(clippy::too_many_arguments)]
 pub async fn forward_message(
     rule_id: i64,
     method: &str,
@@ -12,11 +13,12 @@ pub async fn forward_message(
     config: Option<&str>,
     content: &str,
     tg_clients: &TgClientMap,
+    peer_cache: &PeerCache,
     db: &DbPool,
 ) -> Result<(), AppError> {
     let result = match method {
         "WebHook" | "Webhook" => forward_webhook(target, config, content).await,
-        "Chat" => forward_chat(target, content, tg_clients).await,
+        "Chat" => forward_chat(target, content, tg_clients, peer_cache).await,
         _ => Err(AppError::BadRequest(format!("未知的转发方式: {method}"))),
     };
 
@@ -115,11 +117,28 @@ async fn forward_chat(
     target: &str,
     content: &str,
     tg_clients: &TgClientMap,
+    peer_cache: &PeerCache,
 ) -> Result<(), AppError> {
     let chat_id: i64 = target
         .parse()
         .map_err(|e| AppError::BadRequest(format!("无效的转发目标: {e}")))?;
 
-    // Delegate to tg_api::send_message which handles peer resolution
-    crate::services::tg_api::send_message(chat_id, content, tg_clients).await
+    // Resolve peer using cache
+    let packed = crate::services::tg_api::resolve_peer(chat_id, tg_clients, peer_cache).await?;
+
+    // Send via any active client
+    let clients = tg_clients.read().await;
+    let client = clients
+        .values()
+        .find(|e| e.status == "active" && e.client.is_some())
+        .and_then(|e| e.client.clone())
+        .ok_or_else(|| AppError::NotFound("没有可用的在线客户端".into()))?;
+    drop(clients);
+
+    client
+        .send_message(packed, content)
+        .await
+        .map_err(|e| AppError::Internal(format!("发送消息失败: {e}")))?;
+
+    Ok(())
 }

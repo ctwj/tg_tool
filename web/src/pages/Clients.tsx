@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react'
 import { Table, Button, Modal, Form, Input, Select, Space, message, Tag, Popconfirm } from 'antd'
-import { PlusOutlined, PlayCircleOutlined, PauseCircleOutlined, DeleteOutlined } from '@ant-design/icons'
+import { PlusOutlined, PlayCircleOutlined, PauseCircleOutlined, DeleteOutlined, KeyOutlined } from '@ant-design/icons'
+import { useNavigate } from 'react-router-dom'
 import apiClient from '../api/client'
 import type { Client } from '../types'
 
 const Clients: React.FC = () => {
   const [clients, setClients] = useState<Client[]>([])
   const [loading, setLoading] = useState(false)
+  const navigate = useNavigate()
   const [modalOpen, setModalOpen] = useState(false)
   const [form] = Form.useForm()
 
@@ -71,8 +73,14 @@ const Clients: React.FC = () => {
       title: '操作', key: 'actions', width: 200,
       render: (_: any, record: Client) => (
         <Space>
-          <Button size="small" icon={<PlayCircleOutlined />} onClick={() => startClient(record.id)}>启动</Button>
-          <Button size="small" icon={<PauseCircleOutlined />} onClick={() => stopClient(record.id)}>停止</Button>
+          <Button size="small" icon={<PlayCircleOutlined />} onClick={() => startClient(record.id)}
+            disabled={record.status === 'active'}>启动</Button>
+          <Button size="small" icon={<PauseCircleOutlined />} onClick={() => stopClient(record.id)}
+            disabled={record.status === 'offline' || record.status === 'new'}>停止</Button>
+          {(record.status === 'wait_code' || record.status === 'wait_password') && (
+            <Button size="small" type="primary" icon={<KeyOutlined />}
+              onClick={() => navigate(`/client-auth?id=${record.id}`)}>认证</Button>
+          )}
           <Popconfirm title="确定删除？" onConfirm={() => removeClient(record.id)}>
             <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
           </Popconfirm>

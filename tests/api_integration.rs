@@ -19,11 +19,22 @@ async fn setup_test_db() -> DbPool {
         .expect("Failed to create test SQLite pool");
 
     // 执行建表语句
-    let migration_sql = include_str!("../migrations/001_init.sql");
+    let migration_sql = include_str!("../migrations/001_init_sqlite.sql");
     sqlx::raw_sql(migration_sql)
         .execute(&pool)
         .await
         .expect("Failed to run test migrations");
+
+    // Migration 002: Add client_id to collectors (ignore if duplicate column)
+    let m2 = include_str!("../migrations/002_collector_client_id_sqlite.sql");
+    let _ = sqlx::raw_sql(m2).execute(&pool).await;
+
+    // Migration 003: Create extracted_resources table
+    let m3 = include_str!("../migrations/003_extracted_resources_sqlite.sql");
+    sqlx::raw_sql(m3)
+        .execute(&pool)
+        .await
+        .expect("Failed to run migration 003");
 
     // 插入 root 用户（使用当前 bcrypt 版本生成 hash）
     let hash = crypto::hash_password("123456").expect("Failed to hash root password");
@@ -48,11 +59,16 @@ fn make_test_state(db: DbPool) -> (AppState, tgTool::state::TgClientMap) {
         sql_dsn: String::new(),
         redis_conn_string: String::new(),
         session_secret: "test-secret-for-integration".to_string(),
+        rate_limit_max: 10000,
+        rate_limit_window_secs: 60,
     };
     let tg_clients = std::sync::Arc::new(tokio::sync::RwLock::new(
         std::collections::HashMap::new(),
     ));
     let option_cache = std::sync::Arc::new(tokio::sync::RwLock::new(
+        std::collections::HashMap::new(),
+    ));
+    let peer_cache = std::sync::Arc::new(tokio::sync::RwLock::new(
         std::collections::HashMap::new(),
     ));
     let tg_manager = std::sync::Arc::new(
@@ -61,6 +77,7 @@ fn make_test_state(db: DbPool) -> (AppState, tgTool::state::TgClientMap) {
             db.clone(),
             tg_clients.clone(),
             option_cache,
+            peer_cache,
         ),
     );
     let state = AppState::new(db, config, tg_manager);
@@ -394,6 +411,7 @@ async fn test_collector_crud() {
             &token,
             Some(
                 serde_json::json!({
+                    "client_id": "test_client",
                     "channel_id": 999888,
                     "channel_name": "News Channel",
                     "collector_type": "origin",
@@ -718,6 +736,7 @@ async fn test_client_start_stop() {
             login_token: None,
             password_token: None,
             session_path: format!("tg_store/{client_id}.session"),
+            user_info: None,
         },
     );
 
@@ -1089,6 +1108,7 @@ async fn test_collector_crud_with_data_verification() {
             "/api/collectors",
             &token,
             Some(serde_json::json!({
+                "client_id": "test_client",
                 "channel_id": -100888,
                 "channel_name": "News",
                 "collector_type": "origin",
@@ -1174,7 +1194,7 @@ async fn test_collector_get_update_not_found() {
             "POST",
             "/api/collectors",
             &token,
-            Some(serde_json::json!({"channel_id": 100, "collector_type": "origin"}).to_string()),
+            Some(serde_json::json!({"client_id": "test_client", "channel_id": 100, "collector_type": "origin"}).to_string()),
         ))
         .await
         .unwrap();
@@ -1214,7 +1234,7 @@ async fn test_collector_histories_pagination() {
             "POST",
             "/api/collectors",
             &token,
-            Some(serde_json::json!({"channel_id": -100, "collector_type": "origin"}).to_string()),
+            Some(serde_json::json!({"client_id": "test_client", "channel_id": -100, "collector_type": "origin"}).to_string()),
         ))
         .await
         .unwrap();
@@ -1260,7 +1280,7 @@ async fn test_fetch_history_no_active_client() {
             "POST",
             "/api/collectors",
             &token,
-            Some(serde_json::json!({"channel_id": -100, "collector_type": "origin"}).to_string()),
+            Some(serde_json::json!({"client_id": "test_client", "channel_id": -100, "collector_type": "origin"}).to_string()),
         ))
         .await
         .unwrap();
@@ -1566,6 +1586,7 @@ async fn test_system_status_with_clients() {
             login_token: None,
             password_token: None,
             session_path: "tg_store/bot_mock.session".to_string(),
+            user_info: None,
         },
     );
     tg_clients.write().await.insert(
@@ -1577,6 +1598,7 @@ async fn test_system_status_with_clients() {
             login_token: None,
             password_token: None,
             session_path: "tg_store/client_offline.session".to_string(),
+            user_info: None,
         },
     );
 
@@ -1741,3 +1763,79 @@ async fn test_t020_public_routes_no_auth_needed() {
         .unwrap();
     assert_eq!(resp.status(), 404); // 404 不是 401，说明没有 auth 检查
 }
+
+// ===== Phase 3-5 新增测试 =====
+
+/// T010: 验证健康检查返回 db_status 字段
+#[tokio::test]
+async fn test_health_check_returns_db_status() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let app = build_test_app(state);
+
+    let resp = app
+        .oneshot(build_request("GET", "/api/status", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert!(body["success"].as_bool().unwrap());
+    assert_eq!(body["data"]["db_status"].as_str().unwrap(), "ok");
+    assert!(body["data"]["version"].is_string());
+    assert!(body["data"]["clients"].is_object());
+}
+
+/// T010: 验证客户端信息查询（未认证连接）返回合理响应
+#[tokio::test]
+async fn test_get_me_unconnected_client() {
+    let db = setup_test_db().await;
+    let (state, _tg_clients) = make_test_state(db);
+    let app = build_test_app(state);
+
+    // 登录获取 token
+    let resp = app
+        .clone()
+        .oneshot(build_request(
+            "POST",
+            "/api/auth/login",
+            Some(r#"{"username":"root","password":"123456"}"#.to_string()),
+        ))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    let token = body["data"]["token"].as_str().unwrap().to_string();
+
+    // 添加客户端
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/clients",
+            &token,
+            Some(r#"{"id":"test_info","client_type":"user","phone":"+123456"}"#.to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // 查看客户端状态 — 应返回 connected: false, user_info: null
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "GET",
+            "/api/clients/test_info",
+            &token,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    // 客户端未连接时 status 应该反映真实状态
+    assert!(body["success"].as_bool().unwrap());
+}
+
+// ============================================================
+// Phase 005: 推送配置校验 + 资源管理 集成测试
+// ============================================================
+

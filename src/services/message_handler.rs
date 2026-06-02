@@ -2,7 +2,7 @@
 // Receives Update::NewMessage from grammers clients, matches active Rules and Collectors
 
 use crate::errors::AppError;
-use crate::state::{DbPool, TgClientMap};
+use crate::state::{DbPool, PeerCache, TgClientMap};
 use grammers_client::types::Message;
 
 /// Handle a new incoming message from Telegram
@@ -12,6 +12,7 @@ pub async fn handle_new_message(
     msg: &Message,
     db: &DbPool,
     tg_clients: &TgClientMap,
+    peer_cache: &PeerCache,
 ) -> Result<(), AppError> {
     let chat_id = msg.chat().id();
     let message_id = msg.id() as i64;
@@ -57,6 +58,7 @@ pub async fn handle_new_message(
             config.as_deref(),
             text,
             tg_clients,
+            peer_cache,
             db,
         )
         .await

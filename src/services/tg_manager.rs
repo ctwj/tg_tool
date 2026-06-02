@@ -3,7 +3,7 @@
 
 use crate::config::Config;
 use crate::errors::AppError;
-use crate::state::{DbPool, OptionCache, TgClientEntry, TgClientMap};
+use crate::state::{DbPool, OptionCache, PeerCache, TgClientEntry, TgClientMap};
 use grammers_client::{Client, Config as GrammersConfig, InitParams};
 use grammers_session::Session;
 use std::path::Path;
@@ -14,6 +14,7 @@ pub struct TgManager {
     db: DbPool,
     clients: TgClientMap,
     option_cache: OptionCache,
+    peer_cache: PeerCache,
 }
 
 impl TgManager {
@@ -22,12 +23,14 @@ impl TgManager {
         db: DbPool,
         clients: TgClientMap,
         option_cache: OptionCache,
+        peer_cache: PeerCache,
     ) -> Self {
         Self {
             config,
             db,
             clients,
             option_cache,
+            peer_cache,
         }
     }
 
@@ -128,6 +131,7 @@ impl TgManager {
                 login_token: None,
                 password_token: None,
                 session_path,
+                user_info: None,
             },
         );
 
@@ -193,6 +197,7 @@ impl TgManager {
     ) {
         let clients = self.clients.clone();
         let db = self.db.clone();
+        let peer_cache = self.peer_cache.clone();
         let client_id_for_listener = client_id.clone();
         let client_id_for_handle = client_id.clone();
 
@@ -210,6 +215,7 @@ impl TgManager {
                                     msg,
                                     &db,
                                     &clients,
+                                    &peer_cache,
                                 )
                                 .await;
                             }
@@ -311,6 +317,25 @@ impl TgManager {
     pub fn option_cache(&self) -> &OptionCache {
         &self.option_cache
     }
+
+    /// Gracefully shutdown all clients
+    pub async fn graceful_shutdown(&self) {
+        let mut clients = self.clients.write().await;
+        let ids: Vec<String> = clients.keys().cloned().collect();
+        for id in &ids {
+            if let Some(entry) = clients.get_mut(id) {
+                if let Some(handle) = entry.handle.take() {
+                    handle.abort();
+                }
+                entry.client = None;
+                entry.login_token = None;
+                entry.password_token = None;
+                entry.status = "offline".to_string();
+                tracing::info!("Graceful shutdown: client {} disconnected", id);
+            }
+        }
+        tracing::info!("All {} clients shut down gracefully", ids.len());
+    }
 }
 
 #[cfg(test)]
@@ -330,7 +355,7 @@ mod tests {
                 .await
                 .expect("Failed to create test DB"),
         );
-        TgManager::new(config, db, clients, option_cache)
+        TgManager::new(config, db, clients, option_cache, Arc::new(RwLock::new(HashMap::new())))
     }
 
     #[tokio::test]

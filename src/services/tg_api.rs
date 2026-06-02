@@ -2,13 +2,17 @@
 // Provides high-level operations for interacting with Telegram
 
 use crate::errors::AppError;
-use crate::state::TgClientMap;
+use crate::state::{PeerCache, TgClientMap};
+
+/// Cache TTL for peer resolution (5 minutes)
+const PEER_CACHE_TTL_SECS: u64 = 300;
 
 /// Chat information
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ChatInfo {
     pub id: i64,
     pub name: String,
+    #[serde(rename = "type")]
     pub chat_type: String,
 }
 
@@ -91,25 +95,82 @@ pub async fn send_message(
     Ok(())
 }
 
-/// Get current user info
+/// Get current user info — returns cached UserInfo if available
 pub async fn get_me(
     client_id: &str,
     tg_clients: &TgClientMap,
 ) -> Result<serde_json::Value, AppError> {
     let clients = tg_clients.read().await;
-    let client = clients
+    let entry = clients
         .get(client_id)
-        .and_then(|e| e.client.clone())
-        .ok_or_else(|| AppError::NotFound("客户端未连接".into()))?;
+        .ok_or_else(|| AppError::NotFound("客户端不存在".into()))?;
+
+    let connected = entry.client.is_some();
+    let user_info = entry.user_info.as_ref().map(|info| {
+        serde_json::json!({
+            "user_id": info.user_id,
+            "username": info.username,
+            "first_name": info.first_name,
+            "last_name": info.last_name,
+            "is_bot": info.is_bot,
+        })
+    });
+
     drop(clients);
 
-    // Verify connection works by trying to get dialogs
-    let mut dialogs = client.iter_dialogs();
-    if let Some(_dialog) = dialogs.next().await.map_err(|e| AppError::Internal(format!("获取信息失败: {e}")))? {
-        Ok(serde_json::json!({ "connected": true }))
-    } else {
-        Ok(serde_json::json!({ "connected": true, "dialogs": 0 }))
+    Ok(serde_json::json!({
+        "connected": connected,
+        "user_info": user_info,
+    }))
+}
+
+/// Resolve a chat_id to a PackedChat, using peer cache with TTL
+pub async fn resolve_peer(
+    chat_id: i64,
+    tg_clients: &TgClientMap,
+    peer_cache: &PeerCache,
+) -> Result<grammers_client::types::PackedChat, AppError> {
+    // Check cache first
+    {
+        let cache = peer_cache.read().await;
+        if let Some((packed, cached_at)) = cache.get(&chat_id)
+            && cached_at.elapsed().as_secs() < PEER_CACHE_TTL_SECS
+        {
+            return Ok(*packed);
+        }
     }
+
+    // Cache miss or expired — resolve via dialogs
+    let clients = tg_clients.read().await;
+    let client = clients
+        .values()
+        .find(|e| e.status == "active" && e.client.is_some())
+        .and_then(|e| e.client.clone())
+        .ok_or_else(|| AppError::NotFound("没有可用的在线客户端".into()))?;
+    drop(clients);
+
+    let mut dialogs = client.iter_dialogs();
+    let mut found = None;
+    while let Some(dialog) = dialogs
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(format!("搜索目标聊天失败: {e}")))?
+    {
+        if dialog.chat().id() == chat_id {
+            found = Some(dialog.chat().pack());
+            break;
+        }
+    }
+
+    let packed = found.ok_or_else(|| AppError::NotFound(format!("未找到目标聊天: {chat_id}")))?;
+
+    // Update cache
+    {
+        let mut cache = peer_cache.write().await;
+        cache.insert(chat_id, (packed, std::time::Instant::now()));
+    }
+
+    Ok(packed)
 }
 
 #[cfg(test)]

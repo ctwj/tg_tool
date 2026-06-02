@@ -140,6 +140,21 @@ pub fn build_router(state: AppState) -> Router {
         .route("/push/histories", get(handlers::push::list_histories))
         .route("/push/retry", post(handlers::push::retry_push))
         .route("/push/scheduler", put(handlers::push::update_scheduler))
+        .route("/push/config-check", get(handlers::push::config_check))
+        .route("/push/extract-config", put(handlers::resource::update_extract_config))
+        // Resources
+        .route(
+            "/resources",
+            get(handlers::resource::list_resources),
+        )
+        .route("/resources/extract", post(handlers::resource::extract_resources))
+        .route("/resources/stats", get(handlers::resource::get_resource_stats))
+        .route(
+            "/resources/{id}",
+            get(handlers::resource::get_resource)
+                .put(handlers::resource::update_resource)
+                .delete(handlers::resource::delete_resource),
+        )
         // Users (admin can list/create/manage users)
         .route(
             "/users",
@@ -169,6 +184,7 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers::option::get_options).put(handlers::option::update_options),
         )
         .route("/options/test-proxy", post(handlers::option::test_proxy))
+        .route("/options/ai-test", post(handlers::option::test_ai_endpoint))
         .layer(middleware::from_fn(root_guard))
         .layer(middleware::from_fn(auth_guard))
         .layer(axum::Extension(state.clone()));
@@ -183,4 +199,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .fallback(crate::embed::static_handler)
         .with_state(state)
+        .layer(middleware::from_fn(
+            crate::middleware::rate_limit::rate_limit_middleware,
+        ))
 }

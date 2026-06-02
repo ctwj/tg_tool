@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub struct Collector {
     pub id: i64,
     pub user_id: i64,
+    pub client_id: Option<String>,
     pub channel_id: i64,
     pub channel_name: Option<String>,
     pub collector_type: String,

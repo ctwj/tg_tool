@@ -2,7 +2,7 @@
 // State machine: new → wait_code → wait_password → active
 
 use crate::errors::AppError;
-use crate::state::{DbPool, TgClientMap};
+use crate::state::{DbPool, TgClientMap, UserInfo};
 
 /// Authentication state for a Telegram client
 #[derive(Debug, Clone, PartialEq)]
@@ -80,16 +80,17 @@ pub async fn submit_code(
     drop(clients);
 
     match client.sign_in(&token, code).await {
-        Ok(_user) => {
+        Ok(user) => {
             // Save session
             save_session(client_id, tg_clients).await?;
             update_client_status(client_id, "active", db).await?;
 
-            // Update in-memory status and start update listener
+            // Update in-memory status, cache user info, and start update listener
             let mut clients = tg_clients.write().await;
             if let Some(e) = clients.get_mut(client_id) {
                 e.status = "active".to_string();
                 e.login_token = None;
+                e.user_info = Some(extract_user_info(&user));
             }
 
             // Start update listener
@@ -148,7 +149,7 @@ pub async fn submit_password(
     drop(clients);
 
     match client.check_password(password_token, password.as_bytes()).await {
-        Ok(_user) => {
+        Ok(user) => {
             save_session(client_id, tg_clients).await?;
             update_client_status(client_id, "active", db).await?;
 
@@ -156,6 +157,7 @@ pub async fn submit_password(
             if let Some(e) = clients.get_mut(client_id) {
                 e.status = "active".to_string();
                 e.password_token = None;
+                e.user_info = Some(extract_user_info(&user));
             }
 
             tg_manager.spawn_update_listener(client_id.to_string(), client);
@@ -192,13 +194,14 @@ pub async fn bot_sign_in(
     drop(clients);
 
     match client.bot_sign_in(token).await {
-        Ok(_user) => {
+        Ok(user) => {
             save_session(client_id, tg_clients).await?;
             update_client_status(client_id, "active", db).await?;
 
             let mut clients = tg_clients.write().await;
             if let Some(e) = clients.get_mut(client_id) {
                 e.status = "active".to_string();
+                e.user_info = Some(extract_user_info(&user));
             }
 
             tg_manager.spawn_update_listener(client_id.to_string(), client);
@@ -207,6 +210,17 @@ pub async fn bot_sign_in(
             Ok(AuthState::Ready)
         }
         Err(e) => Err(AppError::Internal(format!("Bot 认证失败: {e}"))),
+    }
+}
+
+/// Extract UserInfo from a grammers User object
+fn extract_user_info(user: &grammers_client::types::User) -> UserInfo {
+    UserInfo {
+        user_id: user.id(),
+        username: user.username().map(|s| s.to_string()),
+        first_name: Some(user.first_name().to_string()),
+        last_name: user.last_name().map(|s| s.to_string()),
+        is_bot: user.is_bot(),
     }
 }
 
@@ -316,6 +330,7 @@ mod tests {
                 login_token: None,
                 password_token: None,
                 session_path: "tg_store/test.session".to_string(),
+                user_info: None,
             },
         );
         let db = DbPool::Sqlite(
@@ -344,7 +359,7 @@ mod tests {
         );
         let config = crate::config::Config::load();
         let mgr = Arc::new(crate::services::tg_manager::TgManager::new(
-            config, db.clone(), tg_clients.clone(), Arc::new(RwLock::new(HashMap::new())),
+            config, db.clone(), tg_clients.clone(), Arc::new(RwLock::new(HashMap::new())), Arc::new(RwLock::new(HashMap::new())),
         ));
         let result = submit_code("nonexistent", "12345", &tg_clients, &db, &mgr).await;
         assert!(result.is_err());
@@ -366,6 +381,7 @@ mod tests {
                 login_token: None, // 没有 login_token
                 password_token: None,
                 session_path: "tg_store/test.session".to_string(),
+                user_info: None,
             },
         );
         let db = DbPool::Sqlite(
@@ -376,7 +392,7 @@ mod tests {
         );
         let config = crate::config::Config::load();
         let mgr = Arc::new(crate::services::tg_manager::TgManager::new(
-            config, db.clone(), tg_clients.clone(), Arc::new(RwLock::new(HashMap::new())),
+            config, db.clone(), tg_clients.clone(), Arc::new(RwLock::new(HashMap::new())), Arc::new(RwLock::new(HashMap::new())),
         ));
         let result = submit_code("test_client", "12345", &tg_clients, &db, &mgr).await;
         assert!(result.is_err());
@@ -399,6 +415,7 @@ mod tests {
                 login_token: None,
                 password_token: None, // 没有 password_token
                 session_path: "tg_store/test.session".to_string(),
+                user_info: None,
             },
         );
         let db = DbPool::Sqlite(
@@ -409,7 +426,7 @@ mod tests {
         );
         let config = crate::config::Config::load();
         let mgr = Arc::new(crate::services::tg_manager::TgManager::new(
-            config, db.clone(), tg_clients.clone(), Arc::new(RwLock::new(HashMap::new())),
+            config, db.clone(), tg_clients.clone(), Arc::new(RwLock::new(HashMap::new())), Arc::new(RwLock::new(HashMap::new())),
         ));
         let result = submit_password("test_client", "mypass", &tg_clients, &db, &mgr).await;
         assert!(result.is_err());
@@ -431,7 +448,7 @@ mod tests {
         );
         let config = crate::config::Config::load();
         let mgr = Arc::new(crate::services::tg_manager::TgManager::new(
-            config, db.clone(), tg_clients.clone(), Arc::new(RwLock::new(HashMap::new())),
+            config, db.clone(), tg_clients.clone(), Arc::new(RwLock::new(HashMap::new())), Arc::new(RwLock::new(HashMap::new())),
         ));
         let result = bot_sign_in("nonexistent", "bot:token", &tg_clients, &db, &mgr).await;
         assert!(result.is_err());
