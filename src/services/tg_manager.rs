@@ -444,14 +444,32 @@ impl TgManager {
             loop {
                 interval.tick().await;
 
-                // Find offline clients that have a session file (meaning they were once active)
-                let client_ids: Vec<String> = {
-                    let c = clients.read().await;
-                    c.iter()
-                        .filter(|(_, entry)| entry.status == "offline" && Path::new(&entry.session_path).exists())
-                        .map(|(id, _)| id.clone())
-                        .collect()
+                // Query database for offline clients (source of truth after restart)
+                let client_ids: Vec<String> = match &db {
+                    DbPool::Sqlite(pool) => {
+                        sqlx::query_scalar("SELECT id FROM clients WHERE status = 'offline'")
+                            .fetch_all(pool)
+                            .await
+                            .unwrap_or_default()
+                    }
+                    DbPool::Postgres(pool) => {
+                        sqlx::query_scalar("SELECT id FROM clients WHERE status = 'offline'")
+                            .fetch_all(pool)
+                            .await
+                            .unwrap_or_default()
+                    }
                 };
+
+                // Skip clients whose session file doesn't exist (never logged in)
+                let client_ids: Vec<String> = client_ids.into_iter().filter(|id| {
+                    Path::new(&format!("tg_store/{id}.session")).exists()
+                }).collect();
+
+                if client_ids.is_empty() {
+                    continue;
+                }
+
+                tracing::info!("Auto-reconnect: checking {} offline client(s)", client_ids.len());
 
                 if client_ids.is_empty() {
                     continue;
