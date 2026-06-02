@@ -205,8 +205,14 @@ impl TgManager {
             tracing::info!("Update listener started for client {}", client_id_for_listener);
             let mut consecutive_errors: u32 = 0;
             loop {
-                match client.next_update().await {
-                    Ok(update) => {
+                // next_update with timeout — if proxy dies, this won't hang forever
+                let update_result = tokio::time::timeout(
+                    std::time::Duration::from_secs(60),
+                    client.next_update(),
+                ).await;
+
+                match update_result {
+                    Ok(Ok(update)) => {
                         consecutive_errors = 0;
                         match &update {
                             grammers_client::Update::NewMessage(msg) if !msg.outgoing() => {
@@ -222,7 +228,7 @@ impl TgManager {
                             _ => {}
                         }
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         consecutive_errors += 1;
                         tracing::warn!(
                             "Update listener error for client {} (attempt {}/5): {e}",
@@ -237,6 +243,42 @@ impl TgManager {
                             break;
                         }
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
+                    Err(_) => {
+                        // Timeout — next_update hung for 60s, verify connection with ping
+                        tracing::warn!(
+                            "Update listener timeout for client {}, checking connection...",
+                            client_id_for_listener,
+                        );
+                        let ping_result = tokio::time::timeout(
+                            std::time::Duration::from_secs(10),
+                            client.invoke(&grammers_client::grammers_tl_types::functions::Ping { ping_id: 0 }),
+                        ).await;
+
+                        match ping_result {
+                            Ok(Ok(_)) => {
+                                // Ping succeeded, connection is alive, reset and continue
+                                tracing::info!("Ping OK for client {}, continuing", client_id_for_listener);
+                                consecutive_errors = 0;
+                                continue;
+                            }
+                            _ => {
+                                // Ping failed or timed out — connection is dead
+                                consecutive_errors += 1;
+                                tracing::warn!(
+                                    "Connection check failed for client {} (attempt {}/3)",
+                                    client_id_for_listener,
+                                    consecutive_errors,
+                                );
+                                if consecutive_errors >= 3 {
+                                    tracing::error!(
+                                        "Connection lost for client {}, marking offline",
+                                        client_id_for_listener,
+                                    );
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
             }
