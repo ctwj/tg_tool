@@ -8,6 +8,28 @@ use crate::errors::AppError;
 use crate::models::user::User;
 use crate::state::AppState;
 
+/// Extract user from pre-extracted header strings (Send-safe)
+/// 接受已提取的字符串值而非 &Request，避免跨 .await 持有引用导致 future !Send
+pub async fn extract_current_user_from_parts(
+    state: &AppState,
+    auth_header: Option<&str>,
+    cookie_header: Option<&str>,
+) -> Result<User, AppError> {
+    // Try Authorization header first
+    if let Some(auth_str) = auth_header
+        && let Some(token) = auth_str.strip_prefix("Bearer ") {
+            return validate_token(state, token).await;
+        }
+
+    // Try session cookie
+    if let Some(cookie_str) = cookie_header
+        && let Some(token) = extract_session_token(cookie_str) {
+            return validate_token(state, &token).await;
+        }
+
+    Err(AppError::Unauthorized("未登录".into()))
+}
+
 /// Extract user from Authorization header or session cookie
 pub async fn extract_current_user(state: &AppState, req: &Request) -> Result<User, AppError> {
     // Try Authorization header first
@@ -115,13 +137,16 @@ async fn validate_token(state: &AppState, token: &str) -> Result<User, AppError>
 }
 
 /// User auth middleware (role >= 1)
-/// Gets AppState from request extensions (set via Extension layer)
-pub async fn user_auth_middleware(req: Request, next: Next) -> Response {
+/// Gets AppState via request extensions (injected by Extension layer in routes.rs)
+pub async fn user_auth_middleware(
+    req: Request,
+    next: Next,
+) -> Response {
     let state = req
         .extensions()
         .get::<AppState>()
         .cloned()
-        .expect("AppState extension not configured");
+        .expect("AppState not found in extensions");
 
     match extract_current_user(&state, &req).await {
         Ok(user) => {

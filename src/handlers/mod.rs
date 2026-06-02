@@ -5,6 +5,7 @@ pub mod file;
 pub mod misc;
 pub mod option;
 pub mod push;
+pub mod resource;
 pub mod response;
 pub mod rule;
 pub mod user;

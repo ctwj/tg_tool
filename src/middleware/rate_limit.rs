@@ -1,4 +1,6 @@
-use axum::{extract::Request, http::StatusCode, middleware::Next, response::Response};
+use crate::state::AppState;
+use axum::{Json, extract::Request, http::StatusCode, middleware::Next, response::{IntoResponse, Response}};
+use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -23,12 +25,18 @@ impl RateLimiter {
     }
 }
 
-/// Rate limit middleware
-pub async fn rate_limit_middleware(
-    axum::extract::State(limiter): axum::extract::State<RateLimiter>,
-    req: Request,
-    next: Next,
-) -> Result<Response, StatusCode> {
+/// Rate limit middleware — extracts RateLimiter from AppState extensions
+pub async fn rate_limit_middleware(req: Request, next: Next) -> Response {
+    let limiter = req
+        .extensions()
+        .get::<AppState>()
+        .map(|s| s.rate_limiter.clone());
+
+    let limiter = match limiter {
+        Some(l) => l,
+        None => return next.run(req).await,
+    };
+
     // Get client IP from headers or connection info
     let ip = req
         .headers()
@@ -46,18 +54,25 @@ pub async fn rate_limit_middleware(
     if now.duration_since(entry.1).as_secs() > limiter.window_secs {
         *entry = (1, now);
         drop(map);
-        return Ok(next.run(req).await);
+        return next.run(req).await;
     }
 
     entry.0 += 1;
 
     if entry.0 > limiter.max_requests {
         drop(map);
-        return Err(StatusCode::TOO_MANY_REQUESTS);
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({
+                "success": false,
+                "message": "请求过于频繁，请稍后再试"
+            })),
+        )
+            .into_response();
     }
 
     drop(map);
-    Ok(next.run(req).await)
+    next.run(req).await
 }
 
 #[cfg(test)]

@@ -1,8 +1,11 @@
+pub mod ai_extractor;
 pub mod collector;
 pub mod crypto;
+pub mod extractor;
 pub mod forwarder;
 pub mod message_handler;
 pub mod push;
+pub mod resource;
 pub mod scheduler;
 pub mod tg_api;
 pub mod tg_auth;

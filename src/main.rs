@@ -1,5 +1,6 @@
 use tgTool::config::Config;
 use tgTool::services::crypto;
+use tgTool::services::tg_manager::TgManager;
 use tgTool::state::{AppState, DbPool};
 use tower_http::trace::TraceLayer;
 
@@ -33,10 +34,57 @@ async fn main() {
     ensure_root_user(&db_pool).await;
 
     // Build application state
-    let state = AppState::new(db_pool, config.clone());
+    let tg_clients = std::sync::Arc::new(tokio::sync::RwLock::new(
+        std::collections::HashMap::new(),
+    ));
+    let option_cache = std::sync::Arc::new(tokio::sync::RwLock::new(
+        std::collections::HashMap::new(),
+    ));
+    let peer_cache = std::sync::Arc::new(tokio::sync::RwLock::new(
+        std::collections::HashMap::new(),
+    ));
+    let tg_manager = std::sync::Arc::new(TgManager::new(
+        config.clone(),
+        db_pool.clone(),
+        tg_clients.clone(),
+        option_cache.clone(),
+        peer_cache.clone(),
+    ));
+    let state = AppState::new(db_pool.clone(), config.clone(), tg_manager.clone());
 
     // Load options cache
     load_option_cache(&state).await;
+
+    // Ensure tg_store directory exists
+    std::fs::create_dir_all("tg_store").expect("Failed to create tg_store directory");
+
+    // Reconnect active Telegram clients
+    let reconnected = tg_manager.reconnect_on_startup().await;
+    if !reconnected.is_empty() {
+        tracing::info!("Reconnected {} TG clients", reconnected.len());
+    }
+
+    // Check if auto extract is enabled
+    {
+        let cache = state.option_cache.read().await;
+        let auto_extract = cache.get("push_auto_extract").cloned().unwrap_or_default();
+        let extract_interval: u64 = cache
+            .get("push_extract_interval")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30);
+        drop(cache);
+
+        if auto_extract == "1" || auto_extract.eq_ignore_ascii_case("true") {
+            tracing::info!("Auto extract enabled, starting extract scheduler (interval: {}min)", extract_interval);
+            tgTool::services::scheduler::start_extract_scheduler(
+                state.extract_scheduler.clone(),
+                extract_interval,
+                state.db.clone(),
+                state.option_cache.clone(),
+            )
+            .await;
+        }
+    }
 
     // Build router
     let app = tgTool::routes::build_router(state.clone())
@@ -48,7 +96,38 @@ async fn main() {
     tracing::info!("Server listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+
+    // Run server with graceful shutdown
+    let tg_manager_shutdown = tg_manager.clone();
+    let scheduler_shutdown = state.scheduler.clone();
+    let extract_scheduler_shutdown = state.extract_scheduler.clone();
+
+    tokio::select! {
+        result = axum::serve(listener, app) => {
+            if let Err(e) = result {
+                tracing::error!("Server error: {e}");
+            }
+        }
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Received shutdown signal, starting graceful shutdown...");
+
+            // Stop scheduler
+            tgTool::services::scheduler::stop_scheduler(scheduler_shutdown).await;
+            tgTool::services::scheduler::stop_extract_scheduler(extract_scheduler_shutdown).await;
+            tracing::info!("Schedulers stopped");
+
+            // Graceful shutdown with timeout
+            let shutdown_result = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                tg_manager_shutdown.graceful_shutdown(),
+            ).await;
+
+            if shutdown_result.is_err() {
+                tracing::warn!("Graceful shutdown timed out after 10 seconds");
+            }
+            tracing::info!("Server shutdown complete");
+        }
+    }
 }
 
 async fn init_database(config: &Config) -> DbPool {
@@ -72,21 +151,53 @@ async fn init_database(config: &Config) -> DbPool {
 }
 
 async fn run_migrations(pool: &DbPool) {
-    // Read and execute the migration SQL
-    let migration_sql = include_str!("../migrations/001_init.sql");
-
     match pool {
         DbPool::Sqlite(pool) => {
+            let migration_sql = include_str!("../migrations/001_init_sqlite.sql");
             sqlx::raw_sql(migration_sql)
                 .execute(pool)
                 .await
                 .expect("Failed to run SQLite migrations");
+            // Migration 002: Add client_id to collectors (idempotent — ignore if already exists)
+            let m2 = include_str!("../migrations/002_collector_client_id_sqlite.sql");
+            if let Err(e) = sqlx::raw_sql(m2).execute(pool).await {
+                // "duplicate column name" means already applied — safe to ignore
+                if !e.to_string().contains("duplicate column") {
+                    panic!("Failed to run SQLite migration 002: {e}");
+                }
+                tracing::debug!("SQLite migration 002 skipped (already applied)");
+            }
+            // Migration 003: Create extracted_resources table
+            let m3 = include_str!("../migrations/003_extracted_resources_sqlite.sql");
+            if let Err(e) = sqlx::raw_sql(m3).execute(pool).await {
+                if !e.to_string().contains("already exists") {
+                    panic!("Failed to run SQLite migration 003: {e}");
+                }
+                tracing::debug!("SQLite migration 003 skipped (already applied)");
+            }
         }
         DbPool::Postgres(pool) => {
+            let migration_sql = include_str!("../migrations/001_init_postgres.sql");
             sqlx::raw_sql(migration_sql)
                 .execute(pool)
                 .await
                 .expect("Failed to run PostgreSQL migrations");
+            // Migration 002: Add client_id to collectors (idempotent — ignore if already exists)
+            let m2 = include_str!("../migrations/002_collector_client_id_postgres.sql");
+            if let Err(e) = sqlx::raw_sql(m2).execute(pool).await {
+                if !e.to_string().contains("already exists") && !e.to_string().contains("duplicate") {
+                    panic!("Failed to run PostgreSQL migration 002: {e}");
+                }
+                tracing::debug!("PostgreSQL migration 002 skipped (already applied)");
+            }
+            // Migration 003: Create extracted_resources table
+            let m3 = include_str!("../migrations/003_extracted_resources_postgres.sql");
+            if let Err(e) = sqlx::raw_sql(m3).execute(pool).await {
+                if !e.to_string().contains("already exists") {
+                    panic!("Failed to run PostgreSQL migration 003: {e}");
+                }
+                tracing::debug!("PostgreSQL migration 003 skipped (already applied)");
+            }
         }
     }
 }

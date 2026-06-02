@@ -44,6 +44,14 @@ pub struct Config {
         env = "SESSION_SECRET"
     )]
     pub session_secret: String,
+
+    /// 单 IP 速率限制（请求数/窗口期）
+    #[arg(long, default_value = "100", env = "RATE_LIMIT_MAX")]
+    pub rate_limit_max: usize,
+
+    /// 速率限制窗口（秒）
+    #[arg(long, default_value = "60", env = "RATE_LIMIT_WINDOW")]
+    pub rate_limit_window_secs: u64,
 }
 
 impl Config {
@@ -91,6 +99,8 @@ mod tests {
             sql_dsn: sql_dsn.to_string(),
             redis_conn_string: String::new(),
             session_secret: "test-secret".to_string(),
+            rate_limit_max: 100,
+            rate_limit_window_secs: 60,
         }
     }
 
@@ -137,5 +147,12 @@ mod tests {
     fn test_is_postgres_postgresql_prefix() {
         let config = make_config("postgresql://host/db");
         assert!(config.is_postgres()); // "postgresql" starts with "postgres"
+    }
+
+    #[test]
+    fn test_rate_limit_defaults() {
+        let config = make_config("");
+        assert_eq!(config.rate_limit_max, 100);
+        assert_eq!(config.rate_limit_window_secs, 60);
     }
 }
