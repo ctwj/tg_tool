@@ -36,14 +36,13 @@ pub async fn trigger_extraction(
     option_cache: &OptionCache,
     batch_size: i64,
 ) -> Result<ExtractionResult, AppError> {
-    // 1. 查找没有对应 extracted_resources 记录的 collector_histories
+    // 1. 查找未提取的 collector_histories（通过 is_extracted 标记）
     let histories: Vec<(i64, Option<String>, Option<String>)> = match db {
         DbPool::Sqlite(pool) => {
             sqlx::query_as(
-                "SELECT ch.id, ch.raw_data, ch.remote_id \
-                 FROM collector_histories ch \
-                 LEFT JOIN extracted_resources er ON er.collector_history_id = ch.id \
-                 WHERE er.id IS NULL AND ch.raw_data IS NOT NULL \
+                "SELECT id, raw_data, remote_id \
+                 FROM collector_histories \
+                 WHERE is_extracted = 0 AND raw_data IS NOT NULL \
                  LIMIT ?"
             )
             .bind(batch_size)
@@ -52,10 +51,9 @@ pub async fn trigger_extraction(
         }
         DbPool::Postgres(pool) => {
             sqlx::query_as(
-                "SELECT ch.id, ch.raw_data, ch.remote_id \
-                 FROM collector_histories ch \
-                 LEFT JOIN extracted_resources er ON er.collector_history_id = ch.id \
-                 WHERE er.id IS NULL AND ch.raw_data IS NOT NULL \
+                "SELECT id, raw_data, remote_id \
+                 FROM collector_histories \
+                 WHERE is_extracted = false AND raw_data IS NOT NULL \
                  LIMIT $1"
             )
             .bind(batch_size)
@@ -100,6 +98,7 @@ pub async fn trigger_extraction(
         let drafts = extractor::extract_resources(&raw_text);
         if drafts.is_empty() {
             skipped += 1;
+            mark_extracted(db, *history_id).await?;
             continue;
         }
 
@@ -144,6 +143,8 @@ pub async fn trigger_extraction(
                 }
             }
         }
+        // 标记该历史记录为已提取（无论是否有资源）
+        mark_extracted(db, *history_id).await?;
     }
 
     tracing::info!(
@@ -157,6 +158,25 @@ pub async fn trigger_extraction(
         skipped,
         errors,
     })
+}
+
+/// 标记采集历史为已提取
+async fn mark_extracted(db: &DbPool, history_id: i64) -> Result<(), AppError> {
+    match db {
+        DbPool::Sqlite(pool) => {
+            sqlx::query("UPDATE collector_histories SET is_extracted = 1 WHERE id = ?")
+                .bind(history_id)
+                .execute(pool)
+                .await?;
+        }
+        DbPool::Postgres(pool) => {
+            sqlx::query("UPDATE collector_histories SET is_extracted = true WHERE id = $1")
+                .bind(history_id)
+                .execute(pool)
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 /// 插入新资源记录

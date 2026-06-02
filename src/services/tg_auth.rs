@@ -116,6 +116,11 @@ pub async fn submit_code(
             Err(AppError::BadRequest("该手机号需要先注册 Telegram 账号".into()))
         }
         Err(grammers_client::SignInError::InvalidCode) => {
+            // Restore login_token so user can retry
+            let mut clients = tg_clients.write().await;
+            if let Some(e) = clients.get_mut(client_id) {
+                e.login_token = Some(token);
+            }
             Err(AppError::BadRequest("验证码错误".into()))
         }
         Err(e) => Err(AppError::Internal(format!("验证码验证失败: {e}"))),
@@ -148,7 +153,7 @@ pub async fn submit_password(
 
     drop(clients);
 
-    match client.check_password(password_token, password.as_bytes()).await {
+    match client.check_password(password_token.clone(), password.as_bytes()).await {
         Ok(user) => {
             save_session(client_id, tg_clients).await?;
             update_client_status(client_id, "active", db).await?;
@@ -166,6 +171,11 @@ pub async fn submit_password(
             Ok(AuthState::Ready)
         }
         Err(grammers_client::SignInError::InvalidPassword) => {
+            // Restore password_token so user can retry
+            let mut clients = tg_clients.write().await;
+            if let Some(e) = clients.get_mut(client_id) {
+                e.password_token = Some(password_token);
+            }
             Err(AppError::BadRequest("密码错误".into()))
         }
         Err(e) => Err(AppError::Internal(format!("密码验证失败: {e}"))),

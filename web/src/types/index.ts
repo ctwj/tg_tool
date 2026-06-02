@@ -154,9 +154,14 @@ export interface Option {
 
 // AI Endpoint types
 export interface AiEndpoint {
+  id: string
+  name: string
+  ai_type: 'openai' | 'nvidia' | 'zhipu'
   url: string
   key: string
   model: string
+  enable: boolean
+  request_delay: number
 }
 
 // Resource types

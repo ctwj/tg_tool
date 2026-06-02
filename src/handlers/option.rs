@@ -94,7 +94,7 @@ pub async fn test_ai_endpoint(
         return Err(AppError::BadRequest("请填写模型名称".into()));
     }
 
-    let api_url = format!("{}/v1/chat/completions", url);
+    let api_url = format!("{}/chat/completions", url);
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))

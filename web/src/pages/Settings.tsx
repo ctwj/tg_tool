@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Card, Form, Input, Button, message, Space, Alert, Tabs, Table, Modal, Select, Tag } from 'antd'
+import { Card, Form, Input, Button, message, Space, Alert, Tabs, Modal, Tag, Switch, InputNumber, Select } from 'antd'
 import { CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined, PlusOutlined, ExperimentOutlined, EditOutlined, DeleteOutlined, ApiOutlined } from '@ant-design/icons'
 import apiClient from '../api/client'
 import type { AiEndpoint } from '../types'
@@ -9,6 +9,15 @@ interface ProxyTestResult {
   message: string
   latency_ms?: number
 }
+
+// AI 类型预设配置
+const aiTypePresets: Record<string, { label: string; color: string; url: string; model: string; delay: number }> = {
+  openai: { label: 'OpenAI 兼容', color: 'green', url: 'https://api.openai.com/v1', model: 'gpt-4o-mini', delay: 500 },
+  nvidia: { label: 'NVIDIA NIM', color: 'orangered', url: 'https://integrate.api.nvidia.com/v1', model: 'abacusai/dracarys-llama-3.1-70b-instruct', delay: 2000 },
+  zhipu: { label: '智普 GLM', color: 'blue', url: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash', delay: 1000 },
+}
+
+const generateId = () => 'cfg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9)
 
 const Settings: React.FC = () => {
   // ─── 基本设置 ───
@@ -20,8 +29,6 @@ const Settings: React.FC = () => {
 
   // ─── 大模型配置 ───
   const [endpoints, setEndpoints] = useState<AiEndpoint[]>([])
-  const [extractMode, setExtractMode] = useState<string>('rule')
-  const [aiPrompt, setAiPrompt] = useState<string>('')
   const [aiSaving, setAiSaving] = useState(false)
   const [editModalOpen, setEditModalOpen] = useState(false)
   const [editingIndex, setEditingIndex] = useState<number>(-1)
@@ -39,8 +46,6 @@ const Settings: React.FC = () => {
       if (res.data.env_defaults) setEnvDefaults(res.data.env_defaults)
 
       // 大模型配置
-      setExtractMode(data.push_extract_mode || 'rule')
-      setAiPrompt(data.push_ai_prompt || '')
       const endpointsStr = data.push_ai_endpoints || '[]'
       try {
         setEndpoints(JSON.parse(endpointsStr))
@@ -104,9 +109,7 @@ const Settings: React.FC = () => {
     setAiSaving(true)
     try {
       await apiClient.put('/push/extract-config', {
-        extract_mode: extractMode,
         ai_endpoints: JSON.stringify(endpoints),
-        ai_prompt: aiPrompt,
       })
       message.success('大模型配置已保存')
     } catch (e: any) {
@@ -116,19 +119,51 @@ const Settings: React.FC = () => {
     }
   }
 
-  const openEditModal = (index: number = -1) => {
-    setEditingIndex(index)
-    if (index >= 0 && endpoints[index]) {
-      editForm.setFieldsValue({ ...endpoints[index] })
-    } else {
-      editForm.resetFields()
-    }
+  const openAddModal = () => {
+    setEditingIndex(-1)
+    const preset = aiTypePresets.openai
+    editForm.resetFields()
+    editForm.setFieldsValue({
+      id: generateId(),
+      name: '',
+      ai_type: 'openai',
+      url: preset.url,
+      key: '',
+      model: preset.model,
+      enable: true,
+      request_delay: preset.delay,
+    })
     setEditModalOpen(true)
+  }
+
+  const openEditModal = (index: number) => {
+    setEditingIndex(index)
+    editForm.setFieldsValue({ ...endpoints[index] })
+    setEditModalOpen(true)
+  }
+
+  const handleAiTypeChange = (value: string) => {
+    const preset = aiTypePresets[value]
+    if (preset) {
+      editForm.setFieldsValue({
+        url: preset.url,
+        model: preset.model,
+        request_delay: preset.delay,
+      })
+    }
   }
 
   const saveEndpoint = async () => {
     try {
       const values = await editForm.validateFields()
+      // 确保有 id
+      if (!values.id) values.id = generateId()
+      // 如果没填名称，自动生成
+      if (!values.name) {
+        const preset = aiTypePresets[values.ai_type]
+        values.name = `${preset?.label || values.ai_type} 配置`
+      }
+
       const newEndpoints = [...endpoints]
       if (editingIndex >= 0) {
         newEndpoints[editingIndex] = values
@@ -142,10 +177,15 @@ const Settings: React.FC = () => {
     }
   }
 
+  const toggleEndpoint = (index: number, enable: boolean) => {
+    const newEndpoints = [...endpoints]
+    newEndpoints[index] = { ...newEndpoints[index], enable }
+    setEndpoints(newEndpoints)
+  }
+
   const deleteEndpoint = (index: number) => {
     const newEndpoints = endpoints.filter((_, i) => i !== index)
     setEndpoints(newEndpoints)
-    // 清除该索引的测试结果
     const newResults = { ...testResults }
     delete newResults[index]
     setTestResults(newResults)
@@ -192,81 +232,6 @@ const Settings: React.FC = () => {
     if (key.length <= 8) return '***'
     return key.slice(0, 4) + '***' + key.slice(-4)
   }
-
-  // ─── 端点表格列 ───
-
-  const endpointColumns = [
-    {
-      title: 'API 地址',
-      dataIndex: 'url',
-      key: 'url',
-      ellipsis: true,
-    },
-    {
-      title: '模型',
-      dataIndex: 'model',
-      key: 'model',
-      width: 150,
-    },
-    {
-      title: '密钥',
-      dataIndex: 'key',
-      key: 'key',
-      width: 140,
-      render: (v: string) => <span style={{ color: '#999' }}>{maskKey(v)}</span>,
-    },
-    {
-      title: '状态',
-      key: 'status',
-      width: 80,
-      render: (_: any, __: AiEndpoint, index: number) => {
-        const r = testResults[index]
-        if (!r) return <Tag>未测试</Tag>
-        return r.success
-          ? <Tag color="green">{r.latency_ms}ms</Tag>
-          : <Tag color="red">失败</Tag>
-      },
-    },
-    {
-      title: '操作',
-      key: 'action',
-      width: 180,
-      render: (_: any, __: AiEndpoint, index: number) => (
-        <Space size="small">
-          <Button
-            type="link"
-            size="small"
-            icon={<EditOutlined />}
-            onClick={() => openEditModal(index)}
-          >
-            编辑
-          </Button>
-          <Button
-            type="link"
-            size="small"
-            icon={<ExperimentOutlined />}
-            loading={testingIndex === index}
-            onClick={() => testEndpoint(index)}
-          >
-            测试
-          </Button>
-          <Button
-            type="link"
-            size="small"
-            danger
-            icon={<DeleteOutlined />}
-            onClick={() => {
-              Modal.confirm({
-                title: '确认删除',
-                content: `确定要删除 ${endpoints[index]?.model || '该端点'} 吗？`,
-                onOk: () => deleteEndpoint(index),
-              })
-            }}
-          />
-        </Space>
-      ),
-    },
-  ]
 
   // ─── 渲染 ───
 
@@ -386,41 +351,22 @@ const Settings: React.FC = () => {
             children: (
               <Card>
                 <Alert
-                  message="配置 AI 大模型端点后，可在资源提取时启用 AI 增强模式，提升提取质量。支持 OpenAI 兼容格式（OpenAI、DeepSeek、通义千问、Ollama 等）。"
+                  message="配置 AI 大模型端点，支持 OpenAI 兼容格式。API 地址需包含版本路径（如 /v1）。多个端点将轮询使用。"
                   type="info"
                   showIcon
                   style={{ marginBottom: 24 }}
                 />
 
-                {/* 提取模式 */}
+                {/* 端点列表 — 卡片式 */}
                 <div style={{ marginBottom: 24 }}>
-                  <div style={{ marginBottom: 8, fontWeight: 500 }}>提取模式</div>
-                  <Space>
-                    <Select
-                      value={extractMode}
-                      onChange={setExtractMode}
-                      style={{ width: 200 }}
-                      options={[
-                        { label: '规则提取（推荐）', value: 'rule' },
-                        { label: 'AI 增强', value: 'ai' },
-                      ]}
-                    />
-                    {extractMode === 'ai' && (
-                      <Tag color="blue">AI 模式已启用</Tag>
-                    )}
-                  </Space>
-                </div>
-
-                {/* 端点列表 */}
-                <div style={{ marginBottom: 24 }}>
-                  <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontWeight: 500 }}>API 端点列表</span>
+                  <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontWeight: 500 }}>API 配置列表</span>
                     <Button
                       type="dashed"
                       icon={<PlusOutlined />}
-                      onClick={() => openEditModal(-1)}
+                      onClick={openAddModal}
                     >
-                      添加端点
+                      添加配置
                     </Button>
                   </div>
 
@@ -433,32 +379,86 @@ const Settings: React.FC = () => {
                       borderRadius: 8,
                     }}>
                       <ApiOutlined style={{ fontSize: 32, marginBottom: 8 }} />
-                      <div>暂无 AI 端点，点击上方按钮添加</div>
+                      <div>暂无 API 配置，点击上方按钮添加</div>
                     </div>
                   ) : (
-                    <Table
-                      dataSource={endpoints.map((ep, i) => ({ ...ep, key: i }))}
-                      columns={endpointColumns}
-                      pagination={false}
-                      size="small"
-                    />
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                      {endpoints.map((ep, index) => {
+                        const preset = aiTypePresets[ep.ai_type] || aiTypePresets.openai
+                        const testResult = testResults[index]
+                        return (
+                          <div
+                            key={ep.id || index}
+                            style={{
+                              border: '1px solid #f0f0f0',
+                              borderRadius: 8,
+                              padding: '12px 16px',
+                              transition: 'border-color 0.3s',
+                            }}
+                          >
+                            {/* 上行：开关、名称、标签、操作 */}
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <Switch
+                                  size="small"
+                                  checked={ep.enable}
+                                  onChange={(checked) => toggleEndpoint(index, checked)}
+                                />
+                                <span style={{ fontWeight: 500, fontSize: 14 }}>
+                                  {ep.name || '未命名配置'}
+                                </span>
+                                <Tag color={preset.color} style={{ margin: 0 }}>
+                                  {preset.label}
+                                </Tag>
+                                {!ep.enable && (
+                                  <span style={{ fontSize: 12, color: '#bbb' }}>已禁用</span>
+                                )}
+                                {testResult && (
+                                  testResult.success
+                                    ? <Tag color="green" style={{ margin: 0 }}>{testResult.latency_ms}ms</Tag>
+                                    : <Tag color="red" style={{ margin: 0 }}>失败</Tag>
+                                )}
+                              </div>
+                              <Space size="small">
+                                <Button
+                                  type="link"
+                                  size="small"
+                                  icon={<ExperimentOutlined />}
+                                  loading={testingIndex === index}
+                                  onClick={() => testEndpoint(index)}
+                                >
+                                  测试
+                                </Button>
+                                <Button
+                                  type="link"
+                                  size="small"
+                                  icon={<EditOutlined />}
+                                  onClick={() => openEditModal(index)}
+                                />
+                                <Button
+                                  type="link"
+                                  size="small"
+                                  danger
+                                  icon={<DeleteOutlined />}
+                                  onClick={() => {
+                                    Modal.confirm({
+                                      title: '确认删除',
+                                      content: `确定要删除「${ep.name || '该配置'}」吗？`,
+                                      onOk: () => deleteEndpoint(index),
+                                    })
+                                  }}
+                                />
+                              </Space>
+                            </div>
+                            {/* 下行：详情 */}
+                            <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
+                              {ep.url} | {ep.model} | 密钥: {maskKey(ep.key)} | 延迟: {ep.request_delay || 0}ms
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
                   )}
-                </div>
-
-                {/* 默认提示词 */}
-                <div style={{ marginBottom: 24 }}>
-                  <div style={{ marginBottom: 8, fontWeight: 500 }}>
-                    AI 提示词模板
-                    <span style={{ fontWeight: 'normal', color: '#999', marginLeft: 8 }}>
-                      （可选，留空使用默认提示词）
-                    </span>
-                  </div>
-                  <Input.TextArea
-                    value={aiPrompt}
-                    onChange={e => setAiPrompt(e.target.value)}
-                    rows={3}
-                    placeholder="从以下 Telegram 消息中提取结构化资源信息..."
-                  />
                 </div>
 
                 {/* 保存 */}
@@ -477,7 +477,7 @@ const Settings: React.FC = () => {
 
       {/* 添加/编辑端点弹窗 */}
       <Modal
-        title={editingIndex >= 0 ? '编辑 AI 端点' : '添加 AI 端点'}
+        title={editingIndex >= 0 ? '编辑 API 配置' : '添加 API 配置'}
         open={editModalOpen}
         onCancel={() => setEditModalOpen(false)}
         onOk={saveEndpoint}
@@ -485,14 +485,44 @@ const Settings: React.FC = () => {
         width={520}
       >
         <Form form={editForm} layout="vertical">
+          <Form.Item name="id" hidden>
+            <Input />
+          </Form.Item>
+
+          <Form.Item
+            name="name"
+            label="配置名称"
+            rules={[{ required: true, message: '请填写配置名称' }]}
+          >
+            <Input placeholder="如：OpenAI 主力、DeepSeek 备用" />
+          </Form.Item>
+
+          <Form.Item
+            name="ai_type"
+            label="AI 类型"
+            rules={[{ required: true, message: '请选择 AI 类型' }]}
+          >
+            <Select onChange={handleAiTypeChange}>
+              {Object.entries(aiTypePresets).map(([key, cfg]) => (
+                <Select.Option key={key} value={key}>
+                  <Space>
+                    <Tag color={cfg.color} style={{ margin: 0 }}>{cfg.label}</Tag>
+                  </Space>
+                  {cfg.label}
+                </Select.Option>
+              ))}
+            </Select>
+          </Form.Item>
+
           <Form.Item
             name="url"
             label="API 地址"
             rules={[{ required: true, message: '请填写 API 地址' }]}
-            extra="如 https://api.openai.com 或 https://api.deepseek.com"
+            extra="需包含完整路径，如 https://api.openai.com/v1"
           >
-            <Input placeholder="https://api.openai.com" />
+            <Input placeholder="https://api.openai.com/v1" />
           </Form.Item>
+
           <Form.Item
             name="key"
             label="API 密钥"
@@ -500,6 +530,7 @@ const Settings: React.FC = () => {
           >
             <Input.Password placeholder="sk-xxxxxxxx" />
           </Form.Item>
+
           <Form.Item
             name="model"
             label="模型名称"
@@ -507,6 +538,22 @@ const Settings: React.FC = () => {
             extra="如 gpt-4o、deepseek-chat、qwen-plus"
           >
             <Input placeholder="gpt-4o" />
+          </Form.Item>
+
+          <Form.Item
+            name="request_delay"
+            label="请求延迟 (ms)"
+            help="每次请求后的等待时间，避免 API 限流。NVIDIA 建议 2000ms 以上"
+          >
+            <InputNumber min={0} max={10000} step={100} style={{ width: '100%' }} placeholder="1000" />
+          </Form.Item>
+
+          <Form.Item
+            name="enable"
+            label="启用"
+            valuePropName="checked"
+          >
+            <Switch />
           </Form.Item>
         </Form>
       </Modal>

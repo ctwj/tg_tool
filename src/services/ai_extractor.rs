@@ -12,9 +12,27 @@ static ENDPOINT_COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// AI API 端点配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiEndpoint {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default = "default_ai_type")]
+    pub ai_type: String,
     pub url: String,
     pub key: String,
     pub model: String,
+    #[serde(default = "default_true")]
+    pub enable: bool,
+    #[serde(default)]
+    pub request_delay: u64,
+}
+
+fn default_ai_type() -> String {
+    "openai".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// OpenAI 兼容 API 响应中的资源结构
@@ -43,13 +61,14 @@ pub async fn parse_ai_endpoints_async(option_cache: &OptionCache) -> Vec<AiEndpo
     serde_json::from_str(&endpoints_json).unwrap_or_default()
 }
 
-/// 轮询选择下一个端点
+/// 轮询选择下一个启用的端点
 pub fn select_endpoint(endpoints: &[AiEndpoint]) -> Option<&AiEndpoint> {
-    if endpoints.is_empty() {
+    let enabled: Vec<&AiEndpoint> = endpoints.iter().filter(|e| e.enable).collect();
+    if enabled.is_empty() {
         return None;
     }
-    let idx = ENDPOINT_COUNTER.fetch_add(1, Ordering::Relaxed) % endpoints.len();
-    Some(&endpoints[idx])
+    let idx = ENDPOINT_COUNTER.fetch_add(1, Ordering::Relaxed) % enabled.len();
+    Some(enabled[idx])
 }
 
 /// 默认提示词模板
@@ -62,11 +81,16 @@ pub async fn call_ai_api(
     message: &str,
 ) -> Result<AiExtractResult, String> {
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
 
-    let api_url = format!("{}/v1/chat/completions", endpoint.url.trim_end_matches('/'));
+    let api_url = format!("{}/chat/completions", endpoint.url.trim_end_matches('/'));
+
+    // 请求延迟：避免 API 限流
+    if endpoint.request_delay > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(endpoint.request_delay)).await;
+    }
 
     let system_prompt = if prompt.is_empty() {
         DEFAULT_PROMPT.to_string()
