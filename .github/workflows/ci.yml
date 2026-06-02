@@ -2,10 +2,13 @@ name: CI
 
 on:
   push:
-    branches: [main, "001-*"]
     tags: ["v*"]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. v1.0.0)"
+        required: true
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -13,7 +16,7 @@ env:
 
 jobs:
   # ==========================================================
-  # 检查 & 测试（每次 push/PR 都运行）
+  # 检查 & 测试
   # ==========================================================
   check:
     name: Check & Lint
@@ -71,12 +74,11 @@ jobs:
         run: cargo test --locked
 
   # ==========================================================
-  # 构建 Release 产物（仅打 tag 时运行）
+  # 构建 Release 产物
   # ==========================================================
   build:
     name: Build ${{ matrix.target }}
     needs: [check, test]
-    if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       matrix:
         include:
@@ -142,17 +144,37 @@ jobs:
           if-no-files-found: error
 
   # ==========================================================
-  # 创建 GitHub Release（仅打 tag 时运行）
+  # 创建 GitHub Release
   # ==========================================================
   release:
     name: Create Release
     needs: [build]
-    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          # Ensure v prefix
+          if [[ ! "$VERSION" =~ ^v ]]; then
+            VERSION="v${VERSION}"
+          fi
+          echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag (manual trigger)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git tag ${{ steps.version.outputs.tag }}
+          git push origin ${{ steps.version.outputs.tag }}
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -171,6 +193,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
           generate_release_notes: true
           files: |
             artifacts/**/*
