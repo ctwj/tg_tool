@@ -29,10 +29,26 @@ impl DbPool {
 pub type TgClientMap = Arc<RwLock<HashMap<String, TgClientEntry>>>;
 
 /// A single Telegram client entry
-#[derive(Debug)]
 pub struct TgClientEntry {
     pub status: String,
     pub handle: Option<tokio::task::JoinHandle<()>>,
+    pub client: Option<grammers_client::Client>,
+    pub login_token: Option<grammers_client::types::LoginToken>,
+    pub password_token: Option<grammers_client::types::PasswordToken>,
+    pub session_path: String,
+}
+
+impl std::fmt::Debug for TgClientEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TgClientEntry")
+            .field("status", &self.status)
+            .field("has_handle", &self.handle.is_some())
+            .field("has_client", &self.client.is_some())
+            .field("has_login_token", &self.login_token.is_some())
+            .field("has_password_token", &self.password_token.is_some())
+            .field("session_path", &self.session_path)
+            .finish()
+    }
 }
 
 /// System option cache (key -> value)
@@ -45,15 +61,23 @@ pub struct AppState {
     pub config: crate::config::Config,
     pub tg_clients: TgClientMap,
     pub option_cache: OptionCache,
+    pub tg_manager: std::sync::Arc<crate::services::tg_manager::TgManager>,
+    pub scheduler: crate::services::scheduler::SchedulerHandle,
 }
 
 impl AppState {
-    pub fn new(db: DbPool, config: crate::config::Config) -> Self {
+    pub fn new(
+        db: DbPool,
+        config: crate::config::Config,
+        tg_manager: std::sync::Arc<crate::services::tg_manager::TgManager>,
+    ) -> Self {
         Self {
             db,
             config,
-            tg_clients: Arc::new(RwLock::new(HashMap::new())),
-            option_cache: Arc::new(RwLock::new(HashMap::new())),
+            tg_clients: tg_manager.clients().clone(),
+            option_cache: tg_manager.option_cache().clone(),
+            tg_manager,
+            scheduler: crate::services::scheduler::create_scheduler(),
         }
     }
 

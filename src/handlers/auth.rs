@@ -99,11 +99,56 @@ pub async fn get_me(
 }
 
 pub async fn update_me(
-    State(_state): State<AppState>,
-    axum::extract::Extension(_user): axum::extract::Extension<User>,
-    Json(_req): Json<serde_json::Value>,
+    State(state): State<AppState>,
+    axum::extract::Extension(user): axum::extract::Extension<User>,
+    Json(body): Json<serde_json::Value>,
 ) -> Result<Json<Value>, AppError> {
-    // TODO: implement update profile
+    let display_name = body.get("display_name").and_then(|v| v.as_str());
+    let email = body.get("email").and_then(|v| v.as_str());
+    let password = body.get("password").and_then(|v| v.as_str());
+
+    // Build dynamic SET clause
+    let has_update = display_name.is_some() || email.is_some() || password.is_some();
+    if !has_update {
+        return Ok(Json(json!({ "success": true, "message": "更新成功" })));
+    }
+
+    let hashed = match password {
+        Some(pw) => Some(crypto::hash_password(pw)?),
+        None => None,
+    };
+
+    match &state.db {
+        crate::state::DbPool::Sqlite(pool) => {
+            let mut sets = Vec::new();
+            if display_name.is_some() { sets.push("display_name = ?"); }
+            if email.is_some() { sets.push("email = ?"); }
+            if hashed.is_some() { sets.push("password = ?"); }
+            sets.push("updated_at = CURRENT_TIMESTAMP");
+            let sql = format!("UPDATE users SET {} WHERE id = ?", sets.join(", "));
+            let mut q = sqlx::query(&sql);
+            if let Some(v) = display_name { q = q.bind(v); }
+            if let Some(v) = email { q = q.bind(v); }
+            if let Some(v) = &hashed { q = q.bind(v); }
+            q = q.bind(user.id);
+            q.execute(pool).await?;
+        }
+        crate::state::DbPool::Postgres(pool) => {
+            let mut pg_parts = Vec::new();
+            let mut pg_idx = 1u32;
+            if display_name.is_some() { pg_parts.push(format!("display_name = ${pg_idx}")); pg_idx += 1; }
+            if email.is_some() { pg_parts.push(format!("email = ${pg_idx}")); pg_idx += 1; }
+            if hashed.is_some() { pg_parts.push(format!("password = ${pg_idx}")); pg_idx += 1; }
+            pg_parts.push("updated_at = CURRENT_TIMESTAMP".to_string());
+            let sql = format!("UPDATE users SET {} WHERE id = ${pg_idx}", pg_parts.join(", "));
+            let mut q = sqlx::query(&sql);
+            if let Some(v) = display_name { q = q.bind(v); }
+            if let Some(v) = email { q = q.bind(v); }
+            if let Some(v) = &hashed { q = q.bind(v); }
+            q = q.bind(user.id);
+            q.execute(pool).await?;
+        }
+    }
     Ok(Json(json!({ "success": true, "message": "更新成功" })))
 }
 

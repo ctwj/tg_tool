@@ -1,5 +1,6 @@
 use tgTool::config::Config;
 use tgTool::services::crypto;
+use tgTool::services::tg_manager::TgManager;
 use tgTool::state::{AppState, DbPool};
 use tower_http::trace::TraceLayer;
 
@@ -33,10 +34,31 @@ async fn main() {
     ensure_root_user(&db_pool).await;
 
     // Build application state
-    let state = AppState::new(db_pool, config.clone());
+    let tg_clients = std::sync::Arc::new(tokio::sync::RwLock::new(
+        std::collections::HashMap::new(),
+    ));
+    let option_cache = std::sync::Arc::new(tokio::sync::RwLock::new(
+        std::collections::HashMap::new(),
+    ));
+    let tg_manager = std::sync::Arc::new(TgManager::new(
+        config.clone(),
+        db_pool.clone(),
+        tg_clients.clone(),
+        option_cache.clone(),
+    ));
+    let state = AppState::new(db_pool.clone(), config.clone(), tg_manager.clone());
 
     // Load options cache
     load_option_cache(&state).await;
+
+    // Ensure tg_store directory exists
+    std::fs::create_dir_all("tg_store").expect("Failed to create tg_store directory");
+
+    // Reconnect active Telegram clients
+    let reconnected = tg_manager.reconnect_on_startup().await;
+    if !reconnected.is_empty() {
+        tracing::info!("Reconnected {} TG clients", reconnected.len());
+    }
 
     // Build router
     let app = tgTool::routes::build_router(state.clone())
@@ -72,17 +94,16 @@ async fn init_database(config: &Config) -> DbPool {
 }
 
 async fn run_migrations(pool: &DbPool) {
-    // Read and execute the migration SQL
-    let migration_sql = include_str!("../migrations/001_init.sql");
-
     match pool {
         DbPool::Sqlite(pool) => {
+            let migration_sql = include_str!("../migrations/001_init_sqlite.sql");
             sqlx::raw_sql(migration_sql)
                 .execute(pool)
                 .await
                 .expect("Failed to run SQLite migrations");
         }
         DbPool::Postgres(pool) => {
+            let migration_sql = include_str!("../migrations/001_init_postgres.sql");
             sqlx::raw_sql(migration_sql)
                 .execute(pool)
                 .await
