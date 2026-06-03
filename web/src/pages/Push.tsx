@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react'
 import { Button, Table, message, Space, Modal, Form, Input, InputNumber, Switch, Select, Statistic, Card, Row, Col, Tag, Typography, Divider } from 'antd'
-import { RocketOutlined, ReloadOutlined, SettingOutlined, BarChartOutlined, HistoryOutlined } from '@ant-design/icons'
+import { RocketOutlined, ReloadOutlined, SettingOutlined, BarChartOutlined } from '@ant-design/icons'
 import apiClient from '../api/client'
+import PageHeader from '../components/PageHeader'
 
 const { Text } = Typography
 
@@ -45,14 +46,12 @@ const Push: React.FC = () => {
       const res = await apiClient.get('/options')
       const data = res.data.data ?? {}
       form.setFieldsValue({
-        // 基本推送配置
         api_url: data.push_api_url || '',
         api_token: data.push_api_token || '',
         target: data.push_target || '',
         batch_size: parseInt(data.push_batch_size) || 1000,
         auto_push: data.push_auto_push === '1' || data.push_auto_push === 'true',
         interval: parseInt(data.push_interval) || 30,
-        // 资源提取配置
         extract_mode: data.push_extract_mode || 'rule',
         auto_extract: data.push_auto_extract === '1' || data.push_auto_extract === 'true',
         extract_interval: parseInt(data.push_extract_interval) || 30,
@@ -64,10 +63,9 @@ const Push: React.FC = () => {
 
   useEffect(() => { fetchHistories(1); fetchStats() }, [])
 
-  // 手动推送 — 先调用 config-check
+  // 手动推送
   const triggerPush = async () => {
     try {
-      // 推送前配置校验
       const checkRes = await apiClient.get('/push/config-check')
       if (checkRes.data?.success) {
         const { is_valid, missing } = checkRes.data.data || {}
@@ -103,7 +101,6 @@ const Push: React.FC = () => {
     }
   }
 
-  // 重试失败
   const retryFailed = async () => {
     try {
       const res = await apiClient.post('/push/retry')
@@ -114,17 +111,14 @@ const Push: React.FC = () => {
     }
   }
 
-  // 打开配置弹窗
   const openConfig = () => {
     fetchConfig()
     setConfigOpen(true)
   }
 
-  // 保存配置
   const saveConfig = async (values: any) => {
     setConfigSaving(true)
     try {
-      // 保存基本推送配置
       await apiClient.put('/push/scheduler', {
         api_url: values.api_url || '',
         api_token: values.api_token || '',
@@ -134,7 +128,6 @@ const Push: React.FC = () => {
         interval: values.interval || 30,
       })
 
-      // 保存资源提取配置
       await apiClient.put('/push/extract-config', {
         extract_mode: values.extract_mode || 'rule',
         auto_extract: values.auto_extract ? '1' : '0',
@@ -152,7 +145,6 @@ const Push: React.FC = () => {
     }
   }
 
-  // 打开统计弹窗
   const openStats = async () => {
     await fetchStats()
     setStatsOpen(true)
@@ -164,8 +156,8 @@ const Push: React.FC = () => {
     {
       title: '状态', dataIndex: 'status', key: 'status', width: 80,
       render: (v: string) => v === 'success'
-        ? <Tag color="green">成功</Tag>
-        : <Tag color="red">失败</Tag>,
+        ? <Tag color="green" style={{ margin: 0 }}>成功</Tag>
+        : <Tag color="red" style={{ margin: 0 }}>失败</Tag>,
     },
     { title: '数据量', dataIndex: 'data_count', key: 'data_count', width: 80 },
     { title: '消息', dataIndex: 'message', key: 'message', ellipsis: true },
@@ -181,15 +173,16 @@ const Push: React.FC = () => {
 
   return (
     <div>
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h2 style={{ margin: 0 }}>
-          <HistoryOutlined /> 推送管理
-        </h2>
-        <Space>
-          <Button icon={<BarChartOutlined />} onClick={openStats}>推送统计</Button>
-          <Button icon={<SettingOutlined />} onClick={openConfig}>推送配置</Button>
-        </Space>
-      </div>
+      <PageHeader
+        title="推送管理"
+        description="管理消息推送和调度配置"
+        extra={
+          <Space>
+            <Button icon={<BarChartOutlined />} onClick={openStats}>推送统计</Button>
+            <Button icon={<SettingOutlined />} onClick={openConfig}>推送配置</Button>
+          </Space>
+        }
+      />
 
       {/* 操作栏 */}
       <Space style={{ marginBottom: 16 }}>
@@ -212,6 +205,7 @@ const Push: React.FC = () => {
           showTotal: (t) => `共 ${t} 条`,
           size: 'small',
         }}
+        style={{ background: '#fff', borderRadius: 12 }}
       />
 
       {/* 推送统计弹窗 */}
@@ -224,24 +218,18 @@ const Push: React.FC = () => {
       >
         <Row gutter={16}>
           <Col span={8}>
-            <Card>
-              <Statistic title="总推送" value={stats.total} prefix={<RocketOutlined />} />
-            </Card>
+            <Card><Statistic title="总推送" value={stats.total} prefix={<RocketOutlined />} /></Card>
           </Col>
           <Col span={8}>
-            <Card>
-              <Statistic title="成功" value={stats.success} valueStyle={{ color: '#3f8600' }} />
-            </Card>
+            <Card><Statistic title="成功" value={stats.success} valueStyle={{ color: '#3f8600' }} /></Card>
           </Col>
           <Col span={8}>
-            <Card>
-              <Statistic title="失败" value={stats.failed} valueStyle={{ color: '#cf1322' }} />
-            </Card>
+            <Card><Statistic title="失败" value={stats.failed} valueStyle={{ color: '#cf1322' }} /></Card>
           </Col>
         </Row>
       </Modal>
 
-      {/* 推送配置弹窗 — 拆分两组 */}
+      {/* 推送配置弹窗 */}
       <Modal
         title="推送配置"
         open={configOpen}
@@ -252,7 +240,6 @@ const Push: React.FC = () => {
         width={700}
       >
         <Form form={form} onFinish={saveConfig} layout="vertical">
-          {/* 第一组：基本推送配置 */}
           <Divider orientation="left">基本推送配置</Divider>
           <Form.Item name="api_url" label="推送 API 地址"
             rules={[{ required: true, message: '请填写推送 API 地址' }]}
@@ -290,7 +277,6 @@ const Push: React.FC = () => {
             ) : null}
           </Form.Item>
 
-          {/* 第二组：资源提取配置 */}
           <Divider orientation="left">资源提取配置</Divider>
           <Row gutter={16}>
             <Col span={12}>

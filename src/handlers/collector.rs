@@ -14,6 +14,7 @@ pub struct PaginationParams {
     pub channel_id: Option<i64>,
     pub collector_id: Option<i64>,
     pub keyword: Option<String>,
+    pub is_extracted: Option<bool>,
 }
 
 const SELECT_COLLECTOR: &str = "SELECT id, user_id, client_id, channel_id, channel_name, collector_type, is_active, remark, created_at, updated_at FROM collectors";
@@ -277,38 +278,55 @@ pub async fn list_histories(
     let page_size = params.page_size.unwrap_or(20).clamp(1, 100);
     let offset = (page - 1) * page_size;
 
+    // Build is_extracted WHERE clause
+    let ext_sql = match params.is_extracted {
+        Some(v) => format!(" AND is_extracted = {}", if v { 1 } else { 0 }),
+        None => String::new(),
+    };
+
     let (list, total): (Vec<crate::models::collector_history::CollectorHistory>, i64) = match (&state.db, &params.collector_id) {
-        // Filtered by collector_id
         (crate::state::DbPool::Sqlite(pool), Some(cid)) => {
-            let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM collector_histories WHERE collector_id = ?")
-                .bind(cid).fetch_one(pool).await?;
+            let total: i64 = sqlx::query_scalar(
+                &format!("SELECT COUNT(*) FROM collector_histories WHERE collector_id = ?{ext_sql}")
+            ).bind(cid).fetch_one(pool).await?;
             let list = sqlx::query_as(
-                "SELECT id, collector_id, channel_id, message_id, post_time, raw_data, is_auto_push, remote_id, created_at FROM collector_histories WHERE collector_id = ? ORDER BY id DESC LIMIT ? OFFSET ?"
+                &format!("SELECT id, collector_id, channel_id, message_id, post_time, raw_data, is_auto_push, remote_id, created_at, is_extracted FROM collector_histories WHERE collector_id = ?{ext_sql} ORDER BY id DESC LIMIT ? OFFSET ?")
             ).bind(cid).bind(page_size).bind(offset).fetch_all(pool).await?;
             (list, total)
         }
         (crate::state::DbPool::Postgres(pool), Some(cid)) => {
-            let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM collector_histories WHERE collector_id = $1")
-                .bind(cid).fetch_one(pool).await?;
+            let ext_sql_pg = match params.is_extracted {
+                Some(v) => format!(" AND is_extracted = {}", v),
+                None => String::new(),
+            };
+            let total: i64 = sqlx::query_scalar(
+                &format!("SELECT COUNT(*) FROM collector_histories WHERE collector_id = $1{ext_sql_pg}")
+            ).bind(cid).fetch_one(pool).await?;
             let list = sqlx::query_as(
-                "SELECT id, collector_id, channel_id, message_id, post_time, raw_data, is_auto_push, remote_id, created_at FROM collector_histories WHERE collector_id = $1 ORDER BY id DESC LIMIT $2 OFFSET $3"
+                &format!("SELECT id, collector_id, channel_id, message_id, post_time, raw_data, is_auto_push, remote_id, created_at, is_extracted FROM collector_histories WHERE collector_id = $1{ext_sql_pg} ORDER BY id DESC LIMIT $2 OFFSET $3")
             ).bind(cid).bind(page_size).bind(offset).fetch_all(pool).await?;
             (list, total)
         }
-        // No filter — return all
         (crate::state::DbPool::Sqlite(pool), None) => {
-            let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM collector_histories")
-                .fetch_one(pool).await?;
+            let where_clause = if ext_sql.is_empty() { String::new() } else { format!(" WHERE 1=1{ext_sql}") };
+            let total: i64 = sqlx::query_scalar(
+                &format!("SELECT COUNT(*) FROM collector_histories{where_clause}")
+            ).fetch_one(pool).await?;
             let list = sqlx::query_as(
-                "SELECT id, collector_id, channel_id, message_id, post_time, raw_data, is_auto_push, remote_id, created_at FROM collector_histories ORDER BY id DESC LIMIT ? OFFSET ?"
+                &format!("SELECT id, collector_id, channel_id, message_id, post_time, raw_data, is_auto_push, remote_id, created_at, is_extracted FROM collector_histories{where_clause} ORDER BY id DESC LIMIT ? OFFSET ?")
             ).bind(page_size).bind(offset).fetch_all(pool).await?;
             (list, total)
         }
         (crate::state::DbPool::Postgres(pool), None) => {
-            let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM collector_histories")
-                .fetch_one(pool).await?;
+            let ext_sql_pg = match params.is_extracted {
+                Some(v) => format!(" WHERE is_extracted = {}", v),
+                None => String::new(),
+            };
+            let total: i64 = sqlx::query_scalar(
+                &format!("SELECT COUNT(*) FROM collector_histories{ext_sql_pg}")
+            ).fetch_one(pool).await?;
             let list = sqlx::query_as(
-                "SELECT id, collector_id, channel_id, message_id, post_time, raw_data, is_auto_push, remote_id, created_at FROM collector_histories ORDER BY id DESC LIMIT $1 OFFSET $2"
+                &format!("SELECT id, collector_id, channel_id, message_id, post_time, raw_data, is_auto_push, remote_id, created_at, is_extracted FROM collector_histories{ext_sql_pg} ORDER BY id DESC LIMIT $1 OFFSET $2")
             ).bind(page_size).bind(offset).fetch_all(pool).await?;
             (list, total)
         }

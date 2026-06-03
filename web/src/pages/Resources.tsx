@@ -1,10 +1,15 @@
 import React, { useEffect, useState } from 'react'
-import { Table, Button, Modal, Form, Input, Select, Space, message, Tag, Popconfirm, Spin, Typography, Pagination, Tooltip, Statistic, Row, Col, Card } from 'antd'
-import { ThunderboltOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, BarChartOutlined } from '@ant-design/icons'
+import { Table, Button, Modal, Form, Input, Select, Space, message, Tag, Popconfirm, Spin, Typography, Pagination, Tooltip, Statistic, Row, Col, Card, Switch, InputNumber, Divider } from 'antd'
+import { ThunderboltOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, BarChartOutlined, SettingOutlined } from '@ant-design/icons'
 import apiClient from '../api/client'
 import type { ExtractedResource, ResourceStats, ExtractionResult } from '../types'
+import PageHeader from '../components/PageHeader'
 
 const { Text } = Typography
+
+const DEFAULT_AI_PROMPT = `从以下 Telegram 消息中提取结构化资源信息。请返回 JSON 格式：{"title":"资源标题","url":["链接列表"],"description":"描述","category":"网盘类型","tags":"标签,逗号分隔"}
+
+消息内容：`
 
 const Resources: React.FC = () => {
   const [resources, setResources] = useState<ExtractedResource[]>([])
@@ -26,6 +31,16 @@ const Resources: React.FC = () => {
 
   // 提取中
   const [extracting, setExtracting] = useState(false)
+
+  // 提取配置
+  const [extractConfig, setExtractConfig] = useState({
+    extract_mode: 'rule',
+    auto_extract: false,
+    extract_interval: 30,
+    ai_prompt: '',
+  })
+  const [extractSaving, setExtractSaving] = useState(false)
+  const [configVisible, setConfigVisible] = useState(false)
 
   // 网盘类型选项
   const categoryOptions = [
@@ -82,6 +97,23 @@ const Resources: React.FC = () => {
     fetchResources()
   }, [page, pageSize, statusFilter, categoryFilter])
 
+  // 加载提取配置
+  useEffect(() => {
+    const fetchExtractConfig = async () => {
+      try {
+        const res = await apiClient.get('/options')
+        const data = res.data.data ?? {}
+        setExtractConfig({
+          extract_mode: data.push_extract_mode || 'rule',
+          auto_extract: data.push_auto_extract === '1' || data.push_auto_extract === 'true',
+          extract_interval: parseInt(data.push_extract_interval || '30', 10),
+          ai_prompt: data.push_ai_prompt || '',
+        })
+      } catch { /* ignore */ }
+    }
+    fetchExtractConfig()
+  }, [])
+
   // 触发提取
   const handleExtract = async () => {
     setExtracting(true)
@@ -99,6 +131,25 @@ const Resources: React.FC = () => {
       message.error('提取请求失败')
     } finally {
       setExtracting(false)
+    }
+  }
+
+  // 保存提取配置
+  const saveExtractConfig = async () => {
+    setExtractSaving(true)
+    try {
+      await apiClient.put('/push/extract-config', {
+        extract_mode: extractConfig.extract_mode,
+        auto_extract: extractConfig.auto_extract ? '1' : '0',
+        extract_interval: String(extractConfig.extract_interval),
+        ai_prompt: extractConfig.ai_prompt,
+      })
+      message.success('提取配置已保存')
+      setConfigVisible(false)
+    } catch (e: any) {
+      message.error(e.response?.data?.error || e.message || '保存失败')
+    } finally {
+      setExtractSaving(false)
     }
   }
 
@@ -150,7 +201,7 @@ const Resources: React.FC = () => {
       key: 'title',
       width: 300,
       ellipsis: true,
-      render: (text: string) => <Text strong>{text}</Text>,
+      render: (text: string) => <Text strong style={{ color: '#1e1b4b' }}>{text}</Text>,
     },
     {
       title: '网盘类型',
@@ -158,7 +209,7 @@ const Resources: React.FC = () => {
       key: 'category',
       width: 120,
       render: (cat: string) => (
-        <Tag color="blue">{categoryLabel(cat)}</Tag>
+        <Tag color="#6366f1" style={{ margin: 0 }}>{categoryLabel(cat)}</Tag>
       ),
     },
     {
@@ -167,7 +218,7 @@ const Resources: React.FC = () => {
       key: 'extract_mode',
       width: 100,
       render: (mode: string) => (
-        <Tag color={mode === 'ai' ? 'purple' : 'green'}>{mode === 'ai' ? 'AI' : '规则'}</Tag>
+        <Tag color={mode === 'ai' ? '#8b5cf6' : '#10b981'} style={{ margin: 0 }}>{mode === 'ai' ? 'AI' : '规则'}</Tag>
       ),
     },
     {
@@ -184,14 +235,14 @@ const Resources: React.FC = () => {
       dataIndex: 'is_pushed',
       key: 'is_pushed',
       width: 100,
-      render: (pushed: boolean) => pushed ? <Tag color="green">已推送</Tag> : <Tag color="orange">未推送</Tag>,
+      render: (pushed: boolean) => pushed ? <Tag color="green" style={{ margin: 0 }}>已推送</Tag> : <Tag color="orange" style={{ margin: 0 }}>未推送</Tag>,
     },
     {
       title: '已编辑',
       dataIndex: 'is_edited',
       key: 'is_edited',
       width: 80,
-      render: (edited: boolean) => edited ? <Tag color="cyan">是</Tag> : '-',
+      render: (edited: boolean) => edited ? <Tag color="cyan" style={{ margin: 0 }}>是</Tag> : '-',
     },
     {
       title: '时间',
@@ -205,13 +256,13 @@ const Resources: React.FC = () => {
       key: 'action',
       width: 120,
       render: (_: unknown, record: ExtractedResource) => (
-        <Space>
+        <Space size={4}>
           <Tooltip title="编辑">
-            <Button size="small" icon={<EditOutlined />} onClick={() => handleEdit(record)} />
+            <Button size="small" type="text" icon={<EditOutlined />} onClick={() => handleEdit(record)} />
           </Tooltip>
           <Popconfirm title="确定删除此资源？" onConfirm={() => handleDelete(record.id)}>
             <Tooltip title="删除">
-              <Button size="small" danger icon={<DeleteOutlined />} />
+              <Button size="small" type="text" danger icon={<DeleteOutlined />} />
             </Tooltip>
           </Popconfirm>
         </Space>
@@ -220,51 +271,55 @@ const Resources: React.FC = () => {
   ]
 
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <Typography.Title level={3} style={{ margin: 0 }}>资源管理</Typography.Title>
-        <Space>
-          <Select
-            placeholder="推送状态"
-            allowClear
-            style={{ width: 120 }}
-            value={statusFilter}
-            onChange={setStatusFilter}
-            options={[
-              { label: '未推送', value: 'unpushed' },
-              { label: '已推送', value: 'pushed' },
-              { label: '全部', value: 'all' },
-            ]}
-          />
-          <Select
-            placeholder="网盘类型"
-            allowClear
-            style={{ width: 130 }}
-            value={categoryFilter}
-            onChange={setCategoryFilter}
-            options={categoryOptions}
-          />
-          <Tooltip title="统计">
-            <Button icon={<BarChartOutlined />} onClick={() => { setStatsVisible(!statsVisible); fetchStats() }} />
-          </Tooltip>
-          <Button icon={<ReloadOutlined />} onClick={fetchResources}>刷新</Button>
-          <Button type="primary" icon={<ThunderboltOutlined />} loading={extracting} onClick={handleExtract}>
-            触发提取
-          </Button>
-        </Space>
-      </div>
+    <div>
+      <PageHeader
+        title="资源管理"
+        description="管理从 Telegram 消息中提取的资源"
+        extra={
+          <Space>
+            <Select
+              placeholder="推送状态"
+              allowClear
+              style={{ width: 120 }}
+              value={statusFilter}
+              onChange={setStatusFilter}
+              options={[
+                { label: '未推送', value: 'unpushed' },
+                { label: '已推送', value: 'pushed' },
+                { label: '全部', value: 'all' },
+              ]}
+            />
+            <Select
+              placeholder="网盘类型"
+              allowClear
+              style={{ width: 130 }}
+              value={categoryFilter}
+              onChange={setCategoryFilter}
+              options={categoryOptions}
+            />
+            <Tooltip title="统计">
+              <Button icon={<BarChartOutlined />} onClick={() => { setStatsVisible(!statsVisible); fetchStats() }} />
+            </Tooltip>
+            <Button icon={<SettingOutlined />} onClick={() => setConfigVisible(true)}>提取配置</Button>
+            <Button icon={<ReloadOutlined />} onClick={fetchResources}>刷新</Button>
+            <Button type="primary" icon={<ThunderboltOutlined />} loading={extracting} onClick={handleExtract}>
+              触发提取
+            </Button>
+          </Space>
+        }
+      />
 
       {statsVisible && stats && (
-        <Card size="small" style={{ marginBottom: 16 }}>
+        <Card size="small" style={{ marginBottom: 16, borderRadius: 12 }}>
           <Row gutter={16}>
             <Col span={6}><Statistic title="总资源" value={stats.total} /></Col>
-            <Col span={6}><Statistic title="已推送" value={stats.pushed} valueStyle={{ color: '#52c41a' }} /></Col>
-            <Col span={6}><Statistic title="未推送" value={stats.unpushed} valueStyle={{ color: '#faad14' }} /></Col>
+            <Col span={6}><Statistic title="已推送" value={stats.pushed} valueStyle={{ color: '#10b981' }} /></Col>
+            <Col span={6}><Statistic title="未推送" value={stats.unpushed} valueStyle={{ color: '#f59e0b' }} /></Col>
             <Col span={6}>
               <div>
                 <Text type="secondary">按类型</Text>
                 <div>{Object.entries(stats.by_category || {}).map(([k, v]) => (
-                  <Tag key={k}>{categoryLabel(k)}: {v}</Tag>
+                  <Tag key={k} style={{ margin: 2 }}>{categoryLabel(k)}: {v}</Tag>
                 ))}</div>
               </div>
             </Col>
@@ -280,6 +335,7 @@ const Resources: React.FC = () => {
           pagination={false}
           size="middle"
           scroll={{ x: 1200 }}
+          style={{ background: '#fff', borderRadius: 12 }}
         />
       </Spin>
 
@@ -315,6 +371,97 @@ const Resources: React.FC = () => {
             <Select options={categoryOptions} allowClear />
           </Form.Item>
         </Form>
+      </Modal>
+
+      {/* 提取配置弹窗 */}
+      <Modal
+        title="提取配置"
+        open={configVisible}
+        onCancel={() => setConfigVisible(false)}
+        footer={null}
+        width={560}
+      >
+        <div style={{ marginTop: 16 }}>
+          <div style={{ marginBottom: 20 }}>
+            <div style={{ marginBottom: 8, fontWeight: 500 }}>提取模式</div>
+            <Space>
+              <Select
+                value={extractConfig.extract_mode}
+                onChange={v => setExtractConfig({ ...extractConfig, extract_mode: v })}
+                style={{ width: 200 }}
+                options={[
+                  { label: '规则提取（推荐）', value: 'rule' },
+                  { label: 'AI 增强', value: 'ai' },
+                ]}
+              />
+              {extractConfig.extract_mode === 'ai' && (
+                <Tag color="purple">AI 模式已启用</Tag>
+              )}
+            </Space>
+            <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
+              规则提取：基于正则匹配，速度快；AI 增强：调用大模型，提取质量更高
+            </div>
+          </div>
+
+          <Divider style={{ margin: '16px 0' }} />
+
+          <div style={{ marginBottom: 20 }}>
+            <div style={{ marginBottom: 8, fontWeight: 500 }}>自动提取</div>
+            <Space>
+              <Switch
+                checked={extractConfig.auto_extract}
+                onChange={v => setExtractConfig({ ...extractConfig, auto_extract: v })}
+              />
+              {extractConfig.auto_extract && <Tag color="green">已启用</Tag>}
+            </Space>
+            <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
+              启用后将按设定间隔自动触发资源提取
+            </div>
+          </div>
+
+          {extractConfig.auto_extract && (
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ marginBottom: 8, fontWeight: 500 }}>提取间隔（分钟）</div>
+              <InputNumber
+                min={5}
+                max={1440}
+                value={extractConfig.extract_interval}
+                onChange={v => setExtractConfig({ ...extractConfig, extract_interval: v || 30 })}
+                style={{ width: 200 }}
+              />
+            </div>
+          )}
+
+          {extractConfig.extract_mode === 'ai' && (
+            <>
+              <Divider style={{ margin: '16px 0' }} />
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ marginBottom: 8, fontWeight: 500 }}>
+                  AI 提示词模板
+                  <span style={{ fontWeight: 'normal', color: '#999', marginLeft: 8 }}>
+                    （留空使用默认提示词）
+                  </span>
+                </div>
+                <Input.TextArea
+                  value={extractConfig.ai_prompt || DEFAULT_AI_PROMPT}
+                  onChange={e => setExtractConfig({ ...extractConfig, ai_prompt: e.target.value })}
+                  rows={6}
+                  placeholder={DEFAULT_AI_PROMPT}
+                />
+              </div>
+            </>
+          )}
+
+          <div style={{ textAlign: 'right' }}>
+            <Button
+              type="primary"
+              onClick={saveExtractConfig}
+              loading={extractSaving}
+            >
+              保存配置
+            </Button>
+          </div>
+        </div>
       </Modal>
     </div>
   )

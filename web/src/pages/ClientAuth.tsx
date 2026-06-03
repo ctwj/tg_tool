@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { Card, Steps, Input, Button, message, Typography, Space, Alert, Spin } from 'antd'
+import { CheckCircleFilled, SendOutlined } from '@ant-design/icons'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import apiClient from '../api/client'
 
@@ -7,13 +8,10 @@ const { Text } = Typography
 
 interface ClientInfo {
   id: string
-  client_type: string  // 'Client' | 'Bot'
+  client_type: string
   phone: string
   status: string
 }
-
-// step: 0=发送验证码(phone自动), 1=输入验证码, 2=输入两步密码, 3=完成
-// bot直接走 bot_token 输入
 
 const ClientAuth: React.FC = () => {
   const [searchParams] = useSearchParams()
@@ -25,7 +23,6 @@ const ClientAuth: React.FC = () => {
   const [value, setValue] = useState('')
   const [loading, setLoading] = useState(false)
 
-  // 加载客户端信息
   useEffect(() => {
     const fetchClient = async () => {
       try {
@@ -39,7 +36,6 @@ const ClientAuth: React.FC = () => {
         }
         setClientInfo(client)
 
-        // 用户账号 + 已有手机号 → 自动发送验证码
         if (client.client_type === 'Client' && client.phone) {
           sendPhoneCode(client.phone)
         }
@@ -51,7 +47,6 @@ const ClientAuth: React.FC = () => {
     if (clientId) fetchClient()
   }, [clientId])
 
-  // 自动发送验证码
   const sendPhoneCode = async (phone: string) => {
     setLoading(true)
     try {
@@ -61,7 +56,7 @@ const ClientAuth: React.FC = () => {
     } catch (e: any) {
       const msg = e.response?.data?.error || e.message || '发送验证码失败'
       message.error(msg)
-      setStep(0) // 回退到手机号输入
+      setStep(0)
     } finally {
       setLoading(false)
     }
@@ -79,7 +74,6 @@ const ClientAuth: React.FC = () => {
       const status = res.data?.data?.status
 
       if (isBot) {
-        // Bot 认证直接完成
         setStep(3)
         message.success('Bot 认证成功！')
       } else if (step === 1) {
@@ -103,7 +97,6 @@ const ClientAuth: React.FC = () => {
     }
   }
 
-  // 还在加载客户端信息
   if (!clientInfo) {
     return (
       <div style={{ maxWidth: 500, margin: '0 auto', textAlign: 'center', padding: 60 }}>
@@ -114,14 +107,47 @@ const ClientAuth: React.FC = () => {
 
   const isBot = clientInfo.client_type === 'Bot'
 
-  // Bot 认证：单独的简单流程
+  // 成功页面
+  const successContent = (
+    <div style={{ textAlign: 'center', padding: '20px 0' }}>
+      <div style={{
+        width: 64,
+        height: 64,
+        borderRadius: '50%',
+        background: '#ecfdf5',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        margin: '0 auto 16px',
+      }}>
+        <CheckCircleFilled style={{ fontSize: 32, color: '#10b981' }} />
+      </div>
+      <Text style={{ fontSize: 18, fontWeight: 500, color: '#1e1b4b', display: 'block', marginBottom: 16 }}>
+        认证完成
+      </Text>
+      <Button type="primary" onClick={() => navigate('/clients')}>
+        返回客户端列表
+      </Button>
+    </div>
+  )
+
+  // Bot 认证
   if (isBot) {
     return (
       <div style={{ maxWidth: 500, margin: '0 auto' }}>
-        <Card title={`Bot 认证 ${clientId.substring(0, 8)}...`}>
+        <Card
+          style={{ borderRadius: 16, boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}
+          styles={{ header: { borderBottom: '1px solid #f0f0f0' } }}
+          title={
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <SendOutlined style={{ color: '#6366f1' }} />
+              Bot 认证 {clientId.substring(0, 8)}...
+            </div>
+          }
+        >
           {step < 3 ? (
             <Space direction="vertical" style={{ width: '100%' }} size="middle">
-              <Alert type="info" message="输入 Bot Token 以完成认证" showIcon />
+              <Alert type="info" message="输入 Bot Token 以完成认证" showIcon style={{ borderRadius: 8 }} />
               <Input
                 value={value}
                 onChange={e => setValue(e.target.value)}
@@ -129,17 +155,14 @@ const ClientAuth: React.FC = () => {
                 onPressEnter={submitAuth}
                 size="large"
                 autoFocus
+                style={{ borderRadius: 10 }}
               />
-              <Button type="primary" onClick={submitAuth} block loading={loading} size="large">
+              <Button type="primary" onClick={submitAuth} block loading={loading} size="large"
+                style={{ borderRadius: 10, height: 46 }}>
                 认证
               </Button>
             </Space>
-          ) : (
-            <Space direction="vertical" align="center" style={{ width: '100%' }}>
-              <Text type="success" style={{ fontSize: 18 }}>&#10003; Bot 认证完成</Text>
-              <Button onClick={() => navigate('/clients')}>返回客户端列表</Button>
-            </Space>
-          )}
+          ) : successContent}
         </Card>
       </div>
     )
@@ -161,13 +184,21 @@ const ClientAuth: React.FC = () => {
 
   return (
     <div style={{ maxWidth: 500, margin: '0 auto' }}>
-      <Card title={`认证客户端 ${clientId.substring(0, 8)}...`}>
-        <Steps current={step} items={stepLabels} style={{ marginBottom: 24 }} />
+      <Card
+        style={{ borderRadius: 16, boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}
+        styles={{ header: { borderBottom: '1px solid #f0f0f0' } }}
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <SendOutlined style={{ color: '#6366f1' }} />
+            认证客户端 {clientId.substring(0, 8)}...
+          </div>
+        }
+      >
+        <Steps current={step} items={stepLabels} style={{ marginBottom: 24 }} size="small" />
         {step < 3 ? (
           <Space direction="vertical" style={{ width: '100%' }} size="middle">
-            <Alert type="info" message={descriptions[step]} showIcon />
+            <Alert type="info" message={descriptions[step]} showIcon style={{ borderRadius: 8 }} />
             {step === 0 ? (
-              /* 手机号输入（仅当自动发送失败时才显示） */
               <>
                 <Input
                   value={value}
@@ -176,8 +207,10 @@ const ClientAuth: React.FC = () => {
                   onPressEnter={() => value && sendPhoneCode(value)}
                   size="large"
                   autoFocus
+                  style={{ borderRadius: 10 }}
                 />
-                <Button type="primary" onClick={() => sendPhoneCode(value)} block loading={loading} size="large">
+                <Button type="primary" onClick={() => sendPhoneCode(value)} block loading={loading} size="large"
+                  style={{ borderRadius: 10, height: 46 }}>
                   发送验证码
                 </Button>
               </>
@@ -190,19 +223,16 @@ const ClientAuth: React.FC = () => {
                   onPressEnter={submitAuth}
                   size="large"
                   autoFocus
+                  style={{ borderRadius: 10 }}
                 />
-                <Button type="primary" onClick={submitAuth} block loading={loading} size="large">
+                <Button type="primary" onClick={submitAuth} block loading={loading} size="large"
+                  style={{ borderRadius: 10, height: 46 }}>
                   {step === 1 ? '验证' : '提交密码'}
                 </Button>
               </>
             )}
           </Space>
-        ) : (
-          <Space direction="vertical" align="center" style={{ width: '100%' }}>
-            <Text type="success" style={{ fontSize: 18 }}>&#10003; 认证完成</Text>
-            <Button onClick={() => navigate('/clients')}>返回客户端列表</Button>
-          </Space>
-        )}
+        ) : successContent}
       </Card>
     </div>
   )

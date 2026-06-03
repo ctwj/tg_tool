@@ -12,4 +12,5 @@ pub struct CollectorHistory {
     pub is_auto_push: bool,
     pub remote_id: Option<String>,
     pub created_at: NaiveDateTime,
+    pub is_extracted: bool,
 }

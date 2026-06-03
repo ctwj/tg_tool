@@ -1,13 +1,20 @@
 import React, { useEffect, useState } from 'react'
-import { Table, Button, Modal, Form, Input, Select, message, Popconfirm, Tag } from 'antd'
-import { PlusOutlined, DeleteOutlined } from '@ant-design/icons'
+import { Table, Button, Modal, Form, Input, Select, Space, message, Popconfirm, Tag } from 'antd'
+import { PlusOutlined, DeleteOutlined, KeyOutlined } from '@ant-design/icons'
 import apiClient from '../api/client'
+import PageHeader from '../components/PageHeader'
 
 const Users: React.FC = () => {
   const [users, setUsers] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const [form] = Form.useForm()
+
+  // 修改密码
+  const [pwdModalOpen, setPwdModalOpen] = useState(false)
+  const [pwdUser, setPwdUser] = useState<any>(null)
+  const [pwdForm] = Form.useForm()
+  const [pwdLoading, setPwdLoading] = useState(false)
 
   const fetchUsers = async () => {
     setLoading(true)
@@ -33,6 +40,26 @@ const Users: React.FC = () => {
     catch (e: any) { message.error(e.message || '删除失败') }
   }
 
+  const openPwdModal = (user: any) => {
+    setPwdUser(user)
+    pwdForm.resetFields()
+    setPwdModalOpen(true)
+  }
+
+  const changePassword = async (values: any) => {
+    if (!pwdUser) return
+    setPwdLoading(true)
+    try {
+      await apiClient.put(`/users/${pwdUser.id}`, { password: values.new_password })
+      message.success('密码已修改')
+      setPwdModalOpen(false)
+    } catch (e: any) {
+      message.error(e.response?.data?.error || e.message || '修改失败')
+    } finally {
+      setPwdLoading(false)
+    }
+  }
+
   const roleTag = (role: number) => {
     if (role >= 100) return <Tag color="red">Root</Tag>
     if (role >= 10) return <Tag color="orange">Admin</Tag>
@@ -47,22 +74,41 @@ const Users: React.FC = () => {
     { title: '角色', dataIndex: 'role', key: 'role', width: 80, render: roleTag },
     { title: '状态', dataIndex: 'status', key: 'status', width: 80,
       render: (v: number) => v === 1 ? <Tag color="green">启用</Tag> : <Tag color="red">禁用</Tag> },
-    { title: '操作', key: 'actions', width: 80,
-      render: (_: any, r: any) => r.id !== 1 ? (
-        <Popconfirm title="确定删除？" onConfirm={() => deleteUser(r.id)}>
-          <Button size="small" danger icon={<DeleteOutlined />} />
-        </Popconfirm>
-      ) : null,
+    { title: '操作', key: 'actions', width: 120,
+      render: (_: any, r: any) => (
+        <Space size={4}>
+          <Button size="small" type="text" icon={<KeyOutlined />} onClick={() => openPwdModal(r)}
+            style={{ color: '#f59e0b' }}>
+            改密
+          </Button>
+          {r.id !== 1 && (
+            <Popconfirm title="确定删除？" onConfirm={() => deleteUser(r.id)}>
+              <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+            </Popconfirm>
+          )}
+        </Space>
+      ),
     },
   ]
 
   return (
     <div>
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between' }}>
-        <h2>用户管理</h2>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>创建用户</Button>
-      </div>
-      <Table dataSource={users} columns={columns} rowKey="id" loading={loading} />
+      <PageHeader
+        title="用户管理"
+        description="管理系统用户账号和权限"
+        extra={
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>
+            创建用户
+          </Button>
+        }
+      />
+      <Table
+        dataSource={users}
+        columns={columns}
+        rowKey="id"
+        loading={loading}
+        style={{ background: '#fff', borderRadius: 12 }}
+      />
       <Modal title="创建用户" open={modalOpen} onCancel={() => setModalOpen(false)} onOk={() => form.submit()}>
         <Form form={form} onFinish={createUser} layout="vertical">
           <Form.Item name="username" label="用户名" rules={[{ required: true }]}>
@@ -79,6 +125,47 @@ const Users: React.FC = () => {
           </Form.Item>
           <Form.Item name="role" label="角色" initialValue={1}>
             <Select options={[{ value: 1, label: '普通用户' }, { value: 10, label: '管理员' }, { value: 100, label: 'Root' }]} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* 修改密码弹窗 */}
+      <Modal
+        title={`修改密码 — ${pwdUser?.username || ''}`}
+        open={pwdModalOpen}
+        onCancel={() => setPwdModalOpen(false)}
+        onOk={() => pwdForm.submit()}
+        confirmLoading={pwdLoading}
+        okText="确认修改"
+      >
+        <Form form={pwdForm} onFinish={changePassword} layout="vertical" style={{ marginTop: 16 }}>
+          <Form.Item
+            name="new_password"
+            label="新密码"
+            rules={[
+              { required: true, message: '请输入新密码' },
+              { min: 6, message: '密码至少 6 位' },
+            ]}
+          >
+            <Input.Password placeholder="请输入新密码" />
+          </Form.Item>
+          <Form.Item
+            name="confirm_password"
+            label="确认密码"
+            dependencies={['new_password']}
+            rules={[
+              { required: true, message: '请确认密码' },
+              ({ getFieldValue }) => ({
+                validator(_, value) {
+                  if (!value || getFieldValue('new_password') === value) {
+                    return Promise.resolve()
+                  }
+                  return Promise.reject(new Error('两次输入的密码不一致'))
+                },
+              }),
+            ]}
+          >
+            <Input.Password placeholder="请再次输入新密码" />
           </Form.Item>
         </Form>
       </Modal>

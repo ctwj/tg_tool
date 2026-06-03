@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react'
-import { Card, Form, Input, Button, message, Space, Alert, Tabs, Modal, Tag, Switch, InputNumber, Select } from 'antd'
+import { Card, Form, Input, Button, message, Space, Alert, Tabs, Modal, Tag, Switch, InputNumber, Select, Spin } from 'antd'
 import { CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined, PlusOutlined, ExperimentOutlined, EditOutlined, DeleteOutlined, ApiOutlined } from '@ant-design/icons'
 import apiClient from '../api/client'
-import type { AiEndpoint } from '../types'
+import type { AiEndpoint, Client, Chat } from '../types'
+import PageHeader from '../components/PageHeader'
+
 
 interface ProxyTestResult {
   success: boolean
@@ -26,6 +28,12 @@ const Settings: React.FC = () => {
   const [testLoading, setTestLoading] = useState(false)
   const [testResult, setTestResult] = useState<ProxyTestResult | null>(null)
   const [envDefaults, setEnvDefaults] = useState<Record<string, string>>({})
+
+  // ─── 图床群组选择 ───
+  const [clients, setClients] = useState<Client[]>([])
+  const [chats, setChats] = useState<Chat[]>([])
+  const [chatsLoading, setChatsLoading] = useState(false)
+  const [selectedClientId, setSelectedClientId] = useState<string>('')
 
   // ─── 大模型配置 ───
   const [endpoints, setEndpoints] = useState<AiEndpoint[]>([])
@@ -57,8 +65,34 @@ const Settings: React.FC = () => {
     }
   }
 
+  const fetchClients = async () => {
+    try {
+      const res = await apiClient.get('/clients')
+      const list: Client[] = res.data.data?.list ?? []
+      setClients(list.filter(c => c.status === 'active'))
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const fetchChats = async (clientId: string) => {
+    if (!clientId) { setChats([]); return }
+    setChatsLoading(true)
+    setChats([])
+    try {
+      const res = await apiClient.get(`/clients/${clientId}/chats`)
+      const list: Chat[] = res.data.data?.chats ?? []
+      setChats(list)
+    } catch {
+      message.error('获取聊天列表失败')
+    } finally {
+      setChatsLoading(false)
+    }
+  }
+
   useEffect(() => {
     fetchOptions()
+    fetchClients()
   }, [form])
 
   const saveOptions = async (values: Record<string, string>) => {
@@ -101,6 +135,18 @@ const Settings: React.FC = () => {
     const val = envDefaults[key]
     if (!val) return undefined
     return `当前使用环境变量: ${val}`
+  }
+
+  // ─── 图床群组：级联选择 ───
+
+  const onImageGroupClientChange = (clientId: string) => {
+    setSelectedClientId(clientId)
+    form.setFieldsValue({ image_group: undefined })
+    fetchChats(clientId)
+  }
+
+  const onImageGroupChatChange = (chatId: number) => {
+    form.setFieldsValue({ image_group: String(chatId) })
   }
 
   // ─── 大模型配置：端点管理 ───
@@ -156,9 +202,7 @@ const Settings: React.FC = () => {
   const saveEndpoint = async () => {
     try {
       const values = await editForm.validateFields()
-      // 确保有 id
       if (!values.id) values.id = generateId()
-      // 如果没填名称，自动生成
       if (!values.name) {
         const preset = aiTypePresets[values.ai_type]
         values.name = `${preset?.label || values.ai_type} 配置`
@@ -226,7 +270,6 @@ const Settings: React.FC = () => {
     }
   }
 
-  // 脱敏密钥显示
   const maskKey = (key: string) => {
     if (!key) return ''
     if (key.length <= 8) return '***'
@@ -237,7 +280,7 @@ const Settings: React.FC = () => {
 
   return (
     <div>
-      <h2>系统设置</h2>
+      <PageHeader title="系统设置" description="管理系统配置、代理和 AI 大模型" />
 
       <Tabs
         defaultActiveKey="basic"
@@ -246,13 +289,13 @@ const Settings: React.FC = () => {
             key: 'basic',
             label: '基本设置',
             children: (
-              <Card>
+              <Card style={{ borderRadius: 12 }}>
                 <Alert
                   message="配置优先级说明"
                   description="系统配置页面填写的值优先于环境变量（.env 文件）中的配置。留空则使用环境变量中的值。"
                   type="info"
                   showIcon
-                  style={{ marginBottom: 24 }}
+                  style={{ marginBottom: 24, borderRadius: 8 }}
                 />
 
                 <Form form={form} onFinish={saveOptions} layout="vertical">
@@ -277,6 +320,7 @@ const Settings: React.FC = () => {
                           }
                           type="success"
                           showIcon={false}
+                          style={{ borderRadius: 8 }}
                         />
                       ) : (
                         <Alert
@@ -288,6 +332,7 @@ const Settings: React.FC = () => {
                           }
                           type="error"
                           showIcon={false}
+                          style={{ borderRadius: 8 }}
                         />
                       )}
                     </div>
@@ -312,7 +357,7 @@ const Settings: React.FC = () => {
                   <Card
                     title="Telegram 配置"
                     size="small"
-                    style={{ marginBottom: 16 }}
+                    style={{ marginBottom: 16, borderRadius: 10 }}
                     type="inner"
                   >
                     <Form.Item
@@ -331,9 +376,49 @@ const Settings: React.FC = () => {
                     </Form.Item>
                   </Card>
 
-                  {/* 其他配置 */}
-                  <Card title="其他配置" size="small" type="inner">
-                    <Form.Item name="image_group" label="图床群组 ID">
+                  {/* 图床配置 */}
+                  <Card title="图床配置" size="small" type="inner" style={{ borderRadius: 10 }}>
+                    <Form.Item label="选择客户端" help="选择一个已连接的客户端来加载群组列表">
+                      <Select
+                        placeholder="请先选择客户端"
+                        value={selectedClientId || undefined}
+                        onChange={onImageGroupClientChange}
+                        notFoundContent={clients.length === 0 ? '没有活跃的客户端，请先启动客户端' : undefined}
+                      >
+                        {clients.map(c => (
+                          <Select.Option key={c.id} value={c.id}>
+                            {c.client_type === 'Bot' ? 'Bot ' : ''}
+                            {c.phone || c.id.substring(0, 8)}...
+                          </Select.Option>
+                        ))}
+                      </Select>
+                    </Form.Item>
+                    <Form.Item label="图床群组" help="选择用于图床上传的群组">
+                      <Space direction="vertical" style={{ width: '100%' }}>
+                        <Select
+                          placeholder={selectedClientId ? '加载中...' : '请先选择客户端'}
+                          onChange={onImageGroupChatChange}
+                          loading={chatsLoading}
+                          disabled={!selectedClientId || chatsLoading}
+                          showSearch
+                          optionFilterProp="label"
+                          notFoundContent={
+                            !selectedClientId ? '请先选择客户端' :
+                            chatsLoading ? <Spin size="small" /> :
+                            chats.length === 0 ? '没有可用的群组' : undefined
+                          }
+                          value={form.getFieldValue('image_group') ? Number(form.getFieldValue('image_group')) : undefined}
+                        >
+                          {chats.filter(c => c.type === 'channel' || c.type === 'group').map(c => (
+                            <Select.Option key={c.id} value={c.id} label={c.name}>
+                              {c.type === 'channel' ? '频道' : '群组'} {c.name}
+                              <span style={{ color: '#999', fontSize: 12, marginLeft: 8 }}>({c.id})</span>
+                            </Select.Option>
+                          ))}
+                        </Select>
+                      </Space>
+                    </Form.Item>
+                    <Form.Item name="image_group" label="群组 ID" help="也可直接输入群组 ID">
                       <Input placeholder="-100xxxxxxxxxx" />
                     </Form.Item>
                   </Card>
@@ -349,15 +434,15 @@ const Settings: React.FC = () => {
               </span>
             ),
             children: (
-              <Card>
+              <Card style={{ borderRadius: 12 }}>
                 <Alert
                   message="配置 AI 大模型端点，支持 OpenAI 兼容格式。API 地址需包含版本路径（如 /v1）。多个端点将轮询使用。"
                   type="info"
                   showIcon
-                  style={{ marginBottom: 24 }}
+                  style={{ marginBottom: 24, borderRadius: 8 }}
                 />
 
-                {/* 端点列表 — 卡片式 */}
+                {/* 端点列表 */}
                 <div style={{ marginBottom: 24 }}>
                   <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ fontWeight: 500 }}>API 配置列表</span>
@@ -376,7 +461,7 @@ const Settings: React.FC = () => {
                       padding: '40px 0',
                       color: '#999',
                       border: '1px dashed #d9d9d9',
-                      borderRadius: 8,
+                      borderRadius: 10,
                     }}>
                       <ApiOutlined style={{ fontSize: 32, marginBottom: 8 }} />
                       <div>暂无 API 配置，点击上方按钮添加</div>
@@ -391,12 +476,11 @@ const Settings: React.FC = () => {
                             key={ep.id || index}
                             style={{
                               border: '1px solid #f0f0f0',
-                              borderRadius: 8,
+                              borderRadius: 10,
                               padding: '12px 16px',
-                              transition: 'border-color 0.3s',
+                              transition: 'border-color 0.2s',
                             }}
                           >
-                            {/* 上行：开关、名称、标签、操作 */}
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                                 <Switch
@@ -450,7 +534,6 @@ const Settings: React.FC = () => {
                                 />
                               </Space>
                             </div>
-                            {/* 下行：详情 */}
                             <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
                               {ep.url} | {ep.model} | 密钥: {maskKey(ep.key)} | 延迟: {ep.request_delay || 0}ms
                             </div>
@@ -461,7 +544,6 @@ const Settings: React.FC = () => {
                   )}
                 </div>
 
-                {/* 保存 */}
                 <Button
                   type="primary"
                   onClick={saveAiConfig}

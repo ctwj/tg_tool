@@ -15,10 +15,26 @@ import Resources from './pages/Resources'
 import Users from './pages/Users'
 import Files from './pages/Files'
 import Settings from './pages/Settings'
+import './index.css'
 
 function App() {
   return (
-    <ConfigProvider locale={zhCN}>
+    <ConfigProvider
+      locale={zhCN}
+      theme={{
+        token: {
+          colorPrimary: '#6366F1',
+          borderRadius: 8,
+          colorBgLayout: '#f5f3ff',
+          fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif',
+        },
+        components: {
+          Button: { borderRadius: 6 },
+          Card: { borderRadiusLG: 12 },
+          Table: { borderRadius: 8 },
+        },
+      }}
+    >
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
@@ -29,7 +45,7 @@ function App() {
             <Route path="client-auth" element={<ClientAuth />} />
             <Route path="rules" element={<Rules />} />
             <Route path="collectors" element={<Collectors />} />
-            <Route path="collector-history" element={<CollectorHistory />} />
+            <Route path="collectors/:id/history" element={<CollectorHistory />} />
             <Route path="push" element={<Push />} />
             <Route path="resources" element={<Resources />} />
             <Route path="users" element={<Users />} />

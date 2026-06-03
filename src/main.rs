@@ -178,6 +178,14 @@ async fn run_migrations(pool: &DbPool) {
                 }
                 tracing::debug!("SQLite migration 003 skipped (already applied)");
             }
+            // Migration 004: Add is_extracted to collector_histories
+            let m4 = include_str!("../migrations/004_collector_histories_is_extracted_sqlite.sql");
+            if let Err(e) = sqlx::raw_sql(m4).execute(pool).await {
+                if !e.to_string().contains("duplicate column") {
+                    panic!("Failed to run SQLite migration 004: {e}");
+                }
+                tracing::debug!("SQLite migration 004 skipped (already applied)");
+            }
         }
         DbPool::Postgres(pool) => {
             let migration_sql = include_str!("../migrations/001_init_postgres.sql");
@@ -200,6 +208,14 @@ async fn run_migrations(pool: &DbPool) {
                     panic!("Failed to run PostgreSQL migration 003: {e}");
                 }
                 tracing::debug!("PostgreSQL migration 003 skipped (already applied)");
+            }
+            // Migration 004: Add is_extracted to collector_histories
+            let m4 = include_str!("../migrations/004_collector_histories_is_extracted_postgres.sql");
+            if let Err(e) = sqlx::raw_sql(m4).execute(pool).await {
+                if !e.to_string().contains("already exists") && !e.to_string().contains("duplicate") {
+                    panic!("Failed to run PostgreSQL migration 004: {e}");
+                }
+                tracing::debug!("PostgreSQL migration 004 skipped (already applied)");
             }
         }
     }

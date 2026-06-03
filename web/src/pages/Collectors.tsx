@@ -1,42 +1,23 @@
 import React, { useEffect, useState } from 'react'
-import { Table, Button, Modal, Form, Input, Select, Switch, Space, message, Tag, Popconfirm, Spin, Typography, Pagination } from 'antd'
+import { Table, Button, Modal, Form, Input, Select, Switch, Space, message, Tag, Popconfirm, Spin } from 'antd'
 import { PlusOutlined, DeleteOutlined, CloudDownloadOutlined, FileSearchOutlined } from '@ant-design/icons'
+import { useNavigate } from 'react-router-dom'
 import apiClient from '../api/client'
 import type { Collector, Client, Chat } from '../types'
-
-const { Paragraph } = Typography
-
-interface CollectorHistory {
-  id: number
-  collector_id: number
-  channel_id: number
-  message_id: number
-  post_time: string
-  raw_data: string | null
-  is_auto_push: boolean
-  remote_id: string | null
-  created_at: string
-}
+import PageHeader from '../components/PageHeader'
 
 const Collectors: React.FC = () => {
   const [collectors, setCollectors] = useState<Collector[]>([])
   const [loading, setLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const [form] = Form.useForm()
+  const navigate = useNavigate()
 
   // 客户端和频道列表
   const [clients, setClients] = useState<Client[]>([])
   const [chats, setChats] = useState<Chat[]>([])
   const [chatsLoading, setChatsLoading] = useState(false)
   const [selectedClientId, setSelectedClientId] = useState<string>('')
-
-  // 采集历史弹窗
-  const [historyOpen, setHistoryOpen] = useState(false)
-  const [historyCollector, setHistoryCollector] = useState<Collector | null>(null)
-  const [histories, setHistories] = useState<CollectorHistory[]>([])
-  const [historyLoading, setHistoryLoading] = useState(false)
-  const [historyTotal, setHistoryTotal] = useState(0)
-  const [historyPage, setHistoryPage] = useState(1)
 
   const fetchCollectors = async () => {
     setLoading(true)
@@ -70,32 +51,14 @@ const Collectors: React.FC = () => {
     }
   }
 
-  const fetchHistories = async (collectorId: number, page: number = 1) => {
-    setHistoryLoading(true)
-    try {
-      const res = await apiClient.get(`/collectors/histories?collector_id=${collectorId}&page=${page}&page_size=20`)
-      const data = res.data.data
-      const list: CollectorHistory[] = data?.list ?? []
-      setHistories(list)
-      setHistoryTotal(data?.pagination?.total ?? 0)
-      setHistoryPage(page)
-    } catch (e: any) {
-      message.error('获取采集记录失败')
-    } finally {
-      setHistoryLoading(false)
-    }
-  }
-
   useEffect(() => { fetchCollectors(); fetchClients() }, [])
 
-  // 选择客户端后加载频道
   const onClientChange = (clientId: string) => {
     setSelectedClientId(clientId)
     form.setFieldsValue({ channel_id: undefined, channel_name: undefined })
     fetchChats(clientId)
   }
 
-  // 选择频道后自动填入名称
   const onChannelChange = (channelId: number) => {
     const chat = chats.find(c => c.id === channelId)
     if (chat) {
@@ -158,27 +121,6 @@ const Collectors: React.FC = () => {
     }
   }
 
-  const openHistory = (collector: Collector) => {
-    setHistoryCollector(collector)
-    setHistoryOpen(true)
-    fetchHistories(collector.id, 1)
-  }
-
-  // 解析 raw_data 显示消息内容
-  const parseRawData = (raw: string | null): { text: string; mediaType?: string; photoId?: string } => {
-    if (!raw) return { text: '(无内容)' }
-    try {
-      const data = JSON.parse(raw)
-      return {
-        text: data.text || '(无文本)',
-        mediaType: data.media_type,
-        photoId: data.photo_id,
-      }
-    } catch {
-      return { text: raw.substring(0, 100) }
-    }
-  }
-
   // 找到客户端名称
   const getClientName = (clientId?: string) => {
     if (!clientId) return '-'
@@ -190,12 +132,12 @@ const Collectors: React.FC = () => {
     { title: 'ID', dataIndex: 'id', key: 'id', width: 60 },
     {
       title: '客户端', dataIndex: 'client_id', key: 'client_id', width: 140,
-      render: (v: string) => <Tag>{getClientName(v)}</Tag>,
+      render: (v: string) => <Tag color="purple" style={{ margin: 0 }}>{getClientName(v)}</Tag>,
     },
     { title: '频道', dataIndex: 'channel_name', key: 'channel_name' },
     {
       title: '频道ID', dataIndex: 'channel_id', key: 'channel_id', width: 140,
-      render: (v: number) => <code>{v}</code>,
+      render: (v: number) => <code style={{ fontSize: 12, color: '#6366f1', background: '#eef2ff', padding: '2px 8px', borderRadius: 4 }}>{v}</code>,
     },
     {
       title: '激活', dataIndex: 'is_active', key: 'is_active', width: 80,
@@ -204,60 +146,37 @@ const Collectors: React.FC = () => {
     {
       title: '操作', key: 'actions', width: 220,
       render: (_: any, r: Collector) => (
-        <Space>
-          <Button size="small" icon={<FileSearchOutlined />} onClick={() => openHistory(r)}>记录</Button>
-          <Button size="small" icon={<CloudDownloadOutlined />} onClick={() => openFetchDialog(r)}>采集</Button>
+        <Space size={4}>
+          <Button size="small" type="text" icon={<FileSearchOutlined />} onClick={() => navigate(`/collectors/${r.id}/history`, { state: { channel_name: r.channel_name, channel_id: r.channel_id } })}>
+            记录
+          </Button>
+          <Button size="small" type="text" icon={<CloudDownloadOutlined />} onClick={() => openFetchDialog(r)} style={{ color: '#6366f1' }}>采集</Button>
           <Popconfirm title="确定删除？" onConfirm={() => deleteCollector(r.id)}>
-            <Button size="small" danger icon={<DeleteOutlined />} />
+            <Button size="small" type="text" danger icon={<DeleteOutlined />} />
           </Popconfirm>
         </Space>
       ),
     },
   ]
 
-  const historyColumns = [
-    { title: '消息ID', dataIndex: 'message_id', key: 'message_id', width: 80 },
-    {
-      title: '内容', key: 'content',
-      render: (_: any, r: CollectorHistory) => {
-        const parsed = parseRawData(r.raw_data)
-        return (
-          <div>
-            <Paragraph ellipsis={{ rows: 2, expandable: true, symbol: '展开' }} style={{ marginBottom: 0 }}>
-              {parsed.text}
-            </Paragraph>
-            {parsed.mediaType && (
-              <Tag color="blue" style={{ marginTop: 4 }}>
-                {parsed.mediaType === 'photo' ? '🖼️ 图片' : parsed.mediaType === 'document' ? '📎 文件' : parsed.mediaType}
-              </Tag>
-            )}
-          </div>
-        )
-      },
-    },
-    {
-      title: '采集时间', dataIndex: 'post_time', key: 'post_time', width: 160,
-      render: (v: string) => v ? new Date(v + 'Z').toLocaleString('zh-CN') : '-',
-    },
-    {
-      title: '来源', key: 'source', width: 100,
-      render: (_: any, r: CollectorHistory) => (
-        <Tag color={r.is_auto_push ? 'green' : 'blue'}>
-          {r.is_auto_push ? '实时' : '手动'}
-        </Tag>
-      ),
-    },
-  ]
-
   return (
     <div>
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between' }}>
-        <h2>采集器管理</h2>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => { setModalOpen(true); fetchClients() }}>
-          创建采集器
-        </Button>
-      </div>
-      <Table dataSource={collectors} columns={columns} rowKey="id" loading={loading} />
+      <PageHeader
+        title="采集器管理"
+        description="管理频道消息采集任务"
+        extra={
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => { setModalOpen(true); fetchClients() }}>
+            创建采集器
+          </Button>
+        }
+      />
+      <Table
+        dataSource={collectors}
+        columns={columns}
+        rowKey="id"
+        loading={loading}
+        style={{ background: '#fff', borderRadius: 12 }}
+      />
 
       {/* 创建采集器弹窗 */}
       <Modal
@@ -276,7 +195,7 @@ const Collectors: React.FC = () => {
             >
               {clients.map(c => (
                 <Select.Option key={c.id} value={c.id}>
-                  {c.client_type === 'Bot' ? '🤖 ' : '👤 '}
+                  {c.client_type === 'Bot' ? 'Bot ' : ''}
                   {c.phone || c.id.substring(0, 8)}...
                   <Tag color={c.status === 'active' ? 'green' : 'default'} style={{ marginLeft: 8 }}>
                     {c.status}
@@ -302,7 +221,7 @@ const Collectors: React.FC = () => {
             >
               {chats.map(c => (
                 <Select.Option key={c.id} value={c.id} label={c.name}>
-                  {c.type === 'channel' ? '📢' : '👥'} {c.name}
+                  {c.type === 'channel' ? '频道' : '群组'} {c.name}
                   <span style={{ color: '#999', fontSize: 12, marginLeft: 8 }}>({c.id})</span>
                 </Select.Option>
               ))}
@@ -348,36 +267,6 @@ const Collectors: React.FC = () => {
             ]}
           />
         </div>
-      </Modal>
-
-      {/* 采集记录弹窗 */}
-      <Modal
-        title={`采集记录 — ${historyCollector?.channel_name || historyCollector?.channel_id || ''}`}
-        open={historyOpen}
-        onCancel={() => setHistoryOpen(false)}
-        footer={null}
-        width={800}
-      >
-        <Table
-          dataSource={histories}
-          columns={historyColumns}
-          rowKey="id"
-          loading={historyLoading}
-          size="small"
-          pagination={false}
-        />
-        {historyTotal > 20 && (
-          <div style={{ textAlign: 'center', marginTop: 16 }}>
-            <Pagination
-              current={historyPage}
-              total={historyTotal}
-              pageSize={20}
-              onChange={(page) => fetchHistories(historyCollector!.id, page)}
-              showTotal={(total) => `共 ${total} 条`}
-              size="small"
-            />
-          </div>
-        )}
       </Modal>
     </div>
   )

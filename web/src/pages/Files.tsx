@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { Table, Button, Upload, message, Popconfirm, Space } from 'antd'
 import { UploadOutlined, DeleteOutlined, DownloadOutlined } from '@ant-design/icons'
 import apiClient from '../api/client'
+import PageHeader from '../components/PageHeader'
 
 const Files: React.FC = () => {
   const [files, setFiles] = useState<any[]>([])
@@ -38,10 +39,12 @@ const Files: React.FC = () => {
     { title: '创建时间', dataIndex: 'created_at', key: 'created_at' },
     { title: '操作', key: 'actions', width: 120,
       render: (_: any, r: any) => (
-        <Space>
-          <Button size="small" icon={<DownloadOutlined />} href={`/files/download/${r.filename}`} target="_blank">下载</Button>
+        <Space size={4}>
+          <Button size="small" type="text" icon={<DownloadOutlined />} href={`/files/download/${r.filename}`} target="_blank">
+            下载
+          </Button>
           <Popconfirm title="确定删除？" onConfirm={() => deleteFile(r.id)}>
-            <Button size="small" danger icon={<DeleteOutlined />} />
+            <Button size="small" type="text" danger icon={<DeleteOutlined />} />
           </Popconfirm>
         </Space>
       ),
@@ -50,13 +53,22 @@ const Files: React.FC = () => {
 
   return (
     <div>
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between' }}>
-        <h2>文件管理</h2>
-        <Upload {...uploadProps} showUploadList={false}>
-          <Button type="primary" icon={<UploadOutlined />}>上传文件</Button>
-        </Upload>
-      </div>
-      <Table dataSource={files} columns={columns} rowKey="id" loading={loading} />
+      <PageHeader
+        title="文件管理"
+        description="管理上传的文件资源"
+        extra={
+          <Upload {...uploadProps} showUploadList={false}>
+            <Button type="primary" icon={<UploadOutlined />}>上传文件</Button>
+          </Upload>
+        }
+      />
+      <Table
+        dataSource={files}
+        columns={columns}
+        rowKey="id"
+        loading={loading}
+        style={{ background: '#fff', borderRadius: 12 }}
+      />
     </div>
   )
 }

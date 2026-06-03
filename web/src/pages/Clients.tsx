@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react'
-import { Table, Button, Modal, Form, Input, Select, Space, message, Tag, Popconfirm } from 'antd'
+import { Table, Button, Modal, Form, Input, Select, Space, message, Tag, Popconfirm, Badge } from 'antd'
 import { PlusOutlined, PlayCircleOutlined, PauseCircleOutlined, DeleteOutlined, KeyOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import apiClient from '../api/client'
 import type { Client } from '../types'
+import PageHeader from '../components/PageHeader'
 
 const Clients: React.FC = () => {
   const [clients, setClients] = useState<Client[]>([])
@@ -57,32 +58,90 @@ const Clients: React.FC = () => {
     } catch (e: any) { message.error(e.message || '停止失败') }
   }
 
-  const statusColor: Record<string, string> = {
-    active: 'green', new: 'blue', wait_code: 'orange', wait_password: 'orange', offline: 'red',
+  const statusConfig: Record<string, { color: string; text: string }> = {
+    active: { color: '#10b981', text: '在线' },
+    new: { color: '#6366f1', text: '新建' },
+    wait_code: { color: '#f59e0b', text: '等待验证码' },
+    wait_password: { color: '#f59e0b', text: '等待密码' },
+    offline: { color: '#ef4444', text: '离线' },
   }
 
   const columns = [
-    { title: 'ID', dataIndex: 'id', key: 'id', width: 120 },
-    { title: '类型', dataIndex: 'client_type', key: 'client_type', width: 80 },
-    { title: '手机号', dataIndex: 'phone', key: 'phone' },
     {
-      title: '状态', dataIndex: 'status', key: 'status', width: 100,
-      render: (status: string) => <Tag color={statusColor[status] || 'default'}>{status}</Tag>,
+      title: 'ID',
+      dataIndex: 'id',
+      key: 'id',
+      width: 120,
+      render: (id: string) => (
+        <code style={{ fontSize: 12, color: '#6366f1', background: '#eef2ff', padding: '2px 8px', borderRadius: 4 }}>
+          {id.substring(0, 8)}...
+        </code>
+      ),
     },
     {
-      title: '操作', key: 'actions', width: 200,
+      title: '类型',
+      dataIndex: 'client_type',
+      key: 'client_type',
+      width: 80,
+      render: (v: string) => (
+        <Tag color={v === 'Bot' ? '#6366f1' : '#06b6d4'} style={{ margin: 0 }}>
+          {v === 'Bot' ? 'Bot' : '用户'}
+        </Tag>
+      ),
+    },
+    { title: '手机号', dataIndex: 'phone', key: 'phone' },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: 120,
+      render: (status: string) => {
+        const cfg = statusConfig[status] || { color: '#6b7280', text: status }
+        return (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Badge color={cfg.color} />
+            <span style={{ fontSize: 13, color: cfg.color }}>{cfg.text}</span>
+          </div>
+        )
+      },
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 240,
       render: (_: any, record: Client) => (
-        <Space>
-          <Button size="small" icon={<PlayCircleOutlined />} onClick={() => startClient(record.id)}
-            disabled={record.status === 'active'}>启动</Button>
-          <Button size="small" icon={<PauseCircleOutlined />} onClick={() => stopClient(record.id)}
-            disabled={record.status === 'offline' || record.status === 'new'}>停止</Button>
+        <Space size={4}>
+          <Button
+            size="small"
+            type="text"
+            icon={<PlayCircleOutlined />}
+            onClick={() => startClient(record.id)}
+            disabled={record.status === 'active'}
+            style={{ color: record.status === 'active' ? undefined : '#10b981' }}
+          >
+            启动
+          </Button>
+          <Button
+            size="small"
+            type="text"
+            icon={<PauseCircleOutlined />}
+            onClick={() => stopClient(record.id)}
+            disabled={record.status === 'offline' || record.status === 'new'}
+          >
+            停止
+          </Button>
           {(record.status === 'wait_code' || record.status === 'wait_password') && (
-            <Button size="small" type="primary" icon={<KeyOutlined />}
-              onClick={() => navigate(`/client-auth?id=${record.id}`)}>认证</Button>
+            <Button
+              size="small"
+              type="primary"
+              icon={<KeyOutlined />}
+              onClick={() => navigate(`/client-auth?id=${record.id}`)}
+            >
+              认证
+            </Button>
           )}
           <Popconfirm title="确定删除？" onConfirm={() => removeClient(record.id)}>
-            <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+            <Button size="small" type="text" danger icon={<DeleteOutlined />} />
           </Popconfirm>
         </Space>
       ),
@@ -91,12 +150,28 @@ const Clients: React.FC = () => {
 
   return (
     <div>
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between' }}>
-        <h2>客户端管理</h2>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>添加客户端</Button>
-      </div>
-      <Table dataSource={clients} columns={columns} rowKey="id" loading={loading} />
-      <Modal title="添加客户端" open={modalOpen} onCancel={() => setModalOpen(false)} onOk={() => form.submit()}>
+      <PageHeader
+        title="客户端管理"
+        description="管理 Telegram 客户端和 Bot 连接"
+        extra={
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>
+            添加客户端
+          </Button>
+        }
+      />
+      <Table
+        dataSource={clients}
+        columns={columns}
+        rowKey="id"
+        loading={loading}
+        style={{ background: '#fff', borderRadius: 12 }}
+      />
+      <Modal
+        title="添加客户端"
+        open={modalOpen}
+        onCancel={() => setModalOpen(false)}
+        onOk={() => form.submit()}
+      >
         <Form form={form} onFinish={addClient} layout="vertical">
           <Form.Item name="client_type" label="类型" rules={[{ required: true }]}>
             <Select options={[{ value: 'Client', label: '用户账号' }, { value: 'Bot', label: 'Bot' }]} />

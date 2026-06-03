@@ -3,6 +3,7 @@ import { Table, Button, Modal, Form, Input, Select, Switch, message, Tag, Popcon
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons'
 import apiClient from '../api/client'
 import type { Rule } from '../types'
+import PageHeader from '../components/PageHeader'
 
 const Rules: React.FC = () => {
   const [rules, setRules] = useState<Rule[]>([])
@@ -49,16 +50,31 @@ const Rules: React.FC = () => {
   const columns = [
     { title: 'ID', dataIndex: 'id', key: 'id', width: 60 },
     { title: '源频道', dataIndex: 'source_chat_name', key: 'source_chat_name' },
-    { title: '转发方式', dataIndex: 'forward_method', key: 'forward_method', width: 100,
-      render: (v: string) => <Tag color={v === 'Chat' ? 'blue' : 'purple'}>{v}</Tag> },
+    {
+      title: '转发方式',
+      dataIndex: 'forward_method',
+      key: 'forward_method',
+      width: 100,
+      render: (v: string) => (
+        <Tag color={v === 'Chat' ? '#6366f1' : '#8b5cf6'} style={{ margin: 0 }}>{v}</Tag>
+      ),
+    },
     { title: '目标', dataIndex: 'forward_target', key: 'forward_target', ellipsis: true },
     { title: '备注', dataIndex: 'remark', key: 'remark', ellipsis: true },
-    { title: '激活', dataIndex: 'is_active', key: 'is_active', width: 80,
-      render: (v: boolean, r: Rule) => <Switch checked={v} onChange={() => toggleRule(r.id)} size="small" /> },
-    { title: '操作', key: 'actions', width: 80,
+    {
+      title: '激活',
+      dataIndex: 'is_active',
+      key: 'is_active',
+      width: 80,
+      render: (v: boolean, r: Rule) => <Switch checked={v} onChange={() => toggleRule(r.id)} size="small" />,
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 80,
       render: (_: any, r: Rule) => (
         <Popconfirm title="确定删除？" onConfirm={() => deleteRule(r.id)}>
-          <Button size="small" danger icon={<DeleteOutlined />} />
+          <Button size="small" type="text" danger icon={<DeleteOutlined />} />
         </Popconfirm>
       ),
     },
@@ -66,11 +82,22 @@ const Rules: React.FC = () => {
 
   return (
     <div>
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between' }}>
-        <h2>转发规则</h2>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>创建规则</Button>
-      </div>
-      <Table dataSource={rules} columns={columns} rowKey="id" loading={loading} />
+      <PageHeader
+        title="转发规则"
+        description="管理消息转发到聊天或 Webhook 的规则"
+        extra={
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>
+            创建规则
+          </Button>
+        }
+      />
+      <Table
+        dataSource={rules}
+        columns={columns}
+        rowKey="id"
+        loading={loading}
+        style={{ background: '#fff', borderRadius: 12 }}
+      />
       <Modal title="创建转发规则" open={modalOpen} onCancel={() => setModalOpen(false)} onOk={() => form.submit()} width={500}>
         <Form form={form} onFinish={createRule} layout="vertical">
           <Form.Item name="source_chat_id" label="源频道 ID" rules={[{ required: true }]}>
