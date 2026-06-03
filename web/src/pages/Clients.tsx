@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom'
 import apiClient from '../api/client'
 import type { Client } from '../types'
 import PageHeader from '../components/PageHeader'
+import { useTableScrollY } from '../hooks/useTableScroll'
 
 const Clients: React.FC = () => {
   const [clients, setClients] = useState<Client[]>([])
@@ -148,8 +149,10 @@ const Clients: React.FC = () => {
     },
   ]
 
+  const { containerRef, scrollY } = useTableScrollY()
+
   return (
-    <div>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <PageHeader
         title="客户端管理"
         description="管理 Telegram 客户端和 Bot 连接"
@@ -159,13 +162,16 @@ const Clients: React.FC = () => {
           </Button>
         }
       />
-      <Table
-        dataSource={clients}
-        columns={columns}
-        rowKey="id"
-        loading={loading}
-        style={{ background: '#fff', borderRadius: 12 }}
-      />
+      <div ref={containerRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        <Table
+          dataSource={clients}
+          columns={columns}
+          rowKey="id"
+          loading={loading}
+          scroll={{ y: scrollY }}
+          style={{ background: '#fff', borderRadius: 12 }}
+        />
+      </div>
       <Modal
         title="添加客户端"
         open={modalOpen}

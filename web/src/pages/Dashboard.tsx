@@ -63,7 +63,7 @@ const Dashboard: React.FC = () => {
   ]
 
   return (
-    <div>
+    <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
       {/* 欢迎区域 */}
       <div style={{
         background: 'linear-gradient(135deg, #6366f1 0%, #818cf8 100%)',

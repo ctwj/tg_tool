@@ -3,6 +3,7 @@ import { Table, Button, Upload, message, Popconfirm, Space } from 'antd'
 import { UploadOutlined, DeleteOutlined, DownloadOutlined } from '@ant-design/icons'
 import apiClient from '../api/client'
 import PageHeader from '../components/PageHeader'
+import { useTableScrollY } from '../hooks/useTableScroll'
 
 const Files: React.FC = () => {
   const [files, setFiles] = useState<any[]>([])
@@ -51,8 +52,10 @@ const Files: React.FC = () => {
     },
   ]
 
+  const { containerRef, scrollY } = useTableScrollY()
+
   return (
-    <div>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <PageHeader
         title="文件管理"
         description="管理上传的文件资源"
@@ -62,13 +65,16 @@ const Files: React.FC = () => {
           </Upload>
         }
       />
-      <Table
-        dataSource={files}
-        columns={columns}
-        rowKey="id"
-        loading={loading}
-        style={{ background: '#fff', borderRadius: 12 }}
-      />
+      <div ref={containerRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        <Table
+          dataSource={files}
+          columns={columns}
+          rowKey="id"
+          loading={loading}
+          scroll={{ y: scrollY }}
+          style={{ background: '#fff', borderRadius: 12 }}
+        />
+      </div>
     </div>
   )
 }

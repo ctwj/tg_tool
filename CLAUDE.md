@@ -51,6 +51,7 @@ src/
 │   ├── rule.rs          # 转发规则 CRUD
 │   ├── collector.rs     # 采集器 CRUD + 全量采集触发
 │   ├── push.rs          # 推送触发/统计/调度配置
+│   ├── image.rs         # 图片代理：GET /api/images/{photo_id}
 │   ├── user.rs          # 用户管理
 │   ├── file.rs          # 文件上传/下载
 │   ├── option.rs        # 系统配置
@@ -62,6 +63,7 @@ src/
 │   ├── message_handler.rs # 消息分发（匹配规则+采集器）
 │   ├── forwarder.rs     # Chat + Webhook 转发
 │   ├── collector.rs     # 全量采集 + 图片上传图床
+│   ├── image_proxy.rs   # 图片代理缓存（下载、缓存、TTL、并发控制）
 │   ├── push.rs          # 批量推送 + 消息分析管线
 │   ├── scheduler.rs     # 定时推送调度器
 │   └── crypto.rs        # JWT/密码哈希
@@ -91,6 +93,7 @@ src/
 - `POST /api/auth/register` / `POST /api/auth/login` / `POST /api/auth/logout`
 - `GET /api/status`
 - `GET /api/files/download/{filename}`
+- `GET /api/images/{photo_id}` — 图片代理缓存（按需下载 Telegram 图片并缓存）
 
 ### 受保护路由（需要 Bearer Token）
 - `/api/clients` — 客户端 CRUD + 启停 + 认证（phone/code/password/bot_token）+ 聊天列表
@@ -127,4 +130,6 @@ cargo test -- --nocapture           # 显示 println! 输出
 - [Telegram 核心功能集成](specs/002-telegram-core-integration/plan.md) — 客户端连接、认证、消息收发、转发、采集、推送
 - [生产就绪度改进](specs/004-production-improvements/plan.md) — 客户端信息完善、优雅关闭、健康检查、转发缓存、采集分页、速率限制
 - [推送管理增强 — 资源提取独立化 + AI 分析](specs/005-push-ai-extraction/plan.md) — 资源提取解耦、规则引擎移植、AI 大模型增强、独立资源管理页面、多 API 轮询
+- [提取推送优化](specs/006-refine-extraction-push/plan.md) — 推送配置清理、提取模式对比说明、AI 提示词优化、测试覆盖补全
+- [图片代理缓存系统](specs/007-image-proxy-cache/plan.md) — Telegram 图片按需下载代理、本地缓存 + TTL、Nginx/Cloudflare CDN 缓存配置、图床域名配置入口
 <!-- SPECKIT END -->

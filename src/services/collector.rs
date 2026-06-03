@@ -13,7 +13,6 @@ pub async fn full_collect(
     limit: i64,
     tg_clients: &crate::state::TgClientMap,
     db: &DbPool,
-    option_cache: &crate::state::OptionCache,
 ) -> Result<usize, AppError> {
     let clients = tg_clients.read().await;
     let client = clients
@@ -42,6 +41,10 @@ pub async fn full_collect(
     let mut messages = client.iter_messages(packed).limit(limit as usize);
     let mut collected = 0usize;
 
+    // 使用事务批量写入，大幅提升 SQLite 性能
+    // 先收集所有消息到内存，然后一次性写入数据库
+    let mut batch: Vec<(i64, NaiveDateTime, String, Option<String>)> = Vec::new();
+
     while let Some(msg) = messages.next().await
         .map_err(|e| AppError::Internal(format!("获取消息失败: {e}")))?
     {
@@ -49,48 +52,68 @@ pub async fn full_collect(
         let raw_data = serialize_message_for_collection(&msg);
         let post_time = msg.date().naive_utc();
 
-        // 检查图片媒体并上传图床
-        let remote_id = upload_photo_if_needed(&msg, tg_clients, option_cache).await;
+        // 提取图片 media 的 photo_id（无需转发图床，由图片代理按需下载）
+        let remote_id = extract_photo_id(&msg);
 
-        let inserted = match db {
+        batch.push((message_id, post_time, raw_data, remote_id));
+    }
+
+    // 批量写入数据库（使用事务）
+    if !batch.is_empty() {
+        match db {
             crate::state::DbPool::Sqlite(pool) => {
-                let result = sqlx::query(
-                    "INSERT OR IGNORE INTO collector_histories (collector_id, channel_id, message_id, post_time, raw_data, remote_id) VALUES (?, ?, ?, ?, ?, ?)",
-                )
-                .bind(collector_id)
-                .bind(channel_id)
-                .bind(message_id)
-                .bind(post_time)
-                .bind(&raw_data)
-                .bind(&remote_id)
-                .execute(pool)
-                .await;
-                match result {
-                    Ok(r) => r.rows_affected() > 0,
-                    Err(_) => false,
+                // 开启事务
+                let mut tx = pool.begin().await
+                    .map_err(|e| AppError::Internal(format!("开启事务失败: {e}")))?;
+
+                for (message_id, post_time, raw_data, remote_id) in &batch {
+                    let result = sqlx::query(
+                        "INSERT OR IGNORE INTO collector_histories (collector_id, channel_id, message_id, post_time, raw_data, remote_id) VALUES (?, ?, ?, ?, ?, ?)",
+                    )
+                    .bind(collector_id)
+                    .bind(channel_id)
+                    .bind(message_id)
+                    .bind(post_time)
+                    .bind(raw_data)
+                    .bind(remote_id)
+                    .execute(&mut *tx)
+                    .await;
+                    if let Ok(r) = result {
+                        if r.rows_affected() > 0 {
+                            collected += 1;
+                        }
+                    }
                 }
+
+                tx.commit().await
+                    .map_err(|e| AppError::Internal(format!("提交事务失败: {e}")))?;
             }
             crate::state::DbPool::Postgres(pool) => {
-                let result = sqlx::query(
-                    "INSERT INTO collector_histories (collector_id, channel_id, message_id, post_time, raw_data, remote_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (channel_id, message_id) DO NOTHING",
-                )
-                .bind(collector_id)
-                .bind(channel_id)
-                .bind(message_id)
-                .bind(post_time)
-                .bind(&raw_data)
-                .bind(&remote_id)
-                .execute(pool)
-                .await;
-                match result {
-                    Ok(r) => r.rows_affected() > 0,
-                    Err(_) => false,
-                }
-            }
-        };
+                let mut tx = pool.begin().await
+                    .map_err(|e| AppError::Internal(format!("开启事务失败: {e}")))?;
 
-        if inserted {
-            collected += 1;
+                for (message_id, post_time, raw_data, remote_id) in &batch {
+                    let result = sqlx::query(
+                        "INSERT INTO collector_histories (collector_id, channel_id, message_id, post_time, raw_data, remote_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (channel_id, message_id) DO NOTHING",
+                    )
+                    .bind(collector_id)
+                    .bind(channel_id)
+                    .bind(message_id)
+                    .bind(post_time)
+                    .bind(raw_data)
+                    .bind(remote_id)
+                    .execute(&mut *tx)
+                    .await;
+                    if let Ok(r) = result {
+                        if r.rows_affected() > 0 {
+                            collected += 1;
+                        }
+                    }
+                }
+
+                tx.commit().await
+                    .map_err(|e| AppError::Internal(format!("提交事务失败: {e}")))?;
+            }
         }
     }
 
@@ -136,58 +159,12 @@ pub async fn save_realtime_message(
     Ok(())
 }
 
-/// 检查消息是否包含图片，如果是则上传到图床群组并返回 remote_id
-async fn upload_photo_if_needed(
-    msg: &grammers_client::types::Message,
-    tg_clients: &crate::state::TgClientMap,
-    option_cache: &crate::state::OptionCache,
-) -> Option<String> {
-    // 检查是否有图片媒体
+/// 提取消息中的图片 photo_id（直接从消息获取，无需转发图床）
+fn extract_photo_id(msg: &grammers_client::types::Message) -> Option<String> {
     let media = msg.media()?;
-    let photo = match media {
-        grammers_client::types::Media::Photo(p) => p,
-        _ => return None,
-    };
-
-    // 获取图床群组 ID
-    let image_group_id: i64 = {
-        let cache = option_cache.read().await;
-        let group_str = cache.get("TelegramImageGroup")?;
-        group_str.parse().ok()?
-    };
-
-    // 获取活跃客户端
-    let client = {
-        let clients = tg_clients.read().await;
-        clients
-            .values()
-            .find(|e| e.status == "active" && e.client.is_some())
-            .and_then(|e| e.client.clone())?
-    };
-
-    // 通过遍历 dialogs 解析图床群组的 PackedChat
-    let mut dialogs = client.iter_dialogs();
-    let mut target_packed = None;
-    while let Ok(Some(dialog)) = dialogs.next().await {
-        if dialog.chat().id() == image_group_id {
-            target_packed = Some(dialog.chat().pack());
-            break;
-        }
-    }
-
-    let packed = target_packed?;
-
-    // 转发原始消息到图床群组（保留图片、格式等完整内容）
-    let chat = msg.chat().pack();
-    match client.forward_messages(chat, &[msg.id()], packed).await {
-        Ok(_) => {
-            tracing::info!("已转发图片消息到图床群组 {}", image_group_id);
-            Some(format!("{}", photo.id()))
-        }
-        Err(e) => {
-            tracing::warn!("转发图片消息到图床失败: {e}");
-            None
-        }
+    match media {
+        grammers_client::types::Media::Photo(photo) => Some(format!("{}", photo.id())),
+        _ => None,
     }
 }
 

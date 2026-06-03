@@ -72,7 +72,28 @@ pub fn select_endpoint(endpoints: &[AiEndpoint]) -> Option<&AiEndpoint> {
 }
 
 /// 默认提示词模板
-const DEFAULT_PROMPT: &str = "从以下 Telegram 消息中提取结构化资源信息。请返回 JSON 格式：{\"title\":\"资源标题\",\"url\":[\"链接列表\"],\"description\":\"描述\",\"category\":\"网盘类型\",\"tags\":\"标签,逗号分隔\"}\n\n消息内容：\n";
+const DEFAULT_PROMPT: &str = r#"你是一个专业的 Telegram 消息资源提取助手。请从以下 Telegram 消息中提取结构化资源信息，返回严格的 JSON 格式。
+
+## 字段说明
+- "title": 资源名称标题，不包含链接、标签或特殊符号
+- "url": 网盘分享链接数组，只保留有效的网盘链接（忽略 t.me 等广告链接）
+- "description": 资源描述或亮点，从"描述："、"亮点："、"简介："等关键词提取，没有则留空
+- "category": 网盘类型，必须为以下之一：quark、aliyun、baidu、uc、115、123pan、tianyi、xunlei，无法识别则留空
+- "tags": 标签，逗号分隔，最多5个，去除#前缀
+
+## 处理规则
+- 忽略 t.me 开头的广告推广链接
+- 如果消息中出现"名称："、"标题："、"资源名称："等关键词，提取其后的内容作为 title
+- 如果消息中没有明确标题，从内容中推断一个简短描述性的标题
+- 处理中英文混合和格式混乱的消息
+
+## 输出示例
+{"title":"某部电影 4K 蓝光版","url":["https://pan.quark.cn/s/abc123"],"description":"4K 蓝光高清版本，中英双字","category":"quark","tags":"电影,4K,蓝光"}
+
+只返回 JSON，不要包含任何其他文字。
+
+消息内容：
+"#;
 
 /// 调用 OpenAI 兼容 API 进行提取
 pub async fn call_ai_api(
@@ -359,19 +380,34 @@ mod tests {
     fn test_select_endpoint_round_robin() {
         let endpoints = vec![
             AiEndpoint {
+                id: String::new(),
+                name: String::new(),
+                ai_type: default_ai_type(),
                 url: "https://api1.example.com".to_string(),
                 key: "key1".to_string(),
                 model: "model1".to_string(),
+                enable: true,
+                request_delay: 0,
             },
             AiEndpoint {
+                id: String::new(),
+                name: String::new(),
+                ai_type: default_ai_type(),
                 url: "https://api2.example.com".to_string(),
                 key: "key2".to_string(),
                 model: "model2".to_string(),
+                enable: true,
+                request_delay: 0,
             },
             AiEndpoint {
+                id: String::new(),
+                name: String::new(),
+                ai_type: default_ai_type(),
                 url: "https://api3.example.com".to_string(),
                 key: "key3".to_string(),
                 model: "model3".to_string(),
+                enable: true,
+                request_delay: 0,
             },
         ];
 
@@ -405,5 +441,89 @@ mod tests {
         assert_eq!(result.title, "标题");
         assert_eq!(result.url.len(), 1);
         assert_eq!(result.category, "quark");
+    }
+
+    // --- T007: 默认提示词包含字段约束 ---
+
+    #[test]
+    fn test_default_prompt_contains_field_constraints() {
+        // 验证 DEFAULT_PROMPT 包含每个字段的约束描述
+        assert!(DEFAULT_PROMPT.contains("title"), "提示词应包含 title 字段约束");
+        assert!(DEFAULT_PROMPT.contains("url"), "提示词应包含 url 字段约束");
+        assert!(DEFAULT_PROMPT.contains("description"), "提示词应包含 description 字段约束");
+        assert!(DEFAULT_PROMPT.contains("category"), "提示词应包含 category 字段约束");
+        assert!(DEFAULT_PROMPT.contains("tags"), "提示词应包含 tags 字段约束");
+    }
+
+    // --- T008: 默认提示词包含 JSON 输出示例 ---
+
+    #[test]
+    fn test_default_prompt_contains_example() {
+        // 验证 DEFAULT_PROMPT 包含 JSON 输出示例（包含示例字段值）
+        assert!(DEFAULT_PROMPT.contains("quark") || DEFAULT_PROMPT.contains("aliyun"), "提示词应包含网盘类型示例");
+        assert!(DEFAULT_PROMPT.contains("pan.quark") || DEFAULT_PROMPT.contains("example"), "提示词应包含链接示例");
+    }
+
+    // --- T017: 嵌套花括号 JSON 解析 ---
+
+    #[test]
+    fn test_extract_json_from_content_nested_braces() {
+        let content = r#"AI 返回结果如下：{"title":"测试资源","url":["https://pan.quark.cn/s/abc"],"description":"包含嵌套{括号}的描述","category":"quark","tags":"测试"}"#;
+        let json_str = extract_json_from_content(content);
+        let result: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(result["title"], "测试资源");
+        assert_eq!(result["category"], "quark");
+    }
+
+    // --- T018: AI 部分字段回退合并 ---
+
+    #[test]
+    fn test_ai_extract_partial_field_fallback() {
+        // 模拟 AI 返回部分字段为空
+        let ai_json = r#"{"title":"AI标题","url":[],"description":"","category":"quark","tags":""}"#;
+        let ai_result: AiExtractResult = serde_json::from_str(ai_json).unwrap();
+
+        let rule_draft = ResourceDraft {
+            title: "规则标题".to_string(),
+            url: vec!["https://pan.quark.cn/s/abc".to_string()],
+            description: "规则描述".to_string(),
+            category: "quark".to_string(),
+            tags: "电影".to_string(),
+            source: "tg".to_string(),
+        };
+
+        // 合并逻辑：空字段回退到规则结果
+        let merged = ResourceDraft {
+            title: if ai_result.title.is_empty() { rule_draft.title.clone() } else { ai_result.title },
+            url: if ai_result.url.is_empty() { rule_draft.url.clone() } else { ai_result.url },
+            description: if ai_result.description.is_empty() { rule_draft.description.clone() } else { ai_result.description },
+            category: if ai_result.category.is_empty() { rule_draft.category.clone() } else { ai_result.category },
+            tags: if ai_result.tags.is_empty() { rule_draft.tags.clone() } else { ai_result.tags },
+            source: "tg".to_string(),
+        };
+
+        assert_eq!(merged.title, "AI标题");      // AI 有值，用 AI
+        assert_eq!(merged.url, vec!["https://pan.quark.cn/s/abc"]); // AI 为空，回退规则
+        assert_eq!(merged.description, "规则描述"); // AI 为空，回退规则
+        assert_eq!(merged.tags, "电影");            // AI 为空，回退规则
+    }
+
+    // --- T019: 端点过滤 disabled ---
+
+    #[test]
+    fn test_parse_ai_endpoints_with_disabled() {
+        let endpoints_json = r#"[
+            {"url":"https://api1.example.com","key":"sk-1","model":"gpt-4o","enable":true},
+            {"url":"https://api2.example.com","key":"sk-2","model":"gpt-4o","enable":false},
+            {"url":"https://api3.example.com","key":"sk-3","model":"gpt-4o"}
+        ]"#;
+        let endpoints: Vec<AiEndpoint> = serde_json::from_str(endpoints_json).unwrap();
+        assert_eq!(endpoints.len(), 3);
+
+        // select_endpoint 只选择 enable=true 的端点
+        let selected = select_endpoint(&endpoints);
+        assert!(selected.is_some());
+        let ep = selected.unwrap();
+        assert_ne!(ep.url, "https://api2.example.com"); // 不应选中 disabled 的
     }
 }

@@ -12,7 +12,8 @@ const PageHeader: React.FC<PageHeaderProps> = ({ title, description, extra }) =>
       display: 'flex',
       justifyContent: 'space-between',
       alignItems: 'center',
-      marginBottom: 24,
+      marginBottom: 16,
+      flexShrink: 0,
     }}>
       <div>
         <h2 style={{

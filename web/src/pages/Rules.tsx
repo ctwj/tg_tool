@@ -4,6 +4,7 @@ import { PlusOutlined, DeleteOutlined } from '@ant-design/icons'
 import apiClient from '../api/client'
 import type { Rule } from '../types'
 import PageHeader from '../components/PageHeader'
+import { useTableScrollY } from '../hooks/useTableScroll'
 
 const Rules: React.FC = () => {
   const [rules, setRules] = useState<Rule[]>([])
@@ -80,8 +81,10 @@ const Rules: React.FC = () => {
     },
   ]
 
+  const { containerRef, scrollY } = useTableScrollY()
+
   return (
-    <div>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <PageHeader
         title="转发规则"
         description="管理消息转发到聊天或 Webhook 的规则"
@@ -91,13 +94,16 @@ const Rules: React.FC = () => {
           </Button>
         }
       />
-      <Table
-        dataSource={rules}
-        columns={columns}
-        rowKey="id"
-        loading={loading}
-        style={{ background: '#fff', borderRadius: 12 }}
-      />
+      <div ref={containerRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        <Table
+          dataSource={rules}
+          columns={columns}
+          rowKey="id"
+          loading={loading}
+          scroll={{ y: scrollY }}
+          style={{ background: '#fff', borderRadius: 12 }}
+        />
+      </div>
       <Modal title="创建转发规则" open={modalOpen} onCancel={() => setModalOpen(false)} onOk={() => form.submit()} width={500}>
         <Form form={form} onFinish={createRule} layout="vertical">
           <Form.Item name="source_chat_id" label="源频道 ID" rules={[{ required: true }]}>

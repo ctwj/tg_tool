@@ -33,6 +33,11 @@ async fn main() {
     // Ensure root user exists with a valid bcrypt hash
     ensure_root_user(&db_pool).await;
 
+    // Ensure directories exist
+    std::fs::create_dir_all("tg_store").expect("Failed to create tg_store directory");
+    std::fs::create_dir_all("image_cache").expect("Failed to create image_cache directory");
+    let image_cache_dir = std::path::PathBuf::from("image_cache");
+
     // Build application state
     let tg_clients = std::sync::Arc::new(tokio::sync::RwLock::new(
         std::collections::HashMap::new(),
@@ -50,13 +55,10 @@ async fn main() {
         option_cache.clone(),
         peer_cache.clone(),
     ));
-    let state = AppState::new(db_pool.clone(), config.clone(), tg_manager.clone());
+    let state = AppState::new(db_pool.clone(), config.clone(), tg_manager.clone(), image_cache_dir);
 
     // Load options cache
     load_option_cache(&state).await;
-
-    // Ensure tg_store directory exists
-    std::fs::create_dir_all("tg_store").expect("Failed to create tg_store directory");
 
     // Reconnect active Telegram clients
     let reconnected = tg_manager.reconnect_on_startup().await;
@@ -146,9 +148,22 @@ async fn init_database(config: &Config) -> DbPool {
     } else {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(5)
+            .after_connect(|conn, _meta| Box::pin(async move {
+                use sqlx::Executor;
+                // busy_timeout: 并发写入时等待锁而非直接报错（5秒）
+                conn.execute(sqlx::query("PRAGMA busy_timeout=5000")).await?;
+                // WAL 模式: 写操作不再阻塞读操作
+                conn.execute(sqlx::query("PRAGMA journal_mode=WAL")).await?;
+                // synchronous=NORMAL: WAL 模式下足够安全，性能更好
+                conn.execute(sqlx::query("PRAGMA synchronous=NORMAL")).await?;
+                // WAL auto-checkpoint: 避免 WAL 文件无限增长
+                conn.execute(sqlx::query("PRAGMA wal_autocheckpoint=1000")).await?;
+                Ok(())
+            }))
             .connect(&database_url)
             .await
             .expect("Failed to connect to SQLite");
+
         DbPool::Sqlite(pool)
     }
 }

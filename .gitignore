@@ -44,9 +44,11 @@ Thumbs.db
 *.db-journal
 tg_store/
 upload/
+image_cache/
 
 # Project-specific
 demo/
 .specify/
+.playwright-mcp/
 specs/
 .claude/

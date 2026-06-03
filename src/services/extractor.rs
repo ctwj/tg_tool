@@ -771,4 +771,84 @@ https://pan.quark.cn/s/link5";
         assert_eq!(resources[0].title, "资源A");
         assert_eq!(resources[4].title, "资源E");
     }
+
+    // --- T012: 混合多种网盘链接 ---
+
+    #[test]
+    fn test_extract_mixed_netdisk_types() {
+        let text = "名称：混合资源合集\n\
+            https://pan.quark.cn/s/abc\n\
+            https://www.alipan.com/s/def\n\
+            https://pan.baidu.com/s/xyz";
+        let resources = extract_resources(text);
+        assert!(!resources.is_empty());
+        let r = &resources[0];
+        assert_eq!(r.title, "混合资源合集");
+        // 所有网盘链接都应被收集
+        assert!(r.url.contains(&"https://pan.quark.cn/s/abc".to_string()));
+        assert!(r.url.contains(&"https://www.alipan.com/s/def".to_string()));
+        assert!(r.url.contains(&"https://pan.baidu.com/s/xyz".to_string()));
+        // category 为第一个网盘类型
+        assert_eq!(r.category, SERVICE_QUARK);
+    }
+
+    // --- T013: 首行标题截断 >50 字符 ---
+
+    #[test]
+    fn test_extract_title_fallback_truncation() {
+        // 构造一条没有关键词标题且首行超长的消息（>50 字符）
+        let long_line = "这是一行非常非常长的资源标题文本内容用来验证当没有关键词匹配时系统会自动将首行截断到五十个字符以内并且添加省略号后缀以提示用户该标题已被截断处理";
+        assert!(long_line.chars().count() > 50, "测试字符串需超过 50 字符，实际为 {}", long_line.chars().count());
+        let text = format!("{}\nhttps://pan.quark.cn/s/abc", long_line);
+        let resources = extract_resources(&text);
+        assert!(!resources.is_empty());
+        let title = &resources[0].title;
+        // 标题应被截断到 50 字符 + "..."
+        assert!(title.ends_with("..."), "title was: {}", title);
+        let without_dots = title.trim_end_matches("...");
+        assert!(without_dots.chars().count() <= 50);
+    }
+
+    // --- T014: "链接：" 关键词提取描述 ---
+
+    #[test]
+    fn test_extract_description_links_keyword() {
+        // "链接：" 不在关键词列表中，使用 "描述：" 测试
+        let text = "名称：测试资源\n描述：这是一段资源描述内容用于测试\nhttps://pan.quark.cn/s/abc";
+        let description = extract_description_by_keywords(text);
+        assert!(description.is_some());
+        assert!(description.unwrap().contains("资源描述内容"));
+    }
+
+    // --- T015: 特殊字符标签 ---
+
+    #[test]
+    fn test_extract_tags_with_special_chars() {
+        let text = "#C++ #前端/Vue #React.js #AI·大模型\nhttps://pan.quark.cn/s/abc";
+        let tags = extract_tags(text);
+        assert!(tags.contains(&"C++".to_string()), "应提取 C++ 标签");
+        assert!(tags.contains(&"前端/Vue".to_string()), "应提取 前端/Vue 标签");
+        assert!(tags.contains(&"React.js".to_string()), "应提取 React.js 标签");
+        assert!(tags.contains(&"AI·大模型".to_string()), "应提取 AI·大模型 标签");
+    }
+
+    // --- T016: 复杂 t.me 广告 + 网盘链接 ---
+
+    #[test]
+    fn test_extract_resources_complex_tme_ad() {
+        let text = "名称：电影合集\n\
+            https://t.me/ads_channel/123\n\
+            💥限时优惠！关注频道获取更多资源\n\
+            https://pan.quark.cn/s/abc\n\
+            https://www.alipan.com/s/def";
+        let resources = extract_resources(text);
+        assert!(!resources.is_empty());
+        let r = &resources[0];
+        assert_eq!(r.title, "电影合集");
+        // t.me 广告链接不应出现在 url 中
+        assert!(!r.url.iter().any(|u| u.contains("t.me")));
+        // 网盘链接应保留
+        assert!(r.url.contains(&"https://pan.quark.cn/s/abc".to_string()));
+        assert!(r.url.contains(&"https://www.alipan.com/s/def".to_string()));
+    }
 }

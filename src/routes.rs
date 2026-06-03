@@ -67,6 +67,14 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/files/download/{filename}",
             get(handlers::file::download_file),
+        )
+        .route(
+            "/images/{photo_id}",
+            get(handlers::image::get_image),
+        )
+        .route(
+            "/images/{client_id}/{photo_id}",
+            get(handlers::image::get_image_with_client),
         );
 
     // User-level routes — require login (role >= 1)

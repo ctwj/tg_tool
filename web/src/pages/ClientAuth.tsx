@@ -99,7 +99,7 @@ const ClientAuth: React.FC = () => {
 
   if (!clientInfo) {
     return (
-      <div style={{ maxWidth: 500, margin: '0 auto', textAlign: 'center', padding: 60 }}>
+      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <Spin size="large" />
       </div>
     )
@@ -134,7 +134,8 @@ const ClientAuth: React.FC = () => {
   // Bot 认证
   if (isBot) {
     return (
-      <div style={{ maxWidth: 500, margin: '0 auto' }}>
+      <div style={{ height: '100%', overflowY: 'auto' }}>
+        <div style={{ maxWidth: 500, margin: '0 auto' }}>
         <Card
           style={{ borderRadius: 16, boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}
           styles={{ header: { borderBottom: '1px solid #f0f0f0' } }}
@@ -164,6 +165,7 @@ const ClientAuth: React.FC = () => {
             </Space>
           ) : successContent}
         </Card>
+        </div>
       </div>
     )
   }
@@ -183,7 +185,8 @@ const ClientAuth: React.FC = () => {
   }
 
   return (
-    <div style={{ maxWidth: 500, margin: '0 auto' }}>
+    <div style={{ height: '100%', overflowY: 'auto' }}>
+      <div style={{ maxWidth: 500, margin: '0 auto' }}>
       <Card
         style={{ borderRadius: 16, boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}
         styles={{ header: { borderBottom: '1px solid #f0f0f0' } }}
@@ -234,6 +237,7 @@ const ClientAuth: React.FC = () => {
           </Space>
         ) : successContent}
       </Card>
+      </div>
     </div>
   )
 }
