@@ -67,6 +67,7 @@ pub async fn update_options(
 
 /// 测试 AI 大模型端点连通性
 pub async fn test_ai_endpoint(
+    State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<Value>, AppError> {
     let url = body
@@ -96,8 +97,24 @@ pub async fn test_ai_endpoint(
 
     let api_url = format!("{}/chat/completions", url);
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
+    let proxy_arg = {
+        let cache = state.option_cache.read().await;
+        let use_proxy = cache.get("push_ai_use_proxy").map(|v| v == "1" || v == "true").unwrap_or(false);
+        if use_proxy {
+            cache.get("proxy_url").cloned().unwrap_or_default()
+        } else {
+            String::new()
+        }
+    };
+
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15));
+    if !proxy_arg.is_empty() {
+        if let Ok(p) = reqwest::Proxy::all(&proxy_arg) {
+            builder = builder.proxy(p);
+        }
+    }
+    let client = builder
         .build()
         .map_err(|e| AppError::Internal(format!("创建 HTTP 客户端失败: {e}")))?;
 

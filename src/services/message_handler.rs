@@ -93,6 +93,9 @@ pub async fn handle_new_message(
     let raw_data = serialize_message(msg);
     let post_time = msg.date().naive_utc();
 
+    // 提取封面 photo_id
+    let remote_id = crate::services::collector::extract_photo_id(msg);
+
     for (collector_id, channel_id) in collectors {
         if let Err(e) = crate::services::collector::save_realtime_message(
             collector_id,
@@ -100,6 +103,7 @@ pub async fn handle_new_message(
             message_id,
             &raw_data,
             post_time,
+            remote_id.as_deref(),
             db,
         )
         .await

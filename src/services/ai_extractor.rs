@@ -100,9 +100,20 @@ pub async fn call_ai_api(
     endpoint: &AiEndpoint,
     prompt: &str,
     message: &str,
+    proxy_url: Option<&str>,
 ) -> Result<AiExtractResult, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30));
+
+    if let Some(proxy) = proxy_url {
+        if !proxy.is_empty() {
+            if let Ok(p) = reqwest::Proxy::all(proxy) {
+                builder = builder.proxy(p);
+            }
+        }
+    }
+
+    let client = builder
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
 
@@ -220,9 +231,12 @@ pub async fn ai_extract(
         return rule_result.clone();
     }
 
-    let prompt = {
+    let (prompt, proxy_enabled, proxy_url) = {
         let cache = option_cache.read().await;
-        cache.get("push_ai_prompt").cloned().unwrap_or_default()
+        let p = cache.get("push_ai_prompt").cloned().unwrap_or_default();
+        let enabled = cache.get("push_ai_use_proxy").map(|v| v == "1" || v == "true").unwrap_or(false);
+        let proxy = cache.get("proxy_url").cloned().unwrap_or_default();
+        (p, enabled, proxy)
     };
 
     // 尝试轮询选择端点，故障自动切换到下一个
@@ -233,7 +247,8 @@ pub async fn ai_extract(
             None => break,
         };
 
-        match call_ai_api(&endpoint, &prompt, raw_data).await {
+        let proxy_arg = if proxy_enabled && !proxy_url.is_empty() { Some(proxy_url.as_str()) } else { None };
+        match call_ai_api(&endpoint, &prompt, raw_data, proxy_arg).await {
             Ok(ai_result) => {
                 tracing::info!(
                     "AI 提取成功: endpoint={}, title={}",

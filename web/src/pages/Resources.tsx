@@ -57,6 +57,7 @@ const Resources: React.FC = () => {
     auto_extract: false,
     extract_interval: 30,
     ai_prompt: '',
+    ai_use_proxy: false,
   })
   const [extractSaving, setExtractSaving] = useState(false)
   const [configVisible, setConfigVisible] = useState(false)
@@ -127,6 +128,7 @@ const Resources: React.FC = () => {
           auto_extract: data.push_auto_extract === '1' || data.push_auto_extract === 'true',
           extract_interval: parseInt(data.push_extract_interval || '30', 10),
           ai_prompt: data.push_ai_prompt || '',
+          ai_use_proxy: data.push_ai_use_proxy === '1' || data.push_ai_use_proxy === 'true',
         })
       } catch { /* ignore */ }
     }
@@ -162,6 +164,7 @@ const Resources: React.FC = () => {
         auto_extract: extractConfig.auto_extract ? '1' : '0',
         extract_interval: String(extractConfig.extract_interval),
         ai_prompt: extractConfig.ai_prompt,
+        ai_use_proxy: extractConfig.ai_use_proxy ? '1' : '0',
       })
       message.success('提取配置已保存')
       setConfigVisible(false)
@@ -223,6 +226,14 @@ const Resources: React.FC = () => {
       render: (text: string) => <Text strong style={{ color: '#1e1b4b' }}>{text}</Text>,
     },
     {
+      title: '封面ID',
+      dataIndex: 'img',
+      key: 'img',
+      width: 120,
+      ellipsis: true,
+      render: (img: string) => img ? <Text copyable style={{ fontSize: 12 }}>{img}</Text> : '-',
+    },
+    {
       title: '资源链接',
       dataIndex: 'url',
       key: 'url',
@@ -244,6 +255,14 @@ const Resources: React.FC = () => {
           </Space>
         )
       },
+    },
+    {
+      title: '描述',
+      dataIndex: 'description',
+      key: 'description',
+      width: 180,
+      ellipsis: true,
+      render: (text: string) => text ? <Tooltip title={text}><Text style={{ fontSize: 12 }}>{text}</Text></Tooltip> : '-',
     },
     {
       title: '网盘类型',
@@ -297,6 +316,7 @@ const Resources: React.FC = () => {
       title: '操作',
       key: 'action',
       width: 120,
+      fixed: 'right' as const,
       render: (_: unknown, record: ExtractedResource) => (
         <Space size={4}>
           <Tooltip title="编辑">
@@ -379,7 +399,7 @@ const Resources: React.FC = () => {
           loading={loading}
           pagination={false}
           size="middle"
-          scroll={{ x: 1500, y: scrollY }}
+          scroll={{ x: 1700, y: scrollY }}
           style={{ background: '#fff', borderRadius: 12 }}
         />
       </div>
@@ -500,6 +520,20 @@ const Resources: React.FC = () => {
                   rows={6}
                   placeholder={DEFAULT_AI_PROMPT}
                 />
+              </div>
+
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ marginBottom: 8, fontWeight: 500 }}>通过代理访问</div>
+                <Space>
+                  <Switch
+                    checked={extractConfig.ai_use_proxy}
+                    onChange={v => setExtractConfig({ ...extractConfig, ai_use_proxy: v })}
+                  />
+                  {extractConfig.ai_use_proxy && <Tag color="green">已启用</Tag>}
+                </Space>
+                <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
+                  使用系统配置中的代理地址访问大模型 API
+                </div>
               </div>
             </>
           )}

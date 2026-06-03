@@ -214,7 +214,7 @@ pub fn extract_title_by_keywords(text: &str) -> Option<String> {
 /// 通过关键词提取描述
 /// 移植自 demo/common/extract-info.go extractDescriptionInfo
 pub fn extract_description_by_keywords(text: &str) -> Option<String> {
-    let keywords = ["亮点：", "描述：", "资源简介："];
+    let keywords = ["亮点：", "描述：", "资源简介：", "资源介绍：", "简介：", "介绍："];
     for keyword in keywords {
         if let Some(pos) = text.find(keyword) {
             let after = &text[pos + keyword.len()..];

@@ -119,6 +119,7 @@ pub async fn update_extract_config(
         "extract_interval",
         "ai_endpoints",
         "ai_prompt",
+        "ai_use_proxy",
     ];
 
     if let Some(obj) = body.as_object() {

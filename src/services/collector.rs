@@ -128,30 +128,33 @@ pub async fn save_realtime_message(
     message_id: i64,
     raw_data: &str,
     post_time: NaiveDateTime,
+    remote_id: Option<&str>,
     db: &DbPool,
 ) -> Result<(), AppError> {
     match db {
         crate::state::DbPool::Sqlite(pool) => {
             sqlx::query(
-                "INSERT OR IGNORE INTO collector_histories (collector_id, channel_id, message_id, post_time, raw_data) VALUES (?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO collector_histories (collector_id, channel_id, message_id, post_time, raw_data, remote_id) VALUES (?, ?, ?, ?, ?, ?)",
             )
             .bind(collector_id)
             .bind(channel_id)
             .bind(message_id)
             .bind(post_time)
             .bind(raw_data)
+            .bind(remote_id)
             .execute(pool)
             .await?;
         }
         crate::state::DbPool::Postgres(pool) => {
             sqlx::query(
-                "INSERT INTO collector_histories (collector_id, channel_id, message_id, post_time, raw_data) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (channel_id, message_id) DO NOTHING",
+                "INSERT INTO collector_histories (collector_id, channel_id, message_id, post_time, raw_data, remote_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (channel_id, message_id) DO NOTHING",
             )
             .bind(collector_id)
             .bind(channel_id)
             .bind(message_id)
             .bind(post_time)
             .bind(raw_data)
+            .bind(remote_id)
             .execute(pool)
             .await?;
         }
@@ -160,7 +163,7 @@ pub async fn save_realtime_message(
 }
 
 /// 提取消息中的图片 photo_id（直接从消息获取，无需转发图床）
-fn extract_photo_id(msg: &grammers_client::types::Message) -> Option<String> {
+pub fn extract_photo_id(msg: &grammers_client::types::Message) -> Option<String> {
     let media = msg.media()?;
     match media {
         grammers_client::types::Media::Photo(photo) => Some(format!("{}", photo.id())),

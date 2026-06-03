@@ -73,14 +73,6 @@ pub async fn trigger_extraction(
         cache.get("push_extract_mode").cloned().unwrap_or_else(|| "rule".to_string())
     };
 
-    // 读取图床域名
-    let image_domain = {
-        let cache = option_cache.read().await;
-        cache.get("TelegramImageDomain")
-            .map(|s| s.trim_end_matches('/').to_string())
-            .unwrap_or_default()
-    };
-
     for (history_id, raw_data, remote_id) in &histories {
         let raw_text = match raw_data {
             Some(r) => {
@@ -103,16 +95,12 @@ pub async fn trigger_extraction(
         }
 
         for draft in drafts {
-            // 图片 URL
-            let img = if let Some(rid) = remote_id {
-                if !rid.is_empty() && !image_domain.is_empty() {
-                    format!("{}/{}", image_domain, rid)
-                } else {
-                    String::new()
-                }
-            } else {
-                String::new()
-            };
+            // 封面 photo_id
+            let img = remote_id
+                .as_deref()
+                .filter(|rid| !rid.is_empty())
+                .map(|rid| rid.to_string())
+                .unwrap_or_default();
 
             // AI 增强模式
             let (final_draft, mode) = if extract_mode == "ai" {
