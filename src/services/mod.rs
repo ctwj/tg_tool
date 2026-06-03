@@ -3,6 +3,7 @@ pub mod collector;
 pub mod crypto;
 pub mod extractor;
 pub mod forwarder;
+pub mod image_proxy;
 pub mod message_handler;
 pub mod push;
 pub mod resource;

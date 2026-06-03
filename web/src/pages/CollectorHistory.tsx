@@ -4,6 +4,7 @@ import { ArrowLeftOutlined } from '@ant-design/icons'
 import { useParams, useLocation, useNavigate } from 'react-router-dom'
 import apiClient from '../api/client'
 import PageHeader from '../components/PageHeader'
+import { useTableScrollY } from '../hooks/useTableScroll'
 
 const { Paragraph } = Typography
 
@@ -108,8 +109,10 @@ const CollectorHistory: React.FC = () => {
 
   const titleSuffix = state?.channel_name || state?.channel_id || `#${id}`
 
+  const { containerRef, scrollY } = useTableScrollY()
+
   return (
-    <div>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <PageHeader
         title={`采集记录 — ${titleSuffix}`}
         description={`共 ${pagination.total} 条记录`}
@@ -120,7 +123,7 @@ const CollectorHistory: React.FC = () => {
         }
       />
 
-      <div style={{ marginBottom: 16 }}>
+      <div style={{ flexShrink: 0, marginBottom: 12 }}>
         <Space>
           <span style={{ color: '#6b7280', fontSize: 14 }}>提取状态：</span>
           <Select
@@ -137,21 +140,24 @@ const CollectorHistory: React.FC = () => {
         </Space>
       </div>
 
-      <Table
-        dataSource={data}
-        columns={columns}
-        rowKey="id"
-        loading={loading}
-        style={{ background: '#fff', borderRadius: 12 }}
-        pagination={{
-          current: pagination.page,
-          total: pagination.total,
-          pageSize: pagination.pageSize,
-          onChange: (p) => fetch(p),
-          showTotal: (t) => `共 ${t} 条`,
-          showSizeChanger: false,
-        }}
-      />
+      <div ref={containerRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        <Table
+          dataSource={data}
+          columns={columns}
+          rowKey="id"
+          loading={loading}
+          scroll={{ y: scrollY }}
+          style={{ background: '#fff', borderRadius: 12 }}
+          pagination={{
+            current: pagination.page,
+            total: pagination.total,
+            pageSize: pagination.pageSize,
+            onChange: (p) => fetch(p),
+            showTotal: (t) => `共 ${t} 条`,
+            showSizeChanger: false,
+          }}
+        />
+      </div>
     </div>
   )
 }

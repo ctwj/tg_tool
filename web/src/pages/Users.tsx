@@ -3,6 +3,7 @@ import { Table, Button, Modal, Form, Input, Select, Space, message, Popconfirm, 
 import { PlusOutlined, DeleteOutlined, KeyOutlined } from '@ant-design/icons'
 import apiClient from '../api/client'
 import PageHeader from '../components/PageHeader'
+import { useTableScrollY } from '../hooks/useTableScroll'
 
 const Users: React.FC = () => {
   const [users, setUsers] = useState<any[]>([])
@@ -91,8 +92,10 @@ const Users: React.FC = () => {
     },
   ]
 
+  const { containerRef, scrollY } = useTableScrollY()
+
   return (
-    <div>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <PageHeader
         title="用户管理"
         description="管理系统用户账号和权限"
@@ -102,13 +105,16 @@ const Users: React.FC = () => {
           </Button>
         }
       />
-      <Table
-        dataSource={users}
-        columns={columns}
-        rowKey="id"
-        loading={loading}
-        style={{ background: '#fff', borderRadius: 12 }}
-      />
+      <div ref={containerRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        <Table
+          dataSource={users}
+          columns={columns}
+          rowKey="id"
+          loading={loading}
+          scroll={{ y: scrollY }}
+          style={{ background: '#fff', borderRadius: 12 }}
+        />
+      </div>
       <Modal title="创建用户" open={modalOpen} onCancel={() => setModalOpen(false)} onOk={() => form.submit()}>
         <Form form={form} onFinish={createUser} layout="vertical">
           <Form.Item name="username" label="用户名" rules={[{ required: true }]}>

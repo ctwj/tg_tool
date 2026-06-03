@@ -1,13 +1,32 @@
 import React, { useEffect, useState } from 'react'
-import { Table, Button, Modal, Form, Input, Select, Space, message, Tag, Popconfirm, Spin, Typography, Pagination, Tooltip, Statistic, Row, Col, Card, Switch, InputNumber, Divider } from 'antd'
+import { Table, Button, Modal, Form, Input, Select, Space, message, Tag, Popconfirm, Typography, Pagination, Tooltip, Statistic, Row, Col, Card, Switch, InputNumber, Divider } from 'antd'
 import { ThunderboltOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, BarChartOutlined, SettingOutlined } from '@ant-design/icons'
 import apiClient from '../api/client'
 import type { ExtractedResource, ResourceStats, ExtractionResult } from '../types'
 import PageHeader from '../components/PageHeader'
+import { useTableScrollY } from '../hooks/useTableScroll'
 
 const { Text } = Typography
 
-const DEFAULT_AI_PROMPT = `从以下 Telegram 消息中提取结构化资源信息。请返回 JSON 格式：{"title":"资源标题","url":["链接列表"],"description":"描述","category":"网盘类型","tags":"标签,逗号分隔"}
+const DEFAULT_AI_PROMPT = `你是一个专业的 Telegram 消息资源提取助手。请从以下 Telegram 消息中提取结构化资源信息，返回严格的 JSON 格式。
+
+## 字段说明
+- "title": 资源名称标题，不包含链接、标签或特殊符号
+- "url": 网盘分享链接数组，只保留有效的网盘链接（忽略 t.me 等广告链接）
+- "description": 资源描述或亮点，从"描述："、"亮点："、"简介："等关键词提取，没有则留空
+- "category": 网盘类型，必须为以下之一：quark、aliyun、baidu、uc、115、123pan、tianyi、xunlei，无法识别则留空
+- "tags": 标签，逗号分隔，最多5个，去除#前缀
+
+## 处理规则
+- 忽略 t.me 开头的广告推广链接
+- 如果消息中出现"名称："、"标题："、"资源名称："等关键词，提取其后的内容作为 title
+- 如果消息中没有明确标题，从内容中推断一个简短描述性的标题
+- 处理中英文混合和格式混乱的消息
+
+## 输出示例
+{"title":"某部电影 4K 蓝光版","url":["https://pan.quark.cn/s/abc123"],"description":"4K 蓝光高清版本，中英双字","category":"quark","tags":"电影,4K,蓝光"}
+
+只返回 JSON，不要包含任何其他文字。
 
 消息内容：`
 
@@ -199,15 +218,38 @@ const Resources: React.FC = () => {
       title: '标题',
       dataIndex: 'title',
       key: 'title',
-      width: 300,
+      width: 250,
       ellipsis: true,
       render: (text: string) => <Text strong style={{ color: '#1e1b4b' }}>{text}</Text>,
+    },
+    {
+      title: '资源链接',
+      dataIndex: 'url',
+      key: 'url',
+      width: 220,
+      ellipsis: true,
+      render: (url: string) => {
+        if (!url) return '-'
+        const links = url.split(',')
+        return (
+          <Space direction="vertical" size={2}>
+            {links.map((link, i) => (
+              <Tooltip key={i} title={link}>
+                <a href={link} target="_blank" rel="noreferrer"
+                   style={{ fontSize: 12, color: '#6366f1', display: 'block', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {link.replace(/^https?:\/\//, '')}
+                </a>
+              </Tooltip>
+            ))}
+          </Space>
+        )
+      },
     },
     {
       title: '网盘类型',
       dataIndex: 'category',
       key: 'category',
-      width: 120,
+      width: 110,
       render: (cat: string) => (
         <Tag color="#6366f1" style={{ margin: 0 }}>{categoryLabel(cat)}</Tag>
       ),
@@ -216,7 +258,7 @@ const Resources: React.FC = () => {
       title: '提取模式',
       dataIndex: 'extract_mode',
       key: 'extract_mode',
-      width: 100,
+      width: 90,
       render: (mode: string) => (
         <Tag color={mode === 'ai' ? '#8b5cf6' : '#10b981'} style={{ margin: 0 }}>{mode === 'ai' ? 'AI' : '规则'}</Tag>
       ),
@@ -228,7 +270,7 @@ const Resources: React.FC = () => {
       width: 150,
       ellipsis: true,
       render: (tags: string) =>
-        tags ? tags.split(',').map((t, i) => <Tag key={i}>{t}</Tag>) : '-',
+        tags ? tags.split(',').filter(Boolean).map((t, i) => <Tag key={i}>{t}</Tag>) : '-',
     },
     {
       title: '推送状态',
@@ -270,8 +312,10 @@ const Resources: React.FC = () => {
     },
   ]
 
+  const { containerRef, scrollY } = useTableScrollY(false) // 外部 Pagination
+
   return (
-    <div>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <PageHeader
         title="资源管理"
         description="管理从 Telegram 消息中提取的资源"
@@ -310,7 +354,7 @@ const Resources: React.FC = () => {
       />
 
       {statsVisible && stats && (
-        <Card size="small" style={{ marginBottom: 16, borderRadius: 12 }}>
+        <Card size="small" style={{ marginBottom: 12, borderRadius: 12, flexShrink: 0 }}>
           <Row gutter={16}>
             <Col span={6}><Statistic title="总资源" value={stats.total} /></Col>
             <Col span={6}><Statistic title="已推送" value={stats.pushed} valueStyle={{ color: '#10b981' }} /></Col>
@@ -327,19 +371,20 @@ const Resources: React.FC = () => {
         </Card>
       )}
 
-      <Spin spinning={loading}>
+      <div ref={containerRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
         <Table
           dataSource={resources}
           columns={columns}
           rowKey="id"
+          loading={loading}
           pagination={false}
           size="middle"
-          scroll={{ x: 1200 }}
+          scroll={{ x: 1500, y: scrollY }}
           style={{ background: '#fff', borderRadius: 12 }}
         />
-      </Spin>
+      </div>
 
-      <div style={{ textAlign: 'right', marginTop: 16 }}>
+      <div style={{ flexShrink: 0, padding: '12px 0 0', textAlign: 'right' }}>
         <Pagination
           current={page}
           pageSize={pageSize}
@@ -398,8 +443,15 @@ const Resources: React.FC = () => {
                 <Tag color="purple">AI 模式已启用</Tag>
               )}
             </Space>
-            <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
-              规则提取：基于正则匹配，速度快；AI 增强：调用大模型，提取质量更高
+            <div style={{ fontSize: 12, color: '#666', marginTop: 8, lineHeight: '20px' }}>
+              <div style={{ marginBottom: 4 }}>
+                <Tag color="green" style={{ margin: 0, fontSize: 11 }}>规则提取</Tag>
+                速度即时 · 无外部依赖 · 识别 8 种网盘链接 + 广告清洗 + 关键词提取 · 适合格式规范的资源消息
+              </div>
+              <div>
+                <Tag color="purple" style={{ margin: 0, fontSize: 11 }}>AI 增强</Tag>
+                调用大模型（约 30s）· 需配置 API 端点 · 在规则基础上语义增强标题/描述/分类 · 适合格式复杂或非标准的消息
+              </div>
             </div>
           </div>
 

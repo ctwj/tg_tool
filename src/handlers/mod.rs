@@ -2,6 +2,7 @@ pub mod auth;
 pub mod client;
 pub mod collector;
 pub mod file;
+pub mod image;
 pub mod misc;
 pub mod option;
 pub mod push;

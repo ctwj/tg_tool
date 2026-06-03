@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom'
 import apiClient from '../api/client'
 import type { Collector, Client, Chat } from '../types'
 import PageHeader from '../components/PageHeader'
+import { useTableScrollY } from '../hooks/useTableScroll'
 
 const Collectors: React.FC = () => {
   const [collectors, setCollectors] = useState<Collector[]>([])
@@ -140,6 +141,22 @@ const Collectors: React.FC = () => {
       render: (v: number) => <code style={{ fontSize: 12, color: '#6366f1', background: '#eef2ff', padding: '2px 8px', borderRadius: 4 }}>{v}</code>,
     },
     {
+      title: '累计消息', dataIndex: 'total_messages', key: 'total_messages', width: 100, align: 'center' as const,
+      render: (v: number) => <span style={{ fontWeight: 500 }}>{v ?? 0}</span>,
+    },
+    {
+      title: '今日新增', dataIndex: 'today_messages', key: 'today_messages', width: 100, align: 'center' as const,
+      render: (v: number) => (
+        <span style={{ fontWeight: 500, color: v > 0 ? '#10b981' : undefined }}>{v ?? 0}</span>
+      ),
+    },
+    {
+      title: '未提取', dataIndex: 'unextracted_messages', key: 'unextracted_messages', width: 90, align: 'center' as const,
+      render: (v: number) => (
+        <span style={{ fontWeight: 500, color: v > 0 ? '#f59e0b' : undefined }}>{v ?? 0}</span>
+      ),
+    },
+    {
       title: '激活', dataIndex: 'is_active', key: 'is_active', width: 80,
       render: (v: boolean, r: Collector) => <Switch checked={v} onChange={() => toggleCollector(r.id)} size="small" />,
     },
@@ -159,8 +176,10 @@ const Collectors: React.FC = () => {
     },
   ]
 
+  const { containerRef, scrollY } = useTableScrollY()
+
   return (
-    <div>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <PageHeader
         title="采集器管理"
         description="管理频道消息采集任务"
@@ -170,13 +189,16 @@ const Collectors: React.FC = () => {
           </Button>
         }
       />
-      <Table
-        dataSource={collectors}
-        columns={columns}
-        rowKey="id"
-        loading={loading}
-        style={{ background: '#fff', borderRadius: 12 }}
-      />
+      <div ref={containerRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        <Table
+          dataSource={collectors}
+          columns={columns}
+          rowKey="id"
+          loading={loading}
+          scroll={{ y: scrollY }}
+          style={{ background: '#fff', borderRadius: 12 }}
+        />
+      </div>
 
       {/* 创建采集器弹窗 */}
       <Modal

@@ -87,7 +87,7 @@ const Layout: React.FC = () => {
   }
 
   return (
-    <AntLayout style={{ minHeight: '100vh' }}>
+    <AntLayout style={{ height: '100vh', overflow: 'hidden' }}>
       <Sider
         trigger={null}
         collapsible
@@ -96,6 +96,7 @@ const Layout: React.FC = () => {
         style={{
           background: 'linear-gradient(180deg, #1e1b4b 0%, #312e81 100%)',
           boxShadow: '2px 0 8px rgba(0,0,0,0.15)',
+          overflowY: 'auto',
         }}
       >
         {/* Logo */}
@@ -151,7 +152,7 @@ const Layout: React.FC = () => {
           }}
         />
       </Sider>
-      <AntLayout>
+      <AntLayout style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <Header style={{
           padding: '0 24px',
           background: '#fff',
@@ -160,8 +161,7 @@ const Layout: React.FC = () => {
           justifyContent: 'space-between',
           borderBottom: '1px solid #f0f0f0',
           height: 64,
-          position: 'sticky',
-          top: 0,
+          flexShrink: 0,
           zIndex: 10,
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -213,9 +213,11 @@ const Layout: React.FC = () => {
           </Dropdown>
         </Header>
         <Content style={{
-          margin: 24,
-          padding: 0,
-          minHeight: 280,
+          flex: 1,
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
+          padding: '20px 24px',
         }}>
           <Outlet />
         </Content>

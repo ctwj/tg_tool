@@ -23,14 +23,24 @@ pub async fn list_collectors(
     State(state): State<AppState>,
     Query(_params): Query<PaginationParams>,
 ) -> Result<Json<Value>, AppError> {
-    let collectors: Vec<crate::models::collector::Collector> = match &state.db {
+    let collectors: Vec<crate::models::collector::CollectorWithStats> = match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
-            sqlx::query_as(&format!("{SELECT_COLLECTOR} ORDER BY id DESC"))
-                .fetch_all(pool).await?
+            sqlx::query_as(
+                "SELECT c.id, c.user_id, c.client_id, c.channel_id, c.channel_name, c.collector_type, c.is_active, c.remark, c.created_at, c.updated_at, \
+                 COALESCE((SELECT COUNT(*) FROM collector_histories WHERE collector_id = c.id), 0) AS total_messages, \
+                 COALESCE((SELECT COUNT(*) FROM collector_histories WHERE collector_id = c.id AND DATE(created_at) = DATE('now')), 0) AS today_messages, \
+                 COALESCE((SELECT COUNT(*) FROM collector_histories WHERE collector_id = c.id AND is_extracted = 0), 0) AS unextracted_messages \
+                 FROM collectors c ORDER BY c.id DESC"
+            ).fetch_all(pool).await?
         }
         crate::state::DbPool::Postgres(pool) => {
-            sqlx::query_as(&format!("{SELECT_COLLECTOR} ORDER BY id DESC"))
-                .fetch_all(pool).await?
+            sqlx::query_as(
+                "SELECT c.id, c.user_id, c.client_id, c.channel_id, c.channel_name, c.collector_type, c.is_active, c.remark, c.created_at, c.updated_at, \
+                 COALESCE((SELECT COUNT(*) FROM collector_histories WHERE collector_id = c.id), 0) AS total_messages, \
+                 COALESCE((SELECT COUNT(*) FROM collector_histories WHERE collector_id = c.id AND created_at::date = CURRENT_DATE), 0) AS today_messages, \
+                 COALESCE((SELECT COUNT(*) FROM collector_histories WHERE collector_id = c.id AND is_extracted = false), 0) AS unextracted_messages \
+                 FROM collectors c ORDER BY c.id DESC"
+            ).fetch_all(pool).await?
         }
     };
     Ok(Json(json!({ "success": true, "data": { "list": collectors } })))
@@ -176,12 +186,38 @@ pub async fn delete_collector(
 ) -> Result<Json<Value>, AppError> {
     match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
+            // 先删除关联的提取资源（extracted_resources → collector_histories → collectors）
+            sqlx::query(
+                "DELETE FROM extracted_resources WHERE collector_history_id IN (SELECT id FROM collector_histories WHERE collector_id = ?)"
+            )
+                .bind(id)
+                .execute(pool)
+                .await?;
+            // 再删除采集历史记录
+            sqlx::query("DELETE FROM collector_histories WHERE collector_id = ?")
+                .bind(id)
+                .execute(pool)
+                .await?;
+            // 最后删除采集器
             sqlx::query("DELETE FROM collectors WHERE id = ?")
                 .bind(id)
                 .execute(pool)
                 .await?;
         }
         crate::state::DbPool::Postgres(pool) => {
+            // 先删除关联的提取资源
+            sqlx::query(
+                "DELETE FROM extracted_resources WHERE collector_history_id IN (SELECT id FROM collector_histories WHERE collector_id = $1)"
+            )
+                .bind(id)
+                .execute(pool)
+                .await?;
+            // 再删除采集历史记录
+            sqlx::query("DELETE FROM collector_histories WHERE collector_id = $1")
+                .bind(id)
+                .execute(pool)
+                .await?;
+            // 最后删除采集器
             sqlx::query("DELETE FROM collectors WHERE id = $1")
                 .bind(id)
                 .execute(pool)
@@ -264,7 +300,6 @@ pub async fn fetch_history(
         limit,
         &state.tg_clients,
         &state.db,
-        &state.option_cache,
     )
     .await?;
     Ok(Json(json!({ "success": true, "data": { "message": format!("采集完成，新增 {} 条", count) } })))

@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react'
-import { Card, Form, Input, Button, message, Space, Alert, Tabs, Modal, Tag, Switch, InputNumber, Select, Spin } from 'antd'
-import { CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined, PlusOutlined, ExperimentOutlined, EditOutlined, DeleteOutlined, ApiOutlined } from '@ant-design/icons'
+import { Card, Form, Input, Button, message, Space, Alert, Tabs, Modal, Tag, Switch, InputNumber, Select, Spin, Collapse, Typography } from 'antd'
+import { CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined, PlusOutlined, ExperimentOutlined, EditOutlined, DeleteOutlined, ApiOutlined, PictureOutlined, CloudOutlined, GlobalOutlined } from '@ant-design/icons'
 import apiClient from '../api/client'
 import type { AiEndpoint, Client, Chat } from '../types'
 import PageHeader from '../components/PageHeader'
 
+const { Text, Paragraph } = Typography
 
 interface ProxyTestResult {
   success: boolean
@@ -34,6 +35,7 @@ const Settings: React.FC = () => {
   const [chats, setChats] = useState<Chat[]>([])
   const [chatsLoading, setChatsLoading] = useState(false)
   const [selectedClientId, setSelectedClientId] = useState<string>('')
+  const [imageSaving, setImageSaving] = useState(false)
 
   // ─── 大模型配置 ───
   const [endpoints, setEndpoints] = useState<AiEndpoint[]>([])
@@ -105,6 +107,19 @@ const Settings: React.FC = () => {
       message.error('保存失败')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const saveImageOptions = async () => {
+    setImageSaving(true)
+    try {
+      const values = form.getFieldsValue(['image_group', 'TelegramImageDomain', 'ImageCacheTTL'])
+      await apiClient.put('/options', values)
+      message.success('图床配置已保存')
+    } catch {
+      message.error('保存失败')
+    } finally {
+      setImageSaving(false)
     }
   }
 
@@ -278,8 +293,21 @@ const Settings: React.FC = () => {
 
   // ─── 渲染 ───
 
+  const codeStyle: React.CSSProperties = {
+    background: '#f5f5f5',
+    border: '1px solid #e8e8e8',
+    borderRadius: 8,
+    padding: '12px 16px',
+    fontFamily: 'monospace',
+    fontSize: 13,
+    lineHeight: 1.6,
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-all',
+    overflowX: 'auto',
+  }
+
   return (
-    <div>
+    <div style={{ height: '100%', overflowY: 'auto' }}>
       <PageHeader title="系统设置" description="管理系统配置、代理和 AI 大模型" />
 
       <Tabs
@@ -375,9 +403,22 @@ const Settings: React.FC = () => {
                       <Input placeholder={getPlaceholder('tg_app_hash') || '从 my.telegram.org 获取'} />
                     </Form.Item>
                   </Card>
-
-                  {/* 图床配置 */}
-                  <Card title="图床配置" size="small" type="inner" style={{ borderRadius: 10 }}>
+                </Form>
+              </Card>
+            ),
+          },
+          {
+            key: 'image',
+            label: (
+              <span>
+                <PictureOutlined /> 图床配置
+              </span>
+            ),
+            children: (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                {/* 图床设置 */}
+                <Card title="图床设置" style={{ borderRadius: 12 }}>
+                  <Form form={form} layout="vertical">
                     <Form.Item label="选择客户端" help="选择一个已连接的客户端来加载群组列表">
                       <Select
                         placeholder="请先选择客户端"
@@ -421,9 +462,215 @@ const Settings: React.FC = () => {
                     <Form.Item name="image_group" label="群组 ID" help="也可直接输入群组 ID">
                       <Input placeholder="-100xxxxxxxxxx" />
                     </Form.Item>
-                  </Card>
-                </Form>
-              </Card>
+                    <Form.Item
+                      name="TelegramImageDomain"
+                      label="图床域名"
+                      help="图片访问的域名，如 https://img.example.com，用于拼接资源封面 URL"
+                    >
+                      <Input placeholder="https://img.example.com" />
+                    </Form.Item>
+                    <Form.Item
+                      name="ImageCacheTTL"
+                      label="图片缓存过期天数"
+                      help="本地缓存的图片文件过期时间，过期后重新从 Telegram 下载"
+                      initialValue={7}
+                    >
+                      <InputNumber min={1} max={365} step={1} style={{ width: '100%' }} placeholder="7" />
+                    </Form.Item>
+                    <Form.Item>
+                      <Button type="primary" onClick={saveImageOptions} loading={imageSaving}>
+                        保存图床配置
+                      </Button>
+                    </Form.Item>
+                  </Form>
+                </Card>
+
+                {/* Nginx 配置说明 */}
+                <Card
+                  title={<span><GlobalOutlined /> Nginx 反向代理配置</span>}
+                  style={{ borderRadius: 12 }}
+                >
+                  <Paragraph type="secondary" style={{ marginBottom: 16 }}>
+                    配置 Nginx 反向代理后，可以通过独立域名直接访问图片，无需暴露 API 端口。
+                    URL 支持两种格式：
+                    <Text code>https://img.example.com/{'{'}photo_id{'}'}</Text>（自动选择客户端）或
+                    <Text code>https://img.example.com/{'{'}client_id{'}'}/{'{'}photo_id{'}'}</Text>（指定客户端）。
+                  </Paragraph>
+                  <Collapse
+                    ghost
+                    items={[
+                      {
+                        key: 'nginx-basic',
+                        label: '基础配置',
+                        children: (
+                          <div style={codeStyle}>{`server {
+    listen 443 ssl http2;
+    server_name img.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/img.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/img.example.com/privkey.pem;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000/api/images/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 30s;
+    }
+}
+
+# HTTP → HTTPS 重定向
+server {
+    listen 80;
+    server_name img.example.com;
+    return 301 https://$host$request_uri;
+}`}</div>
+                        ),
+                      },
+                      {
+                        key: 'nginx-cache',
+                        label: 'Nginx 本地缓存（可选）',
+                        children: (
+                          <>
+                            <Paragraph type="secondary">
+                              在 Nginx 层增加本地缓存，减少对 API 的请求。在 <Text code>http</Text> 块中添加缓存路径，在 <Text code>server</Text> 块中启用。
+                            </Paragraph>
+                            <div style={codeStyle}>{`# http 块中：
+proxy_cache_path /var/cache/nginx/images levels=1:2
+    keys_zone=image_cache:10m max_size=1g inactive=30d;
+
+# server 块的 location / 中：
+location / {
+    proxy_pass http://127.0.0.1:3000/api/images/;
+
+    proxy_cache image_cache;
+    proxy_cache_valid 200 30d;
+    proxy_cache_valid 404 1m;
+    proxy_cache_valid 503 1m;
+    add_header X-Cache-Status $upstream_cache_status;
+
+    # ... 其他 proxy_set_header
+}`}</div>
+                          </>
+                        ),
+                      },
+                      {
+                        key: 'nginx-ssl',
+                        label: 'SSL 证书获取',
+                        children: (
+                          <div style={codeStyle}>{`# 安装 certbot
+apt install certbot python3-certbot-nginx
+
+# 获取证书（先确保 DNS 已指向服务器）
+certbot --nginx -d img.example.com
+
+# 测试自动续期
+certbot renew --dry-run`}</div>
+                        ),
+                      },
+                    ]}
+                  />
+                </Card>
+
+                {/* Cloudflare 配置说明 */}
+                <Card
+                  title={<span><CloudOutlined /> Cloudflare CDN 缓存配置</span>}
+                  style={{ borderRadius: 12 }}
+                >
+                  <Paragraph type="secondary" style={{ marginBottom: 16 }}>
+                    配置 Cloudflare CDN 缓存后，图片在首次访问后被 CDN 边缘节点缓存，后续访问直接从 CDN 返回，无需回源。
+                  </Paragraph>
+                  <Collapse
+                    ghost
+                    items={[
+                      {
+                        key: 'cf-dns',
+                        label: '1. DNS 配置',
+                        children: (
+                          <>
+                            <Paragraph>在 Cloudflare Dashboard → DNS → Records 中添加 A 记录：</Paragraph>
+                            <ul style={{ paddingLeft: 20, margin: '8px 0' }}>
+                              <li>Type: <Text code>A</Text></li>
+                              <li>Name: <Text code>img</Text>（即 img.example.com）</li>
+                              <li>IPv4: 你的服务器 IP</li>
+                              <li>Proxy status: <Text type="warning">Proxied（橙色云朵 ☁️）</Text> — 必须开启</li>
+                            </ul>
+                            <Alert
+                              message="同时确保 SSL/TLS 加密模式设为 Full (strict)"
+                              type="info"
+                              showIcon
+                              style={{ marginTop: 12, borderRadius: 8 }}
+                            />
+                          </>
+                        ),
+                      },
+                      {
+                        key: 'cf-cache',
+                        label: '2. Cache Rule 配置',
+                        children: (
+                          <>
+                            <Paragraph>在 Caching → Configuration → Cache Rules 中创建规则：</Paragraph>
+                            <ul style={{ paddingLeft: 20, margin: '8px 0' }}>
+                              <li><Text strong>规则名称</Text>：Image Cache</li>
+                              <li><Text strong>匹配条件</Text>：Hostname equals <Text code>img.example.com</Text></li>
+                              <li><Text strong>Cache eligibility</Text>：Eligible for cache</li>
+                              <li><Text strong>Edge TTL</Text>：7 days</li>
+                              <li><Text strong>Browser TTL</Text>：30 days</li>
+                            </ul>
+                            <Paragraph type="secondary" style={{ marginTop: 12 }}>
+                              替代方案：也可使用旧版 Page Rule，URL 匹配 <Text code>img.example.com/*</Text>，设置 Cache Level = Cache Everything。
+                            </Paragraph>
+                          </>
+                        ),
+                      },
+                      {
+                        key: 'cf-verify',
+                        label: '3. 验证与状态码',
+                        children: (
+                          <>
+                            <Paragraph>配置完成后使用 curl 验证：</Paragraph>
+                            <div style={codeStyle}>{`# 首次访问
+curl -I https://img.example.com/{photo_id}
+# → CF-Cache-Status: MISS
+
+# 第二次访问
+curl -I https://img.example.com/{photo_id}
+# → CF-Cache-Status: HIT`}</div>
+                            <Paragraph style={{ marginTop: 16 }}><Text strong>CF-Cache-Status 含义：</Text></Paragraph>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 16px', fontSize: 13 }}>
+                              <Tag color="blue">MISS</Tag><span>未命中缓存，回源获取</span>
+                              <Tag color="green">HIT</Tag><span>命中缓存，直接返回</span>
+                              <Tag color="orange">EXPIRED</Tag><span>缓存过期，回源刷新</span>
+                              <Tag color="default">STALE</Tag><span>返回过期缓存，同时后台刷新</span>
+                              <Tag color="default">REVALIDATED</Tag><span>ETag 验证缓存仍有效</span>
+                              <Tag color="red">BYPASS</Tag><span>缓存被跳过</span>
+                            </div>
+                          </>
+                        ),
+                      },
+                      {
+                        key: 'cf-purge',
+                        label: '4. 缓存清除',
+                        children: (
+                          <>
+                            <Paragraph>在 Cloudflare Dashboard → Caching → Configuration 中：</Paragraph>
+                            <ul style={{ paddingLeft: 20, margin: '8px 0' }}>
+                              <li><Text strong>Purge Everything</Text>：清除所有缓存</li>
+                              <li><Text strong>Custom Purge</Text>：输入完整 URL 清除指定图片缓存</li>
+                            </ul>
+                          </>
+                        ),
+                      },
+                    ]}
+                  />
+                </Card>
+              </div>
             ),
           },
           {

@@ -90,6 +90,9 @@ export interface Collector {
   remark?: string
   created_at: string
   updated_at: string
+  total_messages: number
+  today_messages: number
+  unextracted_messages: number
 }
 
 export interface CollectorHistory {

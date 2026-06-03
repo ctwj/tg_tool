@@ -1,5 +1,7 @@
+use dashmap::DashMap;
 use sqlx::{Pool, Postgres, Sqlite};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
@@ -82,6 +84,10 @@ pub struct AppState {
     pub extract_scheduler: crate::services::scheduler::ExtractSchedulerHandle,
     pub peer_cache: PeerCache,
     pub rate_limiter: crate::middleware::rate_limit::RateLimiter,
+    /// 图片缓存目录路径
+    pub image_cache_dir: PathBuf,
+    /// 正在下载的图片 ID 标记（防并发重复下载）
+    pub inflight_downloads: Arc<DashMap<String, Instant>>,
 }
 
 impl AppState {
@@ -89,6 +95,7 @@ impl AppState {
         db: DbPool,
         config: crate::config::Config,
         tg_manager: std::sync::Arc<crate::services::tg_manager::TgManager>,
+        image_cache_dir: PathBuf,
     ) -> Self {
         let rate_limiter = crate::middleware::rate_limit::RateLimiter::new(
             config.rate_limit_max,
@@ -104,6 +111,8 @@ impl AppState {
             extract_scheduler: crate::services::scheduler::create_extract_scheduler(),
             peer_cache: Arc::new(RwLock::new(HashMap::new())),
             rate_limiter,
+            image_cache_dir,
+            inflight_downloads: Arc::new(DashMap::new()),
         }
     }
 

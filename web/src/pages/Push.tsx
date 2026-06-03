@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react'
-import { Button, Table, message, Space, Modal, Form, Input, InputNumber, Switch, Select, Statistic, Card, Row, Col, Tag, Typography, Divider } from 'antd'
+import { Button, Table, message, Space, Modal, Form, Input, InputNumber, Switch, Statistic, Card, Row, Col, Tag, Typography, Divider } from 'antd'
 import { RocketOutlined, ReloadOutlined, SettingOutlined, BarChartOutlined } from '@ant-design/icons'
 import apiClient from '../api/client'
 import PageHeader from '../components/PageHeader'
+import { useTableScrollY } from '../hooks/useTableScroll'
 
 const { Text } = Typography
 
@@ -52,11 +53,6 @@ const Push: React.FC = () => {
         batch_size: parseInt(data.push_batch_size) || 1000,
         auto_push: data.push_auto_push === '1' || data.push_auto_push === 'true',
         interval: parseInt(data.push_interval) || 30,
-        extract_mode: data.push_extract_mode || 'rule',
-        auto_extract: data.push_auto_extract === '1' || data.push_auto_extract === 'true',
-        extract_interval: parseInt(data.push_extract_interval) || 30,
-        ai_endpoints: data.push_ai_endpoints || '',
-        ai_prompt: data.push_ai_prompt || '',
       })
     } catch { /* ignore */ }
   }
@@ -128,14 +124,6 @@ const Push: React.FC = () => {
         interval: values.interval || 30,
       })
 
-      await apiClient.put('/push/extract-config', {
-        extract_mode: values.extract_mode || 'rule',
-        auto_extract: values.auto_extract ? '1' : '0',
-        extract_interval: String(values.extract_interval || 30),
-        ai_endpoints: values.ai_endpoints || '',
-        ai_prompt: values.ai_prompt || '',
-      })
-
       message.success('配置已保存')
       setConfigOpen(false)
     } catch (e: any) {
@@ -171,8 +159,10 @@ const Push: React.FC = () => {
     },
   ]
 
+  const { containerRef, scrollY } = useTableScrollY()
+
   return (
-    <div>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <PageHeader
         title="推送管理"
         description="管理消息推送和调度配置"
@@ -185,28 +175,31 @@ const Push: React.FC = () => {
       />
 
       {/* 操作栏 */}
-      <Space style={{ marginBottom: 16 }}>
+      <Space style={{ marginBottom: 12, flexShrink: 0 }}>
         <Button type="primary" icon={<RocketOutlined />} onClick={triggerPush}>手动推送</Button>
         <Button icon={<ReloadOutlined />} onClick={retryFailed}>重试失败</Button>
         <Button onClick={() => { fetchHistories(page); fetchStats() }}>刷新</Button>
       </Space>
 
       {/* 推送历史表格 */}
-      <Table
-        dataSource={histories}
-        columns={columns}
-        rowKey="id"
-        loading={loading}
-        pagination={{
-          current: page,
-          total,
-          pageSize: 20,
-          onChange: (p) => fetchHistories(p),
-          showTotal: (t) => `共 ${t} 条`,
-          size: 'small',
-        }}
-        style={{ background: '#fff', borderRadius: 12 }}
-      />
+      <div ref={containerRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        <Table
+          dataSource={histories}
+          columns={columns}
+          rowKey="id"
+          loading={loading}
+          scroll={{ y: scrollY }}
+          pagination={{
+            current: page,
+            total,
+            pageSize: 20,
+            onChange: (p) => fetchHistories(p),
+            showTotal: (t) => `共 ${t} 条`,
+            size: 'small',
+          }}
+          style={{ background: '#fff', borderRadius: 12 }}
+        />
+      </div>
 
       {/* 推送统计弹窗 */}
       <Modal
@@ -274,47 +267,6 @@ const Push: React.FC = () => {
                 extra="每隔多少分钟自动推送一次，最小 1 分钟">
                 <InputNumber min={1} max={1440} style={{ width: 200 }} />
               </Form.Item>
-            ) : null}
-          </Form.Item>
-
-          <Divider orientation="left">资源提取配置</Divider>
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item name="extract_mode" label="提取模式"
-                extra="规则模式使用内置正则，AI 模式调用大模型增强提取">
-                <Select placeholder="选择提取模式" options={[
-                  { label: '规则提取（推荐）', value: 'rule' },
-                  { label: 'AI 增强', value: 'ai' },
-                ]} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="auto_extract" label="自动定时提取" valuePropName="checked"
-                extra="开启后按间隔自动扫描并提取未处理的采集记录">
-                <Switch checkedChildren="开" unCheckedChildren="关" />
-              </Form.Item>
-            </Col>
-          </Row>
-          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.auto_extract !== cur.auto_extract}>
-            {({ getFieldValue }) => getFieldValue('auto_extract') ? (
-              <Form.Item name="extract_interval" label="提取间隔（分钟）"
-                extra="每隔多少分钟自动提取一次">
-                <InputNumber min={1} max={1440} style={{ width: 200 }} />
-              </Form.Item>
-            ) : null}
-          </Form.Item>
-          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.extract_mode !== cur.extract_mode}>
-            {({ getFieldValue }) => getFieldValue('extract_mode') === 'ai' ? (
-              <>
-                <Form.Item name="ai_endpoints" label="AI API 端点列表"
-                  extra='OpenAI 兼容格式，JSON 数组。如：[{"url":"https://api.openai.com","key":"sk-xxx","model":"gpt-4o"}]'>
-                  <Input.TextArea rows={3} placeholder='[{"url":"https://api.openai.com","key":"sk-xxx","model":"gpt-4o"}]' />
-                </Form.Item>
-                <Form.Item name="ai_prompt" label="AI 提示词模板（可选）"
-                  extra="留空使用默认提示词">
-                  <Input.TextArea rows={2} placeholder="从以下 Telegram 消息中提取结构化资源信息..." />
-                </Form.Item>
-              </>
             ) : null}
           </Form.Item>
         </Form>
