@@ -9,6 +9,19 @@ pub async fn register(
     State(state): State<AppState>,
     Json(req): Json<CreateUserRequest>,
 ) -> Result<Json<Value>, AppError> {
+    // Check if registration is allowed
+    {
+        let cache = state.option_cache.read().await;
+        let allowed = cache
+            .get("allow_register")
+            .map(|v| v != "false")
+            .unwrap_or(true);
+        drop(cache);
+        if !allowed {
+            return Err(AppError::Forbidden("注册已关闭".into()));
+        }
+    }
+
     let hash = crypto::hash_password(&req.password)?;
 
     match &state.db {
@@ -88,6 +101,21 @@ pub async fn login(
 
 pub async fn logout() -> Result<Json<Value>, AppError> {
     Ok(Json(json!({ "success": true, "message": "已退出登录" })))
+}
+
+/// Public endpoint: query whether registration is allowed (no auth required)
+pub async fn register_status(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, AppError> {
+    let cache = state.option_cache.read().await;
+    let allow = cache
+        .get("allow_register")
+        .map(|v| v != "false")
+        .unwrap_or(true);
+    Ok(Json(json!({
+        "success": true,
+        "data": { "allow_register": allow }
+    })))
 }
 
 pub async fn get_me(
