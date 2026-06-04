@@ -16,6 +16,11 @@ pub struct SchedulerState {
     pub api_token: String,
     pub target: String,
     pub batch_size: i64,
+    pub auth_type: String,
+    pub auth_key: String,
+    pub http_method: String,
+    pub body_template: String,
+    pub custom_headers: String,
 }
 
 pub type SchedulerHandle = Arc<RwLock<SchedulerState>>;
@@ -31,6 +36,11 @@ pub fn create_scheduler() -> SchedulerHandle {
         api_token: String::new(),
         target: "external_api".to_string(),
         batch_size: 1000,
+        auth_type: "custom_header".to_string(),
+        auth_key: "X-API-Token".to_string(),
+        http_method: "POST".to_string(),
+        body_template: String::new(),
+        custom_headers: "[]".to_string(),
     }))
 }
 
@@ -122,6 +132,11 @@ pub async fn update_scheduler(
         state.api_token = api_token;
         state.target = target;
         state.batch_size = batch_size;
+        state.auth_type = option_cache.read().await.get("push_auth_type").cloned().unwrap_or_default();
+        state.auth_key = option_cache.read().await.get("push_auth_key").cloned().unwrap_or_default();
+        state.http_method = option_cache.read().await.get("push_http_method").cloned().unwrap_or_default();
+        state.body_template = option_cache.read().await.get("push_body_template").cloned().unwrap_or_default();
+        state.custom_headers = option_cache.read().await.get("push_custom_headers").cloned().unwrap_or_default();
     }
 
     if minutes > 0 {

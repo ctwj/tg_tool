@@ -137,6 +137,14 @@ export interface PushSchedulerConfig {
   interval_minutes: number
   api_url: string
   api_token: string
+  target: string
+  batch_size: number
+  // 通用推送配置
+  auth_type: 'none' | 'bearer' | 'custom_header' | 'query'
+  auth_key: string
+  http_method: 'POST' | 'PUT' | 'PATCH'
+  body_template: string
+  custom_headers: Array<{ key: string; value: string }>
 }
 
 // File types

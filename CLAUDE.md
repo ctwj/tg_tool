@@ -132,4 +132,5 @@ cargo test -- --nocapture           # 显示 println! 输出
 - [推送管理增强 — 资源提取独立化 + AI 分析](specs/005-push-ai-extraction/plan.md) — 资源提取解耦、规则引擎移植、AI 大模型增强、独立资源管理页面、多 API 轮询
 - [提取推送优化](specs/006-refine-extraction-push/plan.md) — 推送配置清理、提取模式对比说明、AI 提示词优化、测试覆盖补全
 - [图片代理缓存系统](specs/007-image-proxy-cache/plan.md) — Telegram 图片按需下载代理、本地缓存 + TTL、Nginx/Cloudflare CDN 缓存配置、图床域名配置入口
+- [推送管理通用化 + 实时请求预览](specs/009-push-config-preview/plan.md) — 通用 HTTP 推送适配器、自定义认证/方法/模板/请求头、配置实时预览
 <!-- SPECKIT END -->
