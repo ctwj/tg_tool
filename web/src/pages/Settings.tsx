@@ -403,6 +403,25 @@ const Settings: React.FC = () => {
                       <Input placeholder={getPlaceholder('tg_app_hash') || '从 my.telegram.org 获取'} />
                     </Form.Item>
                   </Card>
+
+                  {/* 安全配置 */}
+                  <Card
+                    title="安全配置"
+                    size="small"
+                    style={{ marginTop: 16, borderRadius: 10 }}
+                    type="inner"
+                  >
+                    <Form.Item
+                      name="allow_register"
+                      label="允许注册"
+                      valuePropName="checked"
+                      getValueFromEvent={(checked: boolean) => checked ? 'true' : 'false'}
+                      getValueProps={(value: string) => ({ checked: value === 'true' || !value })}
+                      help="关闭后，新用户无法注册账号，登录页面将隐藏注册入口"
+                    >
+                      <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+                    </Form.Item>
+                  </Card>
                 </Form>
               </Card>
             ),

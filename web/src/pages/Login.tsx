@@ -3,11 +3,27 @@ import { Form, Input, Button, message, Tabs } from 'antd'
 import { UserOutlined, LockOutlined, MailOutlined, SendOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
+import { getRegisterStatus } from '../api/auth'
 
 const Login: React.FC = () => {
   const navigate = useNavigate()
   const { login, register } = useAuth()
   const [loading, setLoading] = React.useState(false)
+  const [allowRegister, setAllowRegister] = React.useState(true)
+  const [statusLoaded, setStatusLoaded] = React.useState(false)
+
+  React.useEffect(() => {
+    getRegisterStatus()
+      .then(res => {
+        setAllowRegister(res.data?.allow_register !== false)
+      })
+      .catch(() => {
+        setAllowRegister(true)
+      })
+      .finally(() => {
+        setStatusLoaded(true)
+      })
+  }, [])
 
   const onLogin = async (values: { username: string; password: string }) => {
     setLoading(true)
@@ -67,105 +83,164 @@ const Login: React.FC = () => {
           </p>
         </div>
 
-        <Tabs
-          centered
-          items={[
-            {
-              key: 'login',
-              label: <span style={{ fontSize: 15 }}>登录</span>,
-              children: (
-                <Form onFinish={onLogin} style={{ marginTop: 8 }}>
-                  <Form.Item name="username" rules={[{ required: true, message: '请输入用户名' }]}>
-                    <Input
-                      prefix={<UserOutlined style={{ color: '#a5b4fc' }} />}
-                      placeholder="用户名"
-                      size="large"
-                      style={{ borderRadius: 10, height: 46 }}
-                    />
-                  </Form.Item>
-                  <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }]}>
-                    <Input.Password
-                      prefix={<LockOutlined style={{ color: '#a5b4fc' }} />}
-                      placeholder="密码"
-                      size="large"
-                      style={{ borderRadius: 10, height: 46 }}
-                    />
-                  </Form.Item>
-                  <Form.Item style={{ marginBottom: 0 }}>
-                    <Button
-                      type="primary"
-                      htmlType="submit"
-                      loading={loading}
-                      block
-                      size="large"
-                      style={{
-                        borderRadius: 10,
-                        height: 46,
-                        fontSize: 15,
-                        fontWeight: 500,
-                        background: 'linear-gradient(135deg, #6366f1, #818cf8)',
-                        border: 'none',
-                      }}
-                    >
-                      登录
-                    </Button>
-                  </Form.Item>
-                </Form>
-              ),
-            },
-            {
-              key: 'register',
-              label: <span style={{ fontSize: 15 }}>注册</span>,
-              children: (
-                <Form onFinish={onRegister} style={{ marginTop: 8 }}>
-                  <Form.Item name="username" rules={[{ required: true, message: '请输入用户名' }]}>
-                    <Input
-                      prefix={<UserOutlined style={{ color: '#a5b4fc' }} />}
-                      placeholder="用户名"
-                      size="large"
-                      style={{ borderRadius: 10, height: 46 }}
-                    />
-                  </Form.Item>
-                  <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }]}>
-                    <Input.Password
-                      prefix={<LockOutlined style={{ color: '#a5b4fc' }} />}
-                      placeholder="密码"
-                      size="large"
-                      style={{ borderRadius: 10, height: 46 }}
-                    />
-                  </Form.Item>
-                  <Form.Item name="email">
-                    <Input
-                      prefix={<MailOutlined style={{ color: '#a5b4fc' }} />}
-                      placeholder="邮箱（可选）"
-                      size="large"
-                      style={{ borderRadius: 10, height: 46 }}
-                    />
-                  </Form.Item>
-                  <Form.Item style={{ marginBottom: 0 }}>
-                    <Button
-                      type="primary"
-                      htmlType="submit"
-                      loading={loading}
-                      block
-                      size="large"
-                      style={{
-                        borderRadius: 10,
-                        height: 46,
-                        fontSize: 15,
-                        fontWeight: 500,
-                        background: 'linear-gradient(135deg, #6366f1, #818cf8)',
-                        border: 'none',
-                      }}
-                    >
-                      注册
-                    </Button>
-                  </Form.Item>
-                </Form>
-              ),
-            },
-          ]}
-        />
+        {!statusLoaded ? (
+          <Form style={{ marginTop: 8 }}>
+            <Form.Item name="username">
+              <Input
+                prefix={<UserOutlined style={{ color: '#a5b4fc' }} />}
+                placeholder="用户名"
+                size="large"
+                style={{ borderRadius: 10, height: 46 }}
+              />
+            </Form.Item>
+            <Form.Item name="password">
+              <Input.Password
+                prefix={<LockOutlined style={{ color: '#a5b4fc' }} />}
+                placeholder="密码"
+                size="large"
+                style={{ borderRadius: 10, height: 46 }}
+              />
+            </Form.Item>
+          </Form>
+        ) : allowRegister ? (
+          <Tabs
+            centered
+            items={[
+              {
+                key: 'login',
+                label: <span style={{ fontSize: 15 }}>登录</span>,
+                children: (
+                  <Form onFinish={onLogin} style={{ marginTop: 8 }}>
+                    <Form.Item name="username" rules={[{ required: true, message: '请输入用户名' }]}>
+                      <Input
+                        prefix={<UserOutlined style={{ color: '#a5b4fc' }} />}
+                        placeholder="用户名"
+                        size="large"
+                        style={{ borderRadius: 10, height: 46 }}
+                      />
+                    </Form.Item>
+                    <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }]}>
+                      <Input.Password
+                        prefix={<LockOutlined style={{ color: '#a5b4fc' }} />}
+                        placeholder="密码"
+                        size="large"
+                        style={{ borderRadius: 10, height: 46 }}
+                      />
+                    </Form.Item>
+                    <Form.Item style={{ marginBottom: 0 }}>
+                      <Button
+                        type="primary"
+                        htmlType="submit"
+                        loading={loading}
+                        block
+                        size="large"
+                        style={{
+                          borderRadius: 10,
+                          height: 46,
+                          fontSize: 15,
+                          fontWeight: 500,
+                          background: 'linear-gradient(135deg, #6366f1, #818cf8)',
+                          border: 'none',
+                        }}
+                      >
+                        登录
+                      </Button>
+                    </Form.Item>
+                  </Form>
+                ),
+              },
+              {
+                key: 'register',
+                label: <span style={{ fontSize: 15 }}>注册</span>,
+                children: (
+                  <Form onFinish={onRegister} style={{ marginTop: 8 }}>
+                    <Form.Item name="username" rules={[{ required: true, message: '请输入用户名' }]}>
+                      <Input
+                        prefix={<UserOutlined style={{ color: '#a5b4fc' }} />}
+                        placeholder="用户名"
+                        size="large"
+                        style={{ borderRadius: 10, height: 46 }}
+                      />
+                    </Form.Item>
+                    <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }]}>
+                      <Input.Password
+                        prefix={<LockOutlined style={{ color: '#a5b4fc' }} />}
+                        placeholder="密码"
+                        size="large"
+                        style={{ borderRadius: 10, height: 46 }}
+                      />
+                    </Form.Item>
+                    <Form.Item name="email">
+                      <Input
+                        prefix={<MailOutlined style={{ color: '#a5b4fc' }} />}
+                        placeholder="邮箱（可选）"
+                        size="large"
+                        style={{ borderRadius: 10, height: 46 }}
+                      />
+                    </Form.Item>
+                    <Form.Item style={{ marginBottom: 0 }}>
+                      <Button
+                        type="primary"
+                        htmlType="submit"
+                        loading={loading}
+                        block
+                        size="large"
+                        style={{
+                          borderRadius: 10,
+                          height: 46,
+                          fontSize: 15,
+                          fontWeight: 500,
+                          background: 'linear-gradient(135deg, #6366f1, #818cf8)',
+                          border: 'none',
+                        }}
+                      >
+                        注册
+                      </Button>
+                    </Form.Item>
+                  </Form>
+                ),
+              },
+            ]}
+          />
+        ) : (
+          <Form onFinish={onLogin} style={{ marginTop: 8 }}>
+            <Form.Item name="username" rules={[{ required: true, message: '请输入用户名' }]}>
+              <Input
+                prefix={<UserOutlined style={{ color: '#a5b4fc' }} />}
+                placeholder="用户名"
+                size="large"
+                style={{ borderRadius: 10, height: 46 }}
+              />
+            </Form.Item>
+            <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }]}>
+              <Input.Password
+                prefix={<LockOutlined style={{ color: '#a5b4fc' }} />}
+                placeholder="密码"
+                size="large"
+                style={{ borderRadius: 10, height: 46 }}
+              />
+            </Form.Item>
+            <Form.Item style={{ marginBottom: 0 }}>
+              <Button
+                type="primary"
+                htmlType="submit"
+                loading={loading}
+                block
+                size="large"
+                style={{
+                  borderRadius: 10,
+                  height: 46,
+                  fontSize: 15,
+                  fontWeight: 500,
+                  background: 'linear-gradient(135deg, #6366f1, #818cf8)',
+                  border: 'none',
+                }}
+              >
+                登录
+              </Button>
+            </Form.Item>
+          </Form>
+        )}
       </div>
     </div>
   )
