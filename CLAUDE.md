@@ -127,9 +127,7 @@ cargo test -- --nocapture           # 显示 println! 输出
 - ✅ API 路由保护（auth 中间件）
 
 <!-- SPECKIT START -->
-- [Telegram 核心功能集成](specs/002-telegram-core-integration/plan.md) — 客户端连接、认证、消息收发、转发、采集、推送
-- [生产就绪度改进](specs/004-production-improvements/plan.md) — 客户端信息完善、优雅关闭、健康检查、转发缓存、采集分页、速率限制
-- [推送管理增强 — 资源提取独立化 + AI 分析](specs/005-push-ai-extraction/plan.md) — 资源提取解耦、规则引擎移植、AI 大模型增强、独立资源管理页面、多 API 轮询
-- [提取推送优化](specs/006-refine-extraction-push/plan.md) — 推送配置清理、提取模式对比说明、AI 提示词优化、测试覆盖补全
-- [图片代理缓存系统](specs/007-image-proxy-cache/plan.md) — Telegram 图片按需下载代理、本地缓存 + TTL、Nginx/Cloudflare CDN 缓存配置、图床域名配置入口
+For additional context about technologies to be used, project structure,
+shell commands, and other important information, read the current plan:
+- [注册开关配置 Plan](specs/010-registration-toggle/plan.md) — allow_register 系统配置，控制登录页注册 Tab 显示与 API 注册权限
 <!-- SPECKIT END -->

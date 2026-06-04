@@ -63,6 +63,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/register", post(handlers::auth::register))
         .route("/auth/login", post(handlers::auth::login))
         .route("/auth/logout", post(handlers::auth::logout))
+        .route(
+            "/auth/register-status",
+            get(handlers::auth::register_status),
+        )
         .route("/status", get(handlers::misc::system_status))
         .route(
             "/files/download/{filename}",

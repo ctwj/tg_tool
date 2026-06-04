@@ -30,3 +30,8 @@ export async function generateToken(): Promise<ApiResponse<{ token: string }>> {
   const res = await apiClient.post('/auth/token')
   return res.data
 }
+
+export async function getRegisterStatus(): Promise<ApiResponse<{ allow_register: boolean }>> {
+  const res = await apiClient.get('/auth/register-status')
+  return res.data
+}
