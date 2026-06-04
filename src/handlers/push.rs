@@ -23,17 +23,16 @@ pub async fn trigger_push(
     let api_url = cache.get("push_api_url").cloned().unwrap_or_default();
     let api_token = cache.get("push_api_token").cloned().unwrap_or_default();
     let target = cache.get("push_target").cloned().unwrap_or_default();
+    let auth_type = cache.get("push_auth_type").cloned().unwrap_or_else(|| "custom_header".to_string());
     drop(cache);
 
     let mut missing = Vec::new();
     if api_url.is_empty() {
         missing.push("push_api_url");
     }
-    if api_token.is_empty() {
+    // 仅在认证方式非 "none" 时要求 api_token
+    if auth_type != "none" && api_token.is_empty() {
         missing.push("push_api_token");
-    }
-    if target.is_empty() {
-        missing.push("push_target");
     }
 
     if !missing.is_empty() {
@@ -176,18 +175,17 @@ pub async fn update_scheduler(
     Ok(Json(json!({ "success": true, "message": "调度配置已更新" })))
 }
 
-/// 推送配置校验 — 检查必要配置是否完整
+/// 推送配置校验 — 检查必要配置是否完整（含通用推送配置）
 pub async fn config_check(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     let cache = state.option_cache.read().await;
 
-    let checks = [
-        ("push_api_url", "请配置推送 API 地址"),
-        ("push_api_token", "请配置 API Token"),
-        ("push_target", "请配置推送目标"),
-    ];
-
     let mut missing = Vec::new();
     let mut hints = serde_json::Map::new();
+
+    // 基本必填项
+    let checks = [
+        ("push_api_url", "请配置推送 API 地址"),
+    ];
 
     for (key, hint) in &checks {
         let val = cache.get(*key).cloned().unwrap_or_default();
@@ -196,6 +194,24 @@ pub async fn config_check(State(state): State<AppState>) -> Result<Json<Value>, 
             hints.insert(key.to_string(), json!(hint));
         }
     }
+
+    // 认证相关校验
+    let auth_type = cache.get("push_auth_type").cloned().unwrap_or_else(|| "custom_header".to_string());
+    if auth_type != "none" {
+        let api_token = cache.get("push_api_token").cloned().unwrap_or_default();
+        if api_token.is_empty() {
+            missing.push("push_api_token");
+            hints.insert("push_api_token".to_string(), json!("请配置认证凭证"));
+        }
+    }
+    if auth_type == "custom_header" || auth_type == "query" {
+        let auth_key = cache.get("push_auth_key").cloned().unwrap_or_default();
+        if auth_key.is_empty() {
+            missing.push("push_auth_key");
+            hints.insert("push_auth_key".to_string(), json!("请配置认证字段 Key"));
+        }
+    }
+
     drop(cache);
 
     let is_valid = missing.is_empty();

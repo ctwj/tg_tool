@@ -21,13 +21,15 @@ const { Header, Sider, Content } = AntLayout
 
 const menuItems = [
   { key: '/dashboard', icon: <DashboardOutlined />, label: '仪表盘' },
+  { type: 'divider' as const },
   { key: '/clients', icon: <ApiOutlined />, label: '客户端管理' },
-  { key: '/rules', icon: <SendOutlined />, label: '转发规则' },
   { key: '/collectors', icon: <CloudDownloadOutlined />, label: '采集器' },
-  { key: '/push', icon: <RocketOutlined />, label: '推送管理' },
   { key: '/resources', icon: <DatabaseOutlined />, label: '资源管理' },
-  { key: '/users', icon: <UserOutlined />, label: '用户管理' },
+  { key: '/rules', icon: <SendOutlined />, label: '转发规则' },
+  { key: '/push', icon: <RocketOutlined />, label: '推送管理' },
+  { type: 'divider' as const },
   { key: '/files', icon: <FileOutlined />, label: '文件管理' },
+  { key: '/users', icon: <UserOutlined />, label: '用户管理' },
   { key: '/settings', icon: <SettingOutlined />, label: '系统设置' },
 ]
 
