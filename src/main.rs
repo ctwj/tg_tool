@@ -60,6 +60,9 @@ async fn main() {
     // Load options cache
     load_option_cache(&state).await;
 
+    // Migrate legacy push config to universal config structure
+    migrate_push_config(&state).await;
+
     // Reconnect active Telegram clients
     let reconnected = tg_manager.reconnect_on_startup().await;
     if !reconnected.is_empty() {
@@ -201,6 +204,14 @@ async fn run_migrations(pool: &DbPool) {
                 }
                 tracing::debug!("SQLite migration 004 skipped (already applied)");
             }
+            // Migration 005: Add share_ids to extracted_resources
+            let m5 = include_str!("../migrations/005_add_share_ids_sqlite.sql");
+            if let Err(e) = sqlx::raw_sql(m5).execute(pool).await {
+                if !e.to_string().contains("duplicate column") {
+                    panic!("Failed to run SQLite migration 005: {e}");
+                }
+                tracing::debug!("SQLite migration 005 skipped (already applied)");
+            }
         }
         DbPool::Postgres(pool) => {
             let migration_sql = include_str!("../migrations/001_init_postgres.sql");
@@ -231,6 +242,14 @@ async fn run_migrations(pool: &DbPool) {
                     panic!("Failed to run PostgreSQL migration 004: {e}");
                 }
                 tracing::debug!("PostgreSQL migration 004 skipped (already applied)");
+            }
+            // Migration 005: Add share_ids to extracted_resources
+            let m5 = include_str!("../migrations/005_add_share_ids_postgres.sql");
+            if let Err(e) = sqlx::raw_sql(m5).execute(pool).await {
+                if !e.to_string().contains("already exists") && !e.to_string().contains("duplicate") {
+                    panic!("Failed to run PostgreSQL migration 005: {e}");
+                }
+                tracing::debug!("PostgreSQL migration 005 skipped (already applied)");
             }
         }
     }
@@ -302,5 +321,55 @@ async fn ensure_root_user(pool: &DbPool) {
             }
         }
         tracing::info!("Created default root user");
+    }
+}
+
+/// Migrate legacy push config (push_api_token with X-API-Token) to universal config structure.
+/// Only runs when push_api_token exists but push_auth_type does not — ensures backward compatibility.
+async fn migrate_push_config(state: &AppState) {
+    let cache = state.option_cache.read().await;
+    let has_api_token = cache.contains_key("push_api_token")
+        && !cache.get("push_api_token").unwrap_or(&String::new()).is_empty();
+    let has_auth_type = cache.contains_key("push_auth_type");
+    drop(cache);
+
+    if has_api_token && !has_auth_type {
+        tracing::info!("Migrating legacy push config to universal config structure...");
+
+        let defaults = [
+            ("push_auth_type", "custom_header"),
+            ("push_auth_key", "X-API-Token"),
+            ("push_http_method", "POST"),
+            ("push_body_template", "{\"resources\": {{resources}}}"),
+            ("push_custom_headers", "[]"),
+        ];
+
+        let mut cache = state.option_cache.write().await;
+        for (key, value) in &defaults {
+            match &state.db {
+                DbPool::Sqlite(pool) => {
+                    sqlx::query("INSERT OR REPLACE INTO options (key, value) VALUES (?, ?)")
+                        .bind(key)
+                        .bind(value)
+                        .execute(pool)
+                        .await
+                        .expect("Failed to migrate push config");
+                }
+                DbPool::Postgres(pool) => {
+                    sqlx::query(
+                        "INSERT INTO options (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2",
+                    )
+                    .bind(key)
+                    .bind(value)
+                    .execute(pool)
+                    .await
+                    .expect("Failed to migrate push config");
+                }
+            }
+            cache.insert(key.to_string(), value.to_string());
+        }
+        drop(cache);
+
+        tracing::info!("Push config migration completed (5 defaults written)");
     }
 }

@@ -36,6 +36,14 @@ async fn setup_test_db() -> DbPool {
         .await
         .expect("Failed to run migration 003");
 
+    // Migration 004: Add is_extracted to collector_histories
+    let m4 = include_str!("../migrations/004_collector_histories_is_extracted_sqlite.sql");
+    let _ = sqlx::raw_sql(m4).execute(&pool).await;
+
+    // Migration 005: Add share_ids to extracted_resources
+    let m5 = include_str!("../migrations/005_add_share_ids_sqlite.sql");
+    let _ = sqlx::raw_sql(m5).execute(&pool).await;
+
     // 插入 root 用户（使用当前 bcrypt 版本生成 hash）
     let hash = crypto::hash_password("123456").expect("Failed to hash root password");
     sqlx::query("INSERT INTO users (username, password, role, status) VALUES ('root', ?, 100, 1)")
@@ -80,7 +88,7 @@ fn make_test_state(db: DbPool) -> (AppState, tgTool::state::TgClientMap) {
             peer_cache,
         ),
     );
-    let state = AppState::new(db, config, tg_manager);
+    let state = AppState::new(db, config, tg_manager, std::path::PathBuf::from("image_cache"));
     (state, tg_clients)
 }
 
