@@ -66,6 +66,7 @@ pub async fn trigger_extraction(
     let mut extracted = 0i64;
     let mut skipped = 0i64;
     let mut errors = 0i64;
+    let mut deduped = 0i64;
 
     // 读取提取模式
     let extract_mode = {
@@ -124,7 +125,8 @@ pub async fn trigger_extraction(
             };
 
             match insert_resource(db, &new_resource).await {
-                Ok(_) => extracted += 1,
+                Ok(true) => extracted += 1,
+                Ok(false) => deduped += 1,  // URL 重复，跳过
                 Err(e) => {
                     tracing::warn!("插入资源失败 (history_id={}): {e}", history_id);
                     errors += 1;
@@ -136,14 +138,14 @@ pub async fn trigger_extraction(
     }
 
     tracing::info!(
-        "资源提取完成: scanned={}, extracted={}, skipped={}, errors={}",
-        total_scanned, extracted, skipped, errors
+        "资源提取完成: scanned={}, extracted={}, skipped={}, deduped={}, errors={}",
+        total_scanned, extracted, skipped, deduped, errors
     );
 
     Ok(ExtractionResult {
         total_scanned,
         extracted,
-        skipped,
+        skipped: skipped + deduped,
         errors,
     })
 }
@@ -168,13 +170,96 @@ async fn mark_extracted(db: &DbPool, history_id: i64) -> Result<(), AppError> {
 }
 
 /// 插入新资源记录
-async fn insert_resource(db: &DbPool, r: &NewExtractedResource) -> Result<(), AppError> {
+/// 插入资源 — 如果任意 share_id 已存在则跳过（去重）
+/// 返回 true 表示新插入，false 表示跳过重复
+async fn insert_resource(db: &DbPool, r: &NewExtractedResource) -> Result<bool, AppError> {
+    // 从 URL 中提取 share_ids
+    let share_ids: Vec<String> = r.url
+        .as_deref()
+        .into_iter()
+        .flat_map(|u| u.split(','))
+        .filter_map(|url| {
+            let (share_id, service) = crate::services::extractor::identify_netdisk(url.trim());
+            if !share_id.is_empty() && service != crate::services::extractor::SERVICE_NOT_FOUND {
+                Some(share_id)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // 去重检查
+    if !share_ids.is_empty() {
+        // 优先用 share_id 逐个查重
+        for sid in &share_ids {
+            let pattern = format!("%,{}，%", sid);
+            let exists = match db {
+                DbPool::Sqlite(pool) => {
+                    let count: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM extracted_resources WHERE (',' || share_ids || ',') LIKE ?"
+                    )
+                    .bind(&pattern)
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0);
+                    count > 0
+                }
+                DbPool::Postgres(pool) => {
+                    let count: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM extracted_resources WHERE (',' || share_ids || ',') LIKE $1"
+                    )
+                    .bind(&pattern)
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0);
+                    count > 0
+                }
+            };
+            if exists {
+                tracing::debug!("资源去重跳过: share_id={}", sid);
+                return Ok(false);
+            }
+        }
+    } else if let Some(ref url) = r.url {
+        // 无可识别 share_id 时，回退到 URL 全串比较
+        if !url.is_empty() {
+            let exists = match db {
+                DbPool::Sqlite(pool) => {
+                    let count: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM extracted_resources WHERE url = ?"
+                    )
+                    .bind(url)
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0);
+                    count > 0
+                }
+                DbPool::Postgres(pool) => {
+                    let count: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM extracted_resources WHERE url = $1"
+                    )
+                    .bind(url)
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0);
+                    count > 0
+                }
+            };
+            if exists {
+                tracing::debug!("资源去重跳过: url={}", url);
+                return Ok(false);
+            }
+        }
+    }
+
+    let share_ids_str = if share_ids.is_empty() { None } else { Some(share_ids.join(",")) };
+
     match db {
         DbPool::Sqlite(pool) => {
             sqlx::query(
                 "INSERT INTO extracted_resources \
-                 (collector_history_id, title, url, description, category, tags, img, source, extra, extract_mode) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                 (collector_history_id, title, url, description, category, tags, img, source, extra, extract_mode, share_ids) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(r.collector_history_id)
             .bind(&r.title)
@@ -186,14 +271,15 @@ async fn insert_resource(db: &DbPool, r: &NewExtractedResource) -> Result<(), Ap
             .bind(&r.source)
             .bind(&r.extra)
             .bind(&r.extract_mode)
+            .bind(&share_ids_str)
             .execute(pool)
             .await?;
         }
         DbPool::Postgres(pool) => {
             sqlx::query(
                 "INSERT INTO extracted_resources \
-                 (collector_history_id, title, url, description, category, tags, img, source, extra, extract_mode) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
+                 (collector_history_id, title, url, description, category, tags, img, source, extra, extract_mode, share_ids) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
             )
             .bind(r.collector_history_id)
             .bind(&r.title)
@@ -205,11 +291,12 @@ async fn insert_resource(db: &DbPool, r: &NewExtractedResource) -> Result<(), Ap
             .bind(&r.source)
             .bind(&r.extra)
             .bind(&r.extract_mode)
+            .bind(&share_ids_str)
             .execute(pool)
             .await?;
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 /// 资源列表（分页 + 状态筛选）
@@ -490,14 +577,25 @@ pub async fn get_resource_stats(db: &DbPool) -> Result<serde_json::Value, AppErr
     }))
 }
 
-/// 推送资源 — 读取未推送资源并推送到外部 API
+/// 渲染请求体模板 — 将 `{{变量}}` 替换为实际值
+/// 未匹配的变量保留原始 `{{变量名}}` 文本
+pub fn render_template(template: &str, vars: &std::collections::HashMap<&str, String>) -> String {
+    let mut result = template.to_string();
+    for (key, value) in vars {
+        result = result.replace(&format!("{{{{{}}}}}", key), value);
+    }
+    result
+}
+
+/// 推送资源 — 读取未推送资源并通过通用 HTTP 适配器推送到外部 API
+/// 支持自定义认证方式、HTTP 方法、请求体模板和自定义 Header
 pub async fn push_resources(
     api_url: &str,
     api_token: &str,
     target: &str,
     batch_size: i64,
     db: &DbPool,
-    _option_cache: &OptionCache,
+    option_cache: &OptionCache,
 ) -> Result<serde_json::Value, AppError> {
     // 读取 is_pushed=false 的资源
     let resources: Vec<ExtractedResource> = match db {
@@ -546,21 +644,83 @@ pub async fn push_resources(
         })
     }).collect();
 
-    let batch_id = format!("batch_{}_{}", target, chrono::Utc::now().timestamp());
+    let batch_id = format!("batch_{}_{}", if target.is_empty() { "default" } else { target }, chrono::Utc::now().timestamp());
 
-    // 推送到外部 API
+    // 读取通用推送配置
+    let cache = option_cache.read().await;
+    let auth_type = cache.get("push_auth_type").cloned().unwrap_or_else(|| "custom_header".to_string());
+    let auth_key = cache.get("push_auth_key").cloned().unwrap_or_else(|| "X-API-Token".to_string());
+    let http_method = cache.get("push_http_method").cloned().unwrap_or_else(|| "POST".to_string());
+    let body_template = cache.get("push_body_template").cloned().unwrap_or_default();
+    let custom_headers_str = cache.get("push_custom_headers").cloned().unwrap_or_else(|| "[]".to_string());
+    drop(cache);
+
+    // 构建请求体（使用模板或默认格式）
+    let default_template = r#"{"resources": {{resources}}}"#;
+    let template = if body_template.is_empty() { default_template } else { &body_template };
+    let mut vars = std::collections::HashMap::new();
+    vars.insert("resources", serde_json::to_string(&push_data).unwrap_or_default());
+    vars.insert("count", resources.len().to_string());
+    vars.insert("target", target.to_string());
+    vars.insert("timestamp", chrono::Utc::now().timestamp().to_string());
+    let body_str = render_template(template, &vars);
+
+    // 解析请求体为 JSON Value
+    let body_value: serde_json::Value = serde_json::from_str(&body_str)
+        .map_err(|e| AppError::Internal(format!("推送请求体模板渲染结果不是有效 JSON: {e}")))?;
+
+    // 构建 HTTP 请求
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| AppError::Internal(format!("创建 HTTP 客户端失败: {e}")))?;
 
-    let payload = json!({ "resources": push_data });
+    let mut request = match http_method.to_uppercase().as_str() {
+        "PUT" => client.put(api_url),
+        "PATCH" => client.patch(api_url),
+        _ => client.post(api_url),
+    };
 
-    let resp = client
-        .post(api_url)
-        .header("Content-Type", "application/json")
-        .header("X-API-Token", api_token)
-        .json(&payload)
+    request = request
+        .header("Content-Type", "application/json");
+
+    // 添加认证
+    match auth_type.as_str() {
+        "bearer" => {
+            request = request.header("Authorization", format!("Bearer {}", api_token));
+        }
+        "custom_header" => {
+            request = request.header(&auth_key, api_token);
+        }
+        "query" => {
+            request = request.query(&[(&auth_key as &str, api_token)]);
+        }
+        _ => {} // "none" — 不添加认证
+    }
+
+    // 添加自定义 Header
+    if let Ok(headers) = serde_json::from_str::<Vec<serde_json::Value>>(&custom_headers_str) {
+        for h in &headers {
+            let key = h.get("key").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let value = h.get("value").and_then(|v| v.as_str()).unwrap_or("");
+            if !key.is_empty() {
+                // 检查是否与认证 header 冲突
+                let is_auth_header = match auth_type.as_str() {
+                    "bearer" => key.eq_ignore_ascii_case("Authorization"),
+                    "custom_header" => key.eq_ignore_ascii_case(&auth_key),
+                    _ => false,
+                };
+                if is_auth_header {
+                    tracing::warn!("自定义 Header '{}' 与认证 Header 冲突，已跳过", key);
+                    continue;
+                }
+                request = request.header(key, value);
+            }
+        }
+    }
+
+    let resp = request
+        .json(&body_value)
         .send()
         .await;
 
@@ -741,5 +901,49 @@ mod tests {
         let enters_ai_branch = extract_mode == "ai";
         assert!(enters_ai_branch, "extract_mode='ai' 应进入 AI 分支");
         // 在实际运行中，若无端点配置会回退到规则结果
+    }
+
+    // --- render_template 测试 ---
+
+    #[test]
+    fn test_render_template_all_variables() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("resources", "[{\"title\":\"test\"}]".to_string());
+        vars.insert("count", "1".to_string());
+        vars.insert("target", "external_api".to_string());
+        vars.insert("timestamp", "1717500000".to_string());
+
+        let result = render_template(
+            r#"{"data": {{resources}}, "count": {{count}}, "source": "{{target}}", "ts": {{timestamp}}}"#,
+            &vars,
+        );
+        assert!(result.contains(r#""data": [{"title":"test"}]"#));
+        assert!(result.contains(r#""count": 1"#));
+        assert!(result.contains(r#""source": "external_api""#));
+        assert!(result.contains(r#""ts": 1717500000"#));
+    }
+
+    #[test]
+    fn test_render_template_unknown_variable_preserved() {
+        let vars = std::collections::HashMap::<&str, String>::new();
+        let result = render_template(r#"{"key": "{{unknown_var}}"}"#, &vars);
+        assert!(result.contains("{{unknown_var}}"), "未知变量应保留原文本");
+    }
+
+    #[test]
+    fn test_render_template_empty_returns_default() {
+        let vars = std::collections::HashMap::<&str, String>::new();
+        let result = render_template("", &vars);
+        assert_eq!(result, "", "空模板返回空字符串（由调用方处理默认值）");
+    }
+
+    #[test]
+    fn test_render_template_partial_variables() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("count", "5".to_string());
+        // resources 未提供
+        let result = render_template(r#"{"items": {{resources}}, "total": {{count}}}"#, &vars);
+        assert!(result.contains("{{resources}}"), "未提供的变量保留原文本");
+        assert!(result.contains("5"), "已提供的变量被替换");
     }
 }
