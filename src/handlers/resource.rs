@@ -23,6 +23,41 @@ pub struct ExtractParams {
     pub batch_size: Option<i64>,
 }
 
+/// POST /api/resources/extract/{history_id} — 单条记录资源提取
+pub async fn extract_single(
+    State(state): State<AppState>,
+    Path(history_id): Path<i64>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<Value>, AppError> {
+    let dry_run = body
+        .get("dry_run")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let extract_mode = {
+        let cache = state.option_cache.read().await;
+        body.get("extract_mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or(
+                cache
+                    .get("push_extract_mode")
+                    .map(|s| s.as_str())
+                    .unwrap_or("rule"),
+            )
+            .to_string()
+    };
+
+    let result = crate::services::resource::extract_single_record(
+        &state.db,
+        &state.option_cache,
+        history_id,
+        dry_run,
+        extract_mode,
+    )
+    .await?;
+
+    Ok(Json(result))
+}
+
 /// POST /api/resources/extract — 触发资源提取
 pub async fn extract_resources(
     State(state): State<AppState>,

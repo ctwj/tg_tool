@@ -162,6 +162,14 @@ impl AppState {
             .get("proxy_url")
             .and_then(|v| if v.is_empty() { None } else { Some(v.clone()) })
     }
+
+    /// 获取 HTTP 代理地址：用于 AI 提取等 HTTP API 请求
+    pub async fn http_proxy_url(&self) -> Option<String> {
+        let cache = self.option_cache.read().await;
+        cache
+            .get("http_proxy_url")
+            .and_then(|v| if v.is_empty() { None } else { Some(v.clone()) })
+    }
 }
 
 #[cfg(test)]

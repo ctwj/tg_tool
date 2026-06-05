@@ -523,7 +523,7 @@ const Resources: React.FC = () => {
               </div>
 
               <div style={{ marginBottom: 20 }}>
-                <div style={{ marginBottom: 8, fontWeight: 500 }}>通过代理访问</div>
+                <div style={{ marginBottom: 8, fontWeight: 500 }}>通过 HTTP 代理访问 AI 接口</div>
                 <Space>
                   <Switch
                     checked={extractConfig.ai_use_proxy}
