@@ -82,10 +82,10 @@ pub async fn full_collect(
                     .bind(remote_id)
                     .execute(&mut *tx)
                     .await;
-                    if let Ok(r) = result {
-                        if r.rows_affected() > 0 {
-                            collected += 1;
-                        }
+                    if let Ok(r) = result
+                        && r.rows_affected() > 0
+                    {
+                        collected += 1;
                     }
                 }
 
@@ -111,10 +111,10 @@ pub async fn full_collect(
                     .bind(remote_id)
                     .execute(&mut *tx)
                     .await;
-                    if let Ok(r) = result {
-                        if r.rows_affected() > 0 {
-                            collected += 1;
-                        }
+                    if let Ok(r) = result
+                        && r.rows_affected() > 0
+                    {
+                        collected += 1;
                     }
                 }
 

@@ -108,12 +108,11 @@ pub async fn call_ai_api(
 ) -> Result<AiExtractResult, String> {
     let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(90));
 
-    if let Some(proxy) = proxy_url {
-        if !proxy.is_empty() {
-            if let Ok(p) = reqwest::Proxy::all(proxy) {
-                builder = builder.proxy(p);
-            }
-        }
+    if let Some(proxy) = proxy_url
+        && !proxy.is_empty()
+        && let Ok(p) = reqwest::Proxy::all(proxy)
+    {
+        builder = builder.proxy(p);
     }
 
     let client = builder
@@ -523,12 +522,11 @@ async fn call_ai_batch_api(
 ) -> Result<Vec<ResourceDraft>, String> {
     let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(90));
 
-    if let Some(proxy) = proxy_url {
-        if !proxy.is_empty() {
-            if let Ok(p) = reqwest::Proxy::all(proxy) {
-                builder = builder.proxy(p);
-            }
-        }
+    if let Some(proxy) = proxy_url
+        && !proxy.is_empty()
+        && let Ok(p) = reqwest::Proxy::all(proxy)
+    {
+        builder = builder.proxy(p);
     }
 
     let client = builder
@@ -646,10 +644,10 @@ fn extract_json_array_from_content(content: &str) -> String {
             ']' => acc - 1,
             _ => acc,
         });
-        if bracket_count == 0 {
-            if let Some(end) = trimmed.rfind(']') {
-                return trimmed[start..=end].to_string();
-            }
+        if bracket_count == 0
+            && let Some(end) = trimmed.rfind(']')
+        {
+            return trimmed[start..=end].to_string();
         }
     }
 
