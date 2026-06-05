@@ -4,6 +4,7 @@
 use crate::services::extractor::ResourceDraft;
 use crate::state::OptionCache;
 use serde::{Deserialize, Serialize};
+use std::error::Error;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// 全局轮询计数器 — 用于多端点轮询选择
@@ -103,12 +104,13 @@ pub async fn call_ai_api(
     proxy_url: Option<&str>,
 ) -> Result<AiExtractResult, String> {
     let mut builder = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .no_proxy(); // 默认禁用系统代理，避免被 Windows 系统代理干扰
+        .timeout(std::time::Duration::from_secs(90));
 
     if let Some(proxy) = proxy_url {
         if !proxy.is_empty() {
-            if let Ok(p) = reqwest::Proxy::all(proxy) {
+            // 将 socks5:// 替换为 http://，避免 reqwest SOCKS5 兼容性问题
+            let proxy_url = proxy.replace("socks5://", "http://").replace("socks5h://", "http://");
+            if let Ok(p) = reqwest::Proxy::all(&proxy_url) {
                 builder = builder.proxy(p);
             }
         }
@@ -147,7 +149,7 @@ pub async fn call_ai_api(
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("AI API 请求失败: {e}"))?;
+        .map_err(|e| format!("AI API 请求失败: {e} (source: {})", e.source().map(|s| s.to_string()).unwrap_or_default()))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -172,10 +174,56 @@ pub async fn call_ai_api(
     // 尝试从 content 中提取 JSON（可能包含 markdown 代码块）
     let json_str = extract_json_from_content(content);
 
-    let result: AiExtractResult =
-        serde_json::from_str(&json_str).map_err(|e| format!("解析 AI 返回 JSON 失败: {e}"))?;
+    // 灵活解析：AI 返回的字段类型可能不一致（string vs object vs array）
+    let raw: serde_json::Value = serde_json::from_str(&json_str)
+        .map_err(|e| format!("解析 AI 返回 JSON 失败: {e}\n原始内容: {json_str}"))?;
+
+    let result = AiExtractResult {
+        title: extract_string(&raw, "title").unwrap_or_default(),
+        url: extract_string_array(&raw, "url"),
+        description: extract_string(&raw, "description").unwrap_or_default(),
+        category: extract_string(&raw, "category").unwrap_or_default(),
+        tags: extract_string(&raw, "tags").unwrap_or_default(),
+    };
 
     Ok(result)
+}
+
+/// 从 JSON Value 中提取字符串字段（兼容 string/object/array 等类型）
+fn extract_string(v: &serde_json::Value, key: &str) -> Option<String> {
+    let val = v.get(key)?;
+    match val {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        serde_json::Value::Array(arr) => Some(arr.iter()
+            .filter_map(|item| item.as_str().map(|s| s.to_string()).or_else(|| Some(item.to_string())))
+            .collect::<Vec<_>>()
+            .join(",")),
+        serde_json::Value::Object(obj) => Some(obj.values()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()).or_else(|| Some(v.to_string())))
+            .collect::<Vec<_>>()
+            .join(",")),
+        _ => None,
+    }
+}
+
+/// 从 JSON Value 中提取字符串数组（兼容 string/array 等类型）
+fn extract_string_array(v: &serde_json::Value, key: &str) -> Vec<String> {
+    let val = match v.get(key) {
+        Some(v) => v,
+        None => return Vec::new(),
+    };
+    match val {
+        serde_json::Value::Array(arr) => arr.iter()
+            .filter_map(|item| item.as_str().map(|s| s.to_string()).or_else(|| Some(item.to_string())))
+            .collect(),
+        serde_json::Value::String(s) => s.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// 从 AI 返回的 content 中提取 JSON（处理 markdown 代码块包裹的情况）

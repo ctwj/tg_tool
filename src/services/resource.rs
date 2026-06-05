@@ -788,8 +788,7 @@ pub async fn push_resources(
 
     // 构建 HTTP 请求
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .no_proxy()
+        .timeout(std::time::Duration::from_secs(60))
         .build()
         .map_err(|e| AppError::Internal(format!("创建 HTTP 客户端失败: {e}")))?;
 
