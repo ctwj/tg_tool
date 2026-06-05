@@ -39,15 +39,12 @@ async fn main() {
     let image_cache_dir = std::path::PathBuf::from("image_cache");
 
     // Build application state
-    let tg_clients = std::sync::Arc::new(tokio::sync::RwLock::new(
-        std::collections::HashMap::new(),
-    ));
-    let option_cache = std::sync::Arc::new(tokio::sync::RwLock::new(
-        std::collections::HashMap::new(),
-    ));
-    let peer_cache = std::sync::Arc::new(tokio::sync::RwLock::new(
-        std::collections::HashMap::new(),
-    ));
+    let tg_clients =
+        std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+    let option_cache =
+        std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+    let peer_cache =
+        std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
     let tg_manager = std::sync::Arc::new(TgManager::new(
         config.clone(),
         db_pool.clone(),
@@ -55,7 +52,12 @@ async fn main() {
         option_cache.clone(),
         peer_cache.clone(),
     ));
-    let state = AppState::new(db_pool.clone(), config.clone(), tg_manager.clone(), image_cache_dir);
+    let state = AppState::new(
+        db_pool.clone(),
+        config.clone(),
+        tg_manager.clone(),
+        image_cache_dir,
+    );
 
     // Load options cache
     load_option_cache(&state).await;
@@ -79,7 +81,8 @@ async fn main() {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                 let now = std::time::Instant::now();
-                captcha_store.retain(|_, entry| now.duration_since(entry.created_at).as_secs() < 300);
+                captcha_store
+                    .retain(|_, entry| now.duration_since(entry.created_at).as_secs() < 300);
             }
         });
     }
@@ -95,7 +98,10 @@ async fn main() {
         drop(cache);
 
         if auto_extract == "1" || auto_extract.eq_ignore_ascii_case("true") {
-            tracing::info!("Auto extract enabled, starting extract scheduler (interval: {}min)", extract_interval);
+            tracing::info!(
+                "Auto extract enabled, starting extract scheduler (interval: {}min)",
+                extract_interval
+            );
             tgTool::services::scheduler::start_extract_scheduler(
                 state.extract_scheduler.clone(),
                 extract_interval,
@@ -163,18 +169,23 @@ async fn init_database(config: &Config) -> DbPool {
     } else {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(5)
-            .after_connect(|conn, _meta| Box::pin(async move {
-                use sqlx::Executor;
-                // busy_timeout: 并发写入时等待锁而非直接报错（5秒）
-                conn.execute(sqlx::query("PRAGMA busy_timeout=5000")).await?;
-                // WAL 模式: 写操作不再阻塞读操作
-                conn.execute(sqlx::query("PRAGMA journal_mode=WAL")).await?;
-                // synchronous=NORMAL: WAL 模式下足够安全，性能更好
-                conn.execute(sqlx::query("PRAGMA synchronous=NORMAL")).await?;
-                // WAL auto-checkpoint: 避免 WAL 文件无限增长
-                conn.execute(sqlx::query("PRAGMA wal_autocheckpoint=1000")).await?;
-                Ok(())
-            }))
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    use sqlx::Executor;
+                    // busy_timeout: 并发写入时等待锁而非直接报错（5秒）
+                    conn.execute(sqlx::query("PRAGMA busy_timeout=5000"))
+                        .await?;
+                    // WAL 模式: 写操作不再阻塞读操作
+                    conn.execute(sqlx::query("PRAGMA journal_mode=WAL")).await?;
+                    // synchronous=NORMAL: WAL 模式下足够安全，性能更好
+                    conn.execute(sqlx::query("PRAGMA synchronous=NORMAL"))
+                        .await?;
+                    // WAL auto-checkpoint: 避免 WAL 文件无限增长
+                    conn.execute(sqlx::query("PRAGMA wal_autocheckpoint=1000"))
+                        .await?;
+                    Ok(())
+                })
+            })
             .connect(&database_url)
             .await
             .expect("Failed to connect to SQLite");
@@ -234,7 +245,8 @@ async fn run_migrations(pool: &DbPool) {
             // Migration 002: Add client_id to collectors (idempotent — ignore if already exists)
             let m2 = include_str!("../migrations/002_collector_client_id_postgres.sql");
             if let Err(e) = sqlx::raw_sql(m2).execute(pool).await {
-                if !e.to_string().contains("already exists") && !e.to_string().contains("duplicate") {
+                if !e.to_string().contains("already exists") && !e.to_string().contains("duplicate")
+                {
                     panic!("Failed to run PostgreSQL migration 002: {e}");
                 }
                 tracing::debug!("PostgreSQL migration 002 skipped (already applied)");
@@ -248,9 +260,11 @@ async fn run_migrations(pool: &DbPool) {
                 tracing::debug!("PostgreSQL migration 003 skipped (already applied)");
             }
             // Migration 004: Add is_extracted to collector_histories
-            let m4 = include_str!("../migrations/004_collector_histories_is_extracted_postgres.sql");
+            let m4 =
+                include_str!("../migrations/004_collector_histories_is_extracted_postgres.sql");
             if let Err(e) = sqlx::raw_sql(m4).execute(pool).await {
-                if !e.to_string().contains("already exists") && !e.to_string().contains("duplicate") {
+                if !e.to_string().contains("already exists") && !e.to_string().contains("duplicate")
+                {
                     panic!("Failed to run PostgreSQL migration 004: {e}");
                 }
                 tracing::debug!("PostgreSQL migration 004 skipped (already applied)");
@@ -258,7 +272,8 @@ async fn run_migrations(pool: &DbPool) {
             // Migration 005: Add share_ids to extracted_resources
             let m5 = include_str!("../migrations/005_add_share_ids_postgres.sql");
             if let Err(e) = sqlx::raw_sql(m5).execute(pool).await {
-                if !e.to_string().contains("already exists") && !e.to_string().contains("duplicate") {
+                if !e.to_string().contains("already exists") && !e.to_string().contains("duplicate")
+                {
                     panic!("Failed to run PostgreSQL migration 005: {e}");
                 }
                 tracing::debug!("PostgreSQL migration 005 skipped (already applied)");
@@ -341,7 +356,10 @@ async fn ensure_root_user(pool: &DbPool) {
 async fn migrate_push_config(state: &AppState) {
     let cache = state.option_cache.read().await;
     let has_api_token = cache.contains_key("push_api_token")
-        && !cache.get("push_api_token").unwrap_or(&String::new()).is_empty();
+        && !cache
+            .get("push_api_token")
+            .unwrap_or(&String::new())
+            .is_empty();
     let has_auth_type = cache.contains_key("push_auth_type");
     drop(cache);
 

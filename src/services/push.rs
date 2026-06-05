@@ -14,7 +14,12 @@ pub async fn trigger_push(
     option_cache: &crate::state::OptionCache,
 ) -> Result<serde_json::Value, AppError> {
     crate::services::resource::push_resources(
-        api_url, api_token, target, batch_size, db, option_cache,
+        api_url,
+        api_token,
+        target,
+        batch_size,
+        db,
+        option_cache,
     )
     .await
 }
@@ -23,11 +28,10 @@ pub async fn trigger_push(
 pub async fn get_stats(db: &DbPool) -> Result<serde_json::Value, AppError> {
     let (total, success, failed): (i64, i64, i64) = match db {
         crate::state::DbPool::Sqlite(pool) => {
-            let total: i64 =
-                sqlx::query_scalar("SELECT COUNT(*) FROM push_histories")
-                    .fetch_one(pool)
-                    .await
-                    .unwrap_or(0);
+            let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM push_histories")
+                .fetch_one(pool)
+                .await
+                .unwrap_or(0);
             let success: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM push_histories WHERE status = ?")
                     .bind("success")
@@ -43,11 +47,10 @@ pub async fn get_stats(db: &DbPool) -> Result<serde_json::Value, AppError> {
             (total, success, failed)
         }
         crate::state::DbPool::Postgres(pool) => {
-            let total: i64 =
-                sqlx::query_scalar("SELECT COUNT(*) FROM push_histories")
-                    .fetch_one(pool)
-                    .await
-                    .unwrap_or(0);
+            let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM push_histories")
+                .fetch_one(pool)
+                .await
+                .unwrap_or(0);
             let success: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM push_histories WHERE status = $1")
                     .bind("success")

@@ -108,9 +108,13 @@ pub async fn update_rule(
     let is_active = body.get("is_active").and_then(|v| v.as_bool());
     let remark = body.get("remark").and_then(|v| v.as_str());
 
-    let has_update = source_chat_id.is_some() || source_chat_name.is_some()
-        || forward_method.is_some() || forward_config.is_some()
-        || forward_target.is_some() || is_active.is_some() || remark.is_some();
+    let has_update = source_chat_id.is_some()
+        || source_chat_name.is_some()
+        || forward_method.is_some()
+        || forward_config.is_some()
+        || forward_target.is_some()
+        || is_active.is_some()
+        || remark.is_some();
     if !has_update {
         return Ok(Json(json!({ "success": true, "message": "规则已更新" })));
     }
@@ -118,23 +122,51 @@ pub async fn update_rule(
     match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
             let mut sets = Vec::new();
-            if source_chat_id.is_some() { sets.push("source_chat_id = ?"); }
-            if source_chat_name.is_some() { sets.push("source_chat_name = ?"); }
-            if forward_method.is_some() { sets.push("forward_method = ?"); }
-            if forward_config.is_some() { sets.push("forward_config = ?"); }
-            if forward_target.is_some() { sets.push("forward_target = ?"); }
-            if is_active.is_some() { sets.push("is_active = ?"); }
-            if remark.is_some() { sets.push("remark = ?"); }
+            if source_chat_id.is_some() {
+                sets.push("source_chat_id = ?");
+            }
+            if source_chat_name.is_some() {
+                sets.push("source_chat_name = ?");
+            }
+            if forward_method.is_some() {
+                sets.push("forward_method = ?");
+            }
+            if forward_config.is_some() {
+                sets.push("forward_config = ?");
+            }
+            if forward_target.is_some() {
+                sets.push("forward_target = ?");
+            }
+            if is_active.is_some() {
+                sets.push("is_active = ?");
+            }
+            if remark.is_some() {
+                sets.push("remark = ?");
+            }
             sets.push("updated_at = CURRENT_TIMESTAMP");
             let sql = format!("UPDATE rules SET {} WHERE id = ?", sets.join(", "));
             let mut q = sqlx::query(&sql);
-            if let Some(v) = source_chat_id { q = q.bind(v); }
-            if let Some(v) = source_chat_name { q = q.bind(v); }
-            if let Some(v) = forward_method { q = q.bind(v); }
-            if let Some(v) = &forward_config { q = q.bind(v); }
-            if let Some(v) = forward_target { q = q.bind(v); }
-            if let Some(v) = is_active { q = q.bind(v); }
-            if let Some(v) = remark { q = q.bind(v); }
+            if let Some(v) = source_chat_id {
+                q = q.bind(v);
+            }
+            if let Some(v) = source_chat_name {
+                q = q.bind(v);
+            }
+            if let Some(v) = forward_method {
+                q = q.bind(v);
+            }
+            if let Some(v) = &forward_config {
+                q = q.bind(v);
+            }
+            if let Some(v) = forward_target {
+                q = q.bind(v);
+            }
+            if let Some(v) = is_active {
+                q = q.bind(v);
+            }
+            if let Some(v) = remark {
+                q = q.bind(v);
+            }
             q = q.bind(id);
             let result = q.execute(pool).await?;
             if result.rows_affected() == 0 {
@@ -144,23 +176,61 @@ pub async fn update_rule(
         crate::state::DbPool::Postgres(pool) => {
             let mut pg_parts = Vec::new();
             let mut pg_idx = 1u32;
-            if source_chat_id.is_some() { pg_parts.push(format!("source_chat_id = ${pg_idx}")); pg_idx += 1; }
-            if source_chat_name.is_some() { pg_parts.push(format!("source_chat_name = ${pg_idx}")); pg_idx += 1; }
-            if forward_method.is_some() { pg_parts.push(format!("forward_method = ${pg_idx}")); pg_idx += 1; }
-            if forward_config.is_some() { pg_parts.push(format!("forward_config = ${pg_idx}")); pg_idx += 1; }
-            if forward_target.is_some() { pg_parts.push(format!("forward_target = ${pg_idx}")); pg_idx += 1; }
-            if is_active.is_some() { pg_parts.push(format!("is_active = ${pg_idx}")); pg_idx += 1; }
-            if remark.is_some() { pg_parts.push(format!("remark = ${pg_idx}")); pg_idx += 1; }
+            if source_chat_id.is_some() {
+                pg_parts.push(format!("source_chat_id = ${pg_idx}"));
+                pg_idx += 1;
+            }
+            if source_chat_name.is_some() {
+                pg_parts.push(format!("source_chat_name = ${pg_idx}"));
+                pg_idx += 1;
+            }
+            if forward_method.is_some() {
+                pg_parts.push(format!("forward_method = ${pg_idx}"));
+                pg_idx += 1;
+            }
+            if forward_config.is_some() {
+                pg_parts.push(format!("forward_config = ${pg_idx}"));
+                pg_idx += 1;
+            }
+            if forward_target.is_some() {
+                pg_parts.push(format!("forward_target = ${pg_idx}"));
+                pg_idx += 1;
+            }
+            if is_active.is_some() {
+                pg_parts.push(format!("is_active = ${pg_idx}"));
+                pg_idx += 1;
+            }
+            if remark.is_some() {
+                pg_parts.push(format!("remark = ${pg_idx}"));
+                pg_idx += 1;
+            }
             pg_parts.push("updated_at = CURRENT_TIMESTAMP".to_string());
-            let sql = format!("UPDATE rules SET {} WHERE id = ${pg_idx}", pg_parts.join(", "));
+            let sql = format!(
+                "UPDATE rules SET {} WHERE id = ${pg_idx}",
+                pg_parts.join(", ")
+            );
             let mut q = sqlx::query(&sql);
-            if let Some(v) = source_chat_id { q = q.bind(v); }
-            if let Some(v) = source_chat_name { q = q.bind(v); }
-            if let Some(v) = forward_method { q = q.bind(v); }
-            if let Some(v) = &forward_config { q = q.bind(v); }
-            if let Some(v) = forward_target { q = q.bind(v); }
-            if let Some(v) = is_active { q = q.bind(v); }
-            if let Some(v) = remark { q = q.bind(v); }
+            if let Some(v) = source_chat_id {
+                q = q.bind(v);
+            }
+            if let Some(v) = source_chat_name {
+                q = q.bind(v);
+            }
+            if let Some(v) = forward_method {
+                q = q.bind(v);
+            }
+            if let Some(v) = &forward_config {
+                q = q.bind(v);
+            }
+            if let Some(v) = forward_target {
+                q = q.bind(v);
+            }
+            if let Some(v) = is_active {
+                q = q.bind(v);
+            }
+            if let Some(v) = remark {
+                q = q.bind(v);
+            }
             q = q.bind(id);
             let result = q.execute(pool).await?;
             if result.rows_affected() == 0 {
@@ -221,7 +291,9 @@ pub async fn get_rule_messages(
     let (list, total): (Vec<crate::models::message::Message>, i64) = match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
             let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE rule_id = ?")
-                .bind(id).fetch_one(pool).await?;
+                .bind(id)
+                .fetch_one(pool)
+                .await?;
             let list = sqlx::query_as(
                 "SELECT id, rule_id, chat_id, message_id, content, raw_data, status, error_reason, created_at FROM messages WHERE rule_id = ? ORDER BY id DESC LIMIT ? OFFSET ?"
             ).bind(id).bind(page_size).bind(offset).fetch_all(pool).await?;
@@ -229,12 +301,16 @@ pub async fn get_rule_messages(
         }
         crate::state::DbPool::Postgres(pool) => {
             let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE rule_id = $1")
-                .bind(id).fetch_one(pool).await?;
+                .bind(id)
+                .fetch_one(pool)
+                .await?;
             let list = sqlx::query_as(
                 "SELECT id, rule_id, chat_id, message_id, content, raw_data, status, error_reason, created_at FROM messages WHERE rule_id = $1 ORDER BY id DESC LIMIT $2 OFFSET $3"
             ).bind(id).bind(page_size).bind(offset).fetch_all(pool).await?;
             (list, total)
         }
     };
-    Ok(Json(json!({ "success": true, "data": { "list": list, "pagination": { "page": page, "page_size": page_size, "total": total } } })))
+    Ok(Json(
+        json!({ "success": true, "data": { "list": list, "pagination": { "page": page, "page_size": page_size, "total": total } } }),
+    ))
 }

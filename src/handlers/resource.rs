@@ -28,14 +28,14 @@ pub async fn extract_resources(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<Value>, AppError> {
-    let batch_size = body.get("batch_size").and_then(|v| v.as_i64()).unwrap_or(1000);
+    let batch_size = body
+        .get("batch_size")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(1000);
 
-    let result = crate::services::resource::trigger_extraction(
-        &state.db,
-        &state.option_cache,
-        batch_size,
-    )
-    .await?;
+    let result =
+        crate::services::resource::trigger_extraction(&state.db, &state.option_cache, batch_size)
+            .await?;
 
     Ok(Json(json!({
         "success": true,
@@ -53,14 +53,9 @@ pub async fn list_resources(
     let status = params.status.as_deref();
     let category = params.category.as_deref();
 
-    let result = crate::services::resource::list_resources(
-        &state.db,
-        page,
-        page_size,
-        status,
-        category,
-    )
-    .await?;
+    let result =
+        crate::services::resource::list_resources(&state.db, page, page_size, status, category)
+            .await?;
 
     Ok(Json(json!({
         "success": true,
@@ -100,9 +95,7 @@ pub async fn delete_resource(
 }
 
 /// GET /api/resources/stats — 资源统计
-pub async fn get_resource_stats(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, AppError> {
+pub async fn get_resource_stats(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     let stats = crate::services::resource::get_resource_stats(&state.db).await?;
     Ok(Json(json!({ "success": true, "data": stats })))
 }
@@ -179,5 +172,7 @@ pub async fn update_extract_config(
         crate::services::scheduler::stop_extract_scheduler(state.extract_scheduler.clone()).await;
     }
 
-    Ok(Json(json!({ "success": true, "message": "提取配置已更新" })))
+    Ok(Json(
+        json!({ "success": true, "message": "提取配置已更新" }),
+    ))
 }

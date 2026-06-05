@@ -1,7 +1,9 @@
 // 资源管理业务逻辑 — 提取触发、列表查询、编辑更新、推送
 
 use crate::errors::AppError;
-use crate::models::extracted_resource::{ExtractedResource, NewExtractedResource, UpdateExtractedResource};
+use crate::models::extracted_resource::{
+    ExtractedResource, NewExtractedResource, UpdateExtractedResource,
+};
 use crate::services::ai_extractor;
 use crate::services::extractor;
 use crate::state::{DbPool, OptionCache};
@@ -43,7 +45,7 @@ pub async fn trigger_extraction(
                 "SELECT id, raw_data, remote_id \
                  FROM collector_histories \
                  WHERE is_extracted = 0 AND raw_data IS NOT NULL \
-                 LIMIT ?"
+                 LIMIT ?",
             )
             .bind(batch_size)
             .fetch_all(pool)
@@ -54,7 +56,7 @@ pub async fn trigger_extraction(
                 "SELECT id, raw_data, remote_id \
                  FROM collector_histories \
                  WHERE is_extracted = false AND raw_data IS NOT NULL \
-                 LIMIT $1"
+                 LIMIT $1",
             )
             .bind(batch_size)
             .fetch_all(pool)
@@ -71,7 +73,10 @@ pub async fn trigger_extraction(
     // 读取提取模式
     let extract_mode = {
         let cache = option_cache.read().await;
-        cache.get("push_extract_mode").cloned().unwrap_or_else(|| "rule".to_string())
+        cache
+            .get("push_extract_mode")
+            .cloned()
+            .unwrap_or_else(|| "rule".to_string())
     };
 
     for (history_id, raw_data, remote_id) in &histories {
@@ -79,7 +84,10 @@ pub async fn trigger_extraction(
             Some(r) => {
                 // 尝试从 JSON 中提取 text 字段
                 if let Ok(msg) = serde_json::from_str::<serde_json::Value>(r) {
-                    msg.get("text").and_then(|t| t.as_str()).unwrap_or(r).to_string()
+                    msg.get("text")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or(r)
+                        .to_string()
                 } else {
                     r.clone()
                 }
@@ -114,10 +122,26 @@ pub async fn trigger_extraction(
             let new_resource = NewExtractedResource {
                 collector_history_id: *history_id,
                 title: final_draft.title,
-                url: if final_draft.url.is_empty() { None } else { Some(final_draft.url.join(",")) },
-                description: if final_draft.description.is_empty() { None } else { Some(final_draft.description) },
-                category: if final_draft.category.is_empty() { None } else { Some(final_draft.category) },
-                tags: if final_draft.tags.is_empty() { None } else { Some(final_draft.tags) },
+                url: if final_draft.url.is_empty() {
+                    None
+                } else {
+                    Some(final_draft.url.join(","))
+                },
+                description: if final_draft.description.is_empty() {
+                    None
+                } else {
+                    Some(final_draft.description)
+                },
+                category: if final_draft.category.is_empty() {
+                    None
+                } else {
+                    Some(final_draft.category)
+                },
+                tags: if final_draft.tags.is_empty() {
+                    None
+                } else {
+                    Some(final_draft.tags)
+                },
                 img: if img.is_empty() { None } else { Some(img) },
                 source: "tg".to_string(),
                 extra: None,
@@ -126,7 +150,7 @@ pub async fn trigger_extraction(
 
             match insert_resource(db, &new_resource).await {
                 Ok(true) => extracted += 1,
-                Ok(false) => deduped += 1,  // URL 重复，跳过
+                Ok(false) => deduped += 1, // URL 重复，跳过
                 Err(e) => {
                     tracing::warn!("插入资源失败 (history_id={}): {e}", history_id);
                     errors += 1;
@@ -139,7 +163,11 @@ pub async fn trigger_extraction(
 
     tracing::info!(
         "资源提取完成: scanned={}, extracted={}, skipped={}, deduped={}, errors={}",
-        total_scanned, extracted, skipped, deduped, errors
+        total_scanned,
+        extracted,
+        skipped,
+        deduped,
+        errors
     );
 
     Ok(ExtractionResult {
@@ -174,7 +202,8 @@ async fn mark_extracted(db: &DbPool, history_id: i64) -> Result<(), AppError> {
 /// 返回 true 表示新插入，false 表示跳过重复
 async fn insert_resource(db: &DbPool, r: &NewExtractedResource) -> Result<bool, AppError> {
     // 从 URL 中提取 share_ids
-    let share_ids: Vec<String> = r.url
+    let share_ids: Vec<String> = r
+        .url
         .as_deref()
         .into_iter()
         .flat_map(|u| u.split(','))
@@ -226,7 +255,7 @@ async fn insert_resource(db: &DbPool, r: &NewExtractedResource) -> Result<bool, 
             let exists = match db {
                 DbPool::Sqlite(pool) => {
                     let count: i64 = sqlx::query_scalar(
-                        "SELECT COUNT(*) FROM extracted_resources WHERE url = ?"
+                        "SELECT COUNT(*) FROM extracted_resources WHERE url = ?",
                     )
                     .bind(url)
                     .fetch_one(pool)
@@ -236,7 +265,7 @@ async fn insert_resource(db: &DbPool, r: &NewExtractedResource) -> Result<bool, 
                 }
                 DbPool::Postgres(pool) => {
                     let count: i64 = sqlx::query_scalar(
-                        "SELECT COUNT(*) FROM extracted_resources WHERE url = $1"
+                        "SELECT COUNT(*) FROM extracted_resources WHERE url = $1",
                     )
                     .bind(url)
                     .fetch_one(pool)
@@ -252,7 +281,11 @@ async fn insert_resource(db: &DbPool, r: &NewExtractedResource) -> Result<bool, 
         }
     }
 
-    let share_ids_str = if share_ids.is_empty() { None } else { Some(share_ids.join(",")) };
+    let share_ids_str = if share_ids.is_empty() {
+        None
+    } else {
+        Some(share_ids.join(","))
+    };
 
     match db {
         DbPool::Sqlite(pool) => {
@@ -310,7 +343,10 @@ pub async fn list_resources(
     let offset = (page - 1).max(0) * page_size;
 
     let where_clause = build_where_clause(status, category);
-    let count_sql = format!("SELECT COUNT(*) FROM extracted_resources WHERE {}", where_clause);
+    let count_sql = format!(
+        "SELECT COUNT(*) FROM extracted_resources WHERE {}",
+        where_clause
+    );
     let query_sql = format!(
         "SELECT id, collector_history_id, title, url, description, category, tags, img, source, extra, extract_mode, is_pushed, is_edited, created_at, updated_at \
          FROM extracted_resources WHERE {} ORDER BY created_at DESC LIMIT ? OFFSET ?",
@@ -324,9 +360,7 @@ pub async fn list_resources(
 
     let (list, total): (Vec<ExtractedResource>, i64) = match db {
         DbPool::Sqlite(pool) => {
-            let total: i64 = sqlx::query_scalar(&count_sql)
-                .fetch_one(pool)
-                .await?;
+            let total: i64 = sqlx::query_scalar(&count_sql).fetch_one(pool).await?;
             let list = sqlx::query_as(&query_sql)
                 .bind(page_size)
                 .bind(offset)
@@ -335,9 +369,7 @@ pub async fn list_resources(
             (list, total)
         }
         DbPool::Postgres(pool) => {
-            let total: i64 = sqlx::query_scalar(&count_sql)
-                .fetch_one(pool)
-                .await?;
+            let total: i64 = sqlx::query_scalar(&count_sql).fetch_one(pool).await?;
             let list = sqlx::query_as(&query_sql_pg)
                 .bind(page_size)
                 .bind(offset)
@@ -349,7 +381,11 @@ pub async fn list_resources(
 
     Ok(ResourceListResult {
         list,
-        pagination: PaginationInfo { page, page_size, total },
+        pagination: PaginationInfo {
+            page,
+            page_size,
+            total,
+        },
     })
 }
 
@@ -441,16 +477,29 @@ pub async fn update_resource(
     set_parts.push("is_edited = 1");
     set_parts.push("updated_at = CURRENT_TIMESTAMP");
 
-    let sql = format!("UPDATE extracted_resources SET {} WHERE id = ?", set_parts.join(", "));
+    let sql = format!(
+        "UPDATE extracted_resources SET {} WHERE id = ?",
+        set_parts.join(", ")
+    );
 
     match db {
         DbPool::Sqlite(pool) => {
             let mut query = sqlx::query(&sql);
-            if let Some(v) = &title_val { query = query.bind(v); }
-            if let Some(v) = &desc_val { query = query.bind(v); }
-            if let Some(v) = &tags_val { query = query.bind(v); }
-            if let Some(v) = &cat_val { query = query.bind(v); }
-            if let Some(v) = &url_val { query = query.bind(v); }
+            if let Some(v) = &title_val {
+                query = query.bind(v);
+            }
+            if let Some(v) = &desc_val {
+                query = query.bind(v);
+            }
+            if let Some(v) = &tags_val {
+                query = query.bind(v);
+            }
+            if let Some(v) = &cat_val {
+                query = query.bind(v);
+            }
+            if let Some(v) = &url_val {
+                query = query.bind(v);
+            }
             query = query.bind(id);
             let result = query.execute(pool).await?;
             if result.rows_affected() == 0 {
@@ -461,22 +510,51 @@ pub async fn update_resource(
             // 重新构建 PostgreSQL SQL（使用 $N 占位符）
             let mut pg_parts = Vec::new();
             let mut param_idx = 1;
-            if title_val.is_some() { pg_parts.push(format!("title = ${}", param_idx)); param_idx += 1; }
-            if desc_val.is_some() { pg_parts.push(format!("description = ${}", param_idx)); param_idx += 1; }
-            if tags_val.is_some() { pg_parts.push(format!("tags = ${}", param_idx)); param_idx += 1; }
-            if cat_val.is_some() { pg_parts.push(format!("category = ${}", param_idx)); param_idx += 1; }
-            if url_val.is_some() { pg_parts.push(format!("url = ${}", param_idx)); param_idx += 1; }
+            if title_val.is_some() {
+                pg_parts.push(format!("title = ${}", param_idx));
+                param_idx += 1;
+            }
+            if desc_val.is_some() {
+                pg_parts.push(format!("description = ${}", param_idx));
+                param_idx += 1;
+            }
+            if tags_val.is_some() {
+                pg_parts.push(format!("tags = ${}", param_idx));
+                param_idx += 1;
+            }
+            if cat_val.is_some() {
+                pg_parts.push(format!("category = ${}", param_idx));
+                param_idx += 1;
+            }
+            if url_val.is_some() {
+                pg_parts.push(format!("url = ${}", param_idx));
+                param_idx += 1;
+            }
             pg_parts.push("is_edited = TRUE".to_string());
             pg_parts.push("updated_at = NOW()".to_string());
 
-            let pg_sql = format!("UPDATE extracted_resources SET {} WHERE id = ${}", pg_parts.join(", "), param_idx);
+            let pg_sql = format!(
+                "UPDATE extracted_resources SET {} WHERE id = ${}",
+                pg_parts.join(", "),
+                param_idx
+            );
 
             let mut query = sqlx::query(&pg_sql);
-            if let Some(v) = &title_val { query = query.bind(v); }
-            if let Some(v) = &desc_val { query = query.bind(v); }
-            if let Some(v) = &tags_val { query = query.bind(v); }
-            if let Some(v) = &cat_val { query = query.bind(v); }
-            if let Some(v) = &url_val { query = query.bind(v); }
+            if let Some(v) = &title_val {
+                query = query.bind(v);
+            }
+            if let Some(v) = &desc_val {
+                query = query.bind(v);
+            }
+            if let Some(v) = &tags_val {
+                query = query.bind(v);
+            }
+            if let Some(v) = &cat_val {
+                query = query.bind(v);
+            }
+            if let Some(v) = &url_val {
+                query = query.bind(v);
+            }
             query = query.bind(id);
             let result = query.execute(pool).await?;
             if result.rows_affected() == 0 {
@@ -490,20 +568,16 @@ pub async fn update_resource(
 /// 删除资源
 pub async fn delete_resource(db: &DbPool, id: i64) -> Result<(), AppError> {
     let affected = match db {
-        DbPool::Sqlite(pool) => {
-            sqlx::query("DELETE FROM extracted_resources WHERE id = ?")
-                .bind(id)
-                .execute(pool)
-                .await?
-                .rows_affected()
-        }
-        DbPool::Postgres(pool) => {
-            sqlx::query("DELETE FROM extracted_resources WHERE id = $1")
-                .bind(id)
-                .execute(pool)
-                .await?
-                .rows_affected()
-        }
+        DbPool::Sqlite(pool) => sqlx::query("DELETE FROM extracted_resources WHERE id = ?")
+            .bind(id)
+            .execute(pool)
+            .await?
+            .rows_affected(),
+        DbPool::Postgres(pool) => sqlx::query("DELETE FROM extracted_resources WHERE id = $1")
+            .bind(id)
+            .execute(pool)
+            .await?
+            .rows_affected(),
     };
     if affected == 0 {
         return Err(AppError::NotFound("资源不存在".to_string()));
@@ -516,17 +590,28 @@ pub async fn get_resource_stats(db: &DbPool) -> Result<serde_json::Value, AppErr
     let (total, pushed, unpushed): (i64, i64, i64) = match db {
         DbPool::Sqlite(pool) => {
             let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM extracted_resources")
-                .fetch_one(pool).await.unwrap_or(0);
-            let pushed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM extracted_resources WHERE is_pushed = 1")
-                .fetch_one(pool).await.unwrap_or(0);
+                .fetch_one(pool)
+                .await
+                .unwrap_or(0);
+            let pushed: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM extracted_resources WHERE is_pushed = 1")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0);
             let unpushed = total - pushed;
             (total, pushed, unpushed)
         }
         DbPool::Postgres(pool) => {
             let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM extracted_resources")
-                .fetch_one(pool).await.unwrap_or(0);
-            let pushed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM extracted_resources WHERE is_pushed = TRUE")
-                .fetch_one(pool).await.unwrap_or(0);
+                .fetch_one(pool)
+                .await
+                .unwrap_or(0);
+            let pushed: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM extracted_resources WHERE is_pushed = TRUE",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
             let unpushed = total - pushed;
             (total, pushed, unpushed)
         }
@@ -534,39 +619,43 @@ pub async fn get_resource_stats(db: &DbPool) -> Result<serde_json::Value, AppErr
 
     // 按类别统计
     let by_category: Vec<(String, i64)> = match db {
-        DbPool::Sqlite(pool) => {
-            sqlx::query_as(
-                "SELECT COALESCE(category, 'other') as category, COUNT(*) as cnt \
-                 FROM extracted_resources GROUP BY category"
-            ).fetch_all(pool).await.unwrap_or_default()
-        }
-        DbPool::Postgres(pool) => {
-            sqlx::query_as(
-                "SELECT COALESCE(category, 'other') as category, COUNT(*) as cnt \
-                 FROM extracted_resources GROUP BY category"
-            ).fetch_all(pool).await.unwrap_or_default()
-        }
+        DbPool::Sqlite(pool) => sqlx::query_as(
+            "SELECT COALESCE(category, 'other') as category, COUNT(*) as cnt \
+                 FROM extracted_resources GROUP BY category",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default(),
+        DbPool::Postgres(pool) => sqlx::query_as(
+            "SELECT COALESCE(category, 'other') as category, COUNT(*) as cnt \
+                 FROM extracted_resources GROUP BY category",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default(),
     };
-    let category_map: serde_json::Map<String, serde_json::Value> = by_category.into_iter()
+    let category_map: serde_json::Map<String, serde_json::Value> = by_category
+        .into_iter()
         .map(|(k, v)| (k, json!(v)))
         .collect();
 
     // 按提取模式统计
     let by_mode: Vec<(String, i64)> = match db {
-        DbPool::Sqlite(pool) => {
-            sqlx::query_as(
-                "SELECT extract_mode, COUNT(*) as cnt FROM extracted_resources GROUP BY extract_mode"
-            ).fetch_all(pool).await.unwrap_or_default()
-        }
-        DbPool::Postgres(pool) => {
-            sqlx::query_as(
-                "SELECT extract_mode, COUNT(*) as cnt FROM extracted_resources GROUP BY extract_mode"
-            ).fetch_all(pool).await.unwrap_or_default()
-        }
+        DbPool::Sqlite(pool) => sqlx::query_as(
+            "SELECT extract_mode, COUNT(*) as cnt FROM extracted_resources GROUP BY extract_mode",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default(),
+        DbPool::Postgres(pool) => sqlx::query_as(
+            "SELECT extract_mode, COUNT(*) as cnt FROM extracted_resources GROUP BY extract_mode",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default(),
     };
-    let mode_map: serde_json::Map<String, serde_json::Value> = by_mode.into_iter()
-        .map(|(k, v)| (k, json!(v)))
-        .collect();
+    let mode_map: serde_json::Map<String, serde_json::Value> =
+        by_mode.into_iter().map(|(k, v)| (k, json!(v))).collect();
 
     Ok(json!({
         "total": total,
@@ -628,38 +717,66 @@ pub async fn push_resources(
     }
 
     // 转换为推送格式
-    let push_data: Vec<serde_json::Value> = resources.iter().map(|r| {
-        let urls: Vec<&str> = r.url.as_deref()
-            .map(|u| u.split(',').map(|s| s.trim()).collect())
-            .unwrap_or_default();
-        json!({
-            "title": r.title,
-            "url": urls,
-            "description": r.description,
-            "category": r.category,
-            "tags": r.tags,
-            "img": r.img,
-            "source": r.source,
-            "extra": r.extra,
+    let push_data: Vec<serde_json::Value> = resources
+        .iter()
+        .map(|r| {
+            let urls: Vec<&str> = r
+                .url
+                .as_deref()
+                .map(|u| u.split(',').map(|s| s.trim()).collect())
+                .unwrap_or_default();
+            json!({
+                "title": r.title,
+                "url": urls,
+                "description": r.description,
+                "category": r.category,
+                "tags": r.tags,
+                "img": r.img,
+                "source": r.source,
+                "extra": r.extra,
+            })
         })
-    }).collect();
+        .collect();
 
-    let batch_id = format!("batch_{}_{}", if target.is_empty() { "default" } else { target }, chrono::Utc::now().timestamp());
+    let batch_id = format!(
+        "batch_{}_{}",
+        if target.is_empty() { "default" } else { target },
+        chrono::Utc::now().timestamp()
+    );
 
     // 读取通用推送配置
     let cache = option_cache.read().await;
-    let auth_type = cache.get("push_auth_type").cloned().unwrap_or_else(|| "custom_header".to_string());
-    let auth_key = cache.get("push_auth_key").cloned().unwrap_or_else(|| "X-API-Token".to_string());
-    let http_method = cache.get("push_http_method").cloned().unwrap_or_else(|| "POST".to_string());
+    let auth_type = cache
+        .get("push_auth_type")
+        .cloned()
+        .unwrap_or_else(|| "custom_header".to_string());
+    let auth_key = cache
+        .get("push_auth_key")
+        .cloned()
+        .unwrap_or_else(|| "X-API-Token".to_string());
+    let http_method = cache
+        .get("push_http_method")
+        .cloned()
+        .unwrap_or_else(|| "POST".to_string());
     let body_template = cache.get("push_body_template").cloned().unwrap_or_default();
-    let custom_headers_str = cache.get("push_custom_headers").cloned().unwrap_or_else(|| "[]".to_string());
+    let custom_headers_str = cache
+        .get("push_custom_headers")
+        .cloned()
+        .unwrap_or_else(|| "[]".to_string());
     drop(cache);
 
     // 构建请求体（使用模板或默认格式）
     let default_template = r#"{"resources": {{resources}}}"#;
-    let template = if body_template.is_empty() { default_template } else { &body_template };
+    let template = if body_template.is_empty() {
+        default_template
+    } else {
+        &body_template
+    };
     let mut vars = std::collections::HashMap::new();
-    vars.insert("resources", serde_json::to_string(&push_data).unwrap_or_default());
+    vars.insert(
+        "resources",
+        serde_json::to_string(&push_data).unwrap_or_default(),
+    );
     vars.insert("count", resources.len().to_string());
     vars.insert("target", target.to_string());
     vars.insert("timestamp", chrono::Utc::now().timestamp().to_string());
@@ -681,8 +798,7 @@ pub async fn push_resources(
         _ => client.post(api_url),
     };
 
-    request = request
-        .header("Content-Type", "application/json");
+    request = request.header("Content-Type", "application/json");
 
     // 添加认证
     match auth_type.as_str() {
@@ -719,10 +835,7 @@ pub async fn push_resources(
         }
     }
 
-    let resp = request
-        .json(&body_value)
-        .send()
-        .await;
+    let resp = request.json(&body_value).send().await;
 
     match resp {
         Ok(response) => {
@@ -735,10 +848,15 @@ pub async fn push_resources(
 
                 // 记录推送历史
                 record_push_history(
-                    &batch_id, target, "success",
+                    &batch_id,
+                    target,
+                    "success",
                     resources.len() as i64,
-                    "推送成功", None, db,
-                ).await?;
+                    "推送成功",
+                    None,
+                    db,
+                )
+                .await?;
 
                 Ok(json!({
                     "status": "success",
@@ -748,11 +866,15 @@ pub async fn push_resources(
             } else {
                 let body = response.text().await.unwrap_or_default();
                 record_push_history(
-                    &batch_id, target, "failed",
+                    &batch_id,
+                    target,
+                    "failed",
                     resources.len() as i64,
                     &format!("API返回错误: {}", status_code),
-                    Some(&body), db,
-                ).await?;
+                    Some(&body),
+                    db,
+                )
+                .await?;
                 Err(AppError::Internal(format!(
                     "推送API返回错误: status={}, body={}",
                     status_code, body
@@ -761,10 +883,15 @@ pub async fn push_resources(
         }
         Err(e) => {
             record_push_history(
-                &batch_id, target, "failed",
-                0, "推送请求失败",
-                Some(&e.to_string()), db,
-            ).await?;
+                &batch_id,
+                target,
+                "failed",
+                0,
+                "推送请求失败",
+                Some(&e.to_string()),
+                db,
+            )
+            .await?;
             Err(AppError::Internal(format!("推送请求失败: {e}")))
         }
     }
@@ -780,10 +907,12 @@ async fn mark_resource_pushed(db: &DbPool, id: i64) -> Result<(), AppError> {
                 .await?;
         }
         DbPool::Postgres(pool) => {
-            sqlx::query("UPDATE extracted_resources SET is_pushed = TRUE, updated_at = NOW() WHERE id = $1")
-                .bind(id)
-                .execute(pool)
-                .await?;
+            sqlx::query(
+                "UPDATE extracted_resources SET is_pushed = TRUE, updated_at = NOW() WHERE id = $1",
+            )
+            .bind(id)
+            .execute(pool)
+            .await?;
         }
     }
     Ok(())

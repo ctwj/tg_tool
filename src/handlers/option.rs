@@ -76,14 +76,8 @@ pub async fn test_ai_endpoint(
         .unwrap_or("")
         .trim()
         .trim_end_matches('/');
-    let key = body
-        .get("key")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let model = body
-        .get("model")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let key = body.get("key").and_then(|v| v.as_str()).unwrap_or("");
+    let model = body.get("model").and_then(|v| v.as_str()).unwrap_or("");
 
     if url.is_empty() {
         return Err(AppError::BadRequest("请填写 API 地址".into()));
@@ -99,7 +93,10 @@ pub async fn test_ai_endpoint(
 
     let proxy_arg = {
         let cache = state.option_cache.read().await;
-        let use_proxy = cache.get("push_ai_use_proxy").map(|v| v == "1" || v == "true").unwrap_or(false);
+        let use_proxy = cache
+            .get("push_ai_use_proxy")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
         if use_proxy {
             cache.get("proxy_url").cloned().unwrap_or_default()
         } else {
@@ -107,8 +104,7 @@ pub async fn test_ai_endpoint(
         }
     };
 
-    let mut builder = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15));
+    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15));
     if !proxy_arg.is_empty() {
         if let Ok(p) = reqwest::Proxy::all(&proxy_arg) {
             builder = builder.proxy(p);

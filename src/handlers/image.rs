@@ -2,7 +2,7 @@ use crate::errors::AppError;
 use crate::services::image_proxy;
 use crate::state::AppState;
 use axum::extract::{Path, State};
-use axum::http::{header, StatusCode};
+use axum::http::{StatusCode, header};
 use axum::response::Response;
 
 /// GET /api/images/{photo_id}

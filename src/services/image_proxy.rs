@@ -67,10 +67,7 @@ async fn find_first_active_client(state: &AppState) -> Result<grammers_client::C
 }
 
 /// 从 collector_histories 表查找 photo_id 对应的 (channel_id,)
-async fn find_channel_for_photo(
-    state: &AppState,
-    photo_id: &str,
-) -> Result<Option<i64>, AppError> {
+async fn find_channel_for_photo(state: &AppState, photo_id: &str) -> Result<Option<i64>, AppError> {
     let row: Option<(i64,)> = match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
             sqlx::query_as("SELECT channel_id FROM collector_histories WHERE remote_id = ? LIMIT 1")
@@ -79,10 +76,12 @@ async fn find_channel_for_photo(
                 .await
         }
         crate::state::DbPool::Postgres(pool) => {
-            sqlx::query_as("SELECT channel_id FROM collector_histories WHERE remote_id = $1 LIMIT 1")
-                .bind(photo_id)
-                .fetch_optional(pool)
-                .await
+            sqlx::query_as(
+                "SELECT channel_id FROM collector_histories WHERE remote_id = $1 LIMIT 1",
+            )
+            .bind(photo_id)
+            .fetch_optional(pool)
+            .await
         }
     }
     .map_err(|e| AppError::Internal(format!("查询图片频道失败: {e}")))?;

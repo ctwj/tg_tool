@@ -38,9 +38,10 @@ impl TgManager {
     async fn app_id(&self) -> i32 {
         let cache = self.option_cache.read().await;
         if let Some(v) = cache.get("tg_app_id").and_then(|v| v.parse::<i32>().ok())
-            && v != 0 {
-                return v;
-            }
+            && v != 0
+        {
+            return v;
+        }
         self.config.tg_app_id
     }
 
@@ -48,9 +49,10 @@ impl TgManager {
     async fn app_hash(&self) -> String {
         let cache = self.option_cache.read().await;
         if let Some(v) = cache.get("tg_app_hash")
-            && !v.is_empty() {
-                return v.clone();
-            }
+            && !v.is_empty()
+        {
+            return v.clone();
+        }
         self.config.tg_app_hash.clone()
     }
 
@@ -73,9 +75,10 @@ impl TgManager {
         {
             let clients = self.clients.read().await;
             if let Some(entry) = clients.get(client_id)
-                && entry.status == "active" {
-                    return Ok("active".to_string());
-                }
+                && entry.status == "active"
+            {
+                return Ok("active".to_string());
+            }
         }
 
         Self::ensure_tg_store_dir()
@@ -164,9 +167,10 @@ impl TgManager {
             // Clean up session file
             let path = &entry.session_path;
             if Path::new(path).exists()
-                && let Err(e) = std::fs::remove_file(path) {
-                    tracing::warn!("Failed to remove session file {}: {e}", path);
-                }
+                && let Err(e) = std::fs::remove_file(path)
+            {
+                tracing::warn!("Failed to remove session file {}: {e}", path);
+            }
         }
         Ok(())
     }
@@ -190,11 +194,7 @@ impl TgManager {
     }
 
     /// Spawn update listener for a connected client
-    pub fn spawn_update_listener(
-        &self,
-        client_id: String,
-        client: Client,
-    ) {
+    pub fn spawn_update_listener(&self, client_id: String, client: Client) {
         let clients = self.clients.clone();
         let db = self.db.clone();
         let peer_cache = self.peer_cache.clone();
@@ -202,14 +202,16 @@ impl TgManager {
         let client_id_for_handle = client_id.clone();
 
         let handle = tokio::spawn(async move {
-            tracing::info!("Update listener started for client {}", client_id_for_listener);
+            tracing::info!(
+                "Update listener started for client {}",
+                client_id_for_listener
+            );
             let mut consecutive_errors: u32 = 0;
             loop {
                 // next_update with timeout — if proxy dies, this won't hang forever
-                let update_result = tokio::time::timeout(
-                    std::time::Duration::from_secs(60),
-                    client.next_update(),
-                ).await;
+                let update_result =
+                    tokio::time::timeout(std::time::Duration::from_secs(60), client.next_update())
+                        .await;
 
                 match update_result {
                     Ok(Ok(update)) => {
@@ -252,13 +254,19 @@ impl TgManager {
                         );
                         let ping_result = tokio::time::timeout(
                             std::time::Duration::from_secs(10),
-                            client.invoke(&grammers_client::grammers_tl_types::functions::Ping { ping_id: 0 }),
-                        ).await;
+                            client.invoke(&grammers_client::grammers_tl_types::functions::Ping {
+                                ping_id: 0,
+                            }),
+                        )
+                        .await;
 
                         match ping_result {
                             Ok(Ok(_)) => {
                                 // Ping succeeded, connection is alive, reset and continue
-                                tracing::info!("Ping OK for client {}, continuing", client_id_for_listener);
+                                tracing::info!(
+                                    "Ping OK for client {}, continuing",
+                                    client_id_for_listener
+                                );
                                 consecutive_errors = 0;
                                 continue;
                             }
@@ -313,7 +321,10 @@ impl TgManager {
                 }
             }
 
-            tracing::info!("Update listener stopped for client {}", client_id_for_listener);
+            tracing::info!(
+                "Update listener stopped for client {}",
+                client_id_for_listener
+            );
         });
 
         // Store the handle in a separate spawn to avoid blocking
@@ -330,21 +341,19 @@ impl TgManager {
     pub async fn reconnect_on_startup(&self) -> Vec<String> {
         let client_ids: Vec<String> = match &self.db {
             DbPool::Sqlite(pool) => {
-                let rows: Vec<String> = sqlx::query_scalar(
-                    "SELECT id FROM clients WHERE status = 'active'",
-                )
-                .fetch_all(pool)
-                .await
-                .unwrap_or_default();
+                let rows: Vec<String> =
+                    sqlx::query_scalar("SELECT id FROM clients WHERE status = 'active'")
+                        .fetch_all(pool)
+                        .await
+                        .unwrap_or_default();
                 rows
             }
             DbPool::Postgres(pool) => {
-                let rows: Vec<String> = sqlx::query_scalar(
-                    "SELECT id FROM clients WHERE status = 'active'",
-                )
-                .fetch_all(pool)
-                .await
-                .unwrap_or_default();
+                let rows: Vec<String> =
+                    sqlx::query_scalar("SELECT id FROM clients WHERE status = 'active'")
+                        .fetch_all(pool)
+                        .await
+                        .unwrap_or_default();
                 rows
             }
         };
@@ -370,21 +379,24 @@ impl TgManager {
     async fn update_db_status(&self, client_id: &str, status: &str) {
         match &self.db {
             DbPool::Sqlite(pool) => {
-                if let Err(e) = sqlx::query("UPDATE clients SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-                    .bind(status)
-                    .bind(client_id)
-                    .execute(pool)
-                    .await
+                if let Err(e) = sqlx::query(
+                    "UPDATE clients SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                )
+                .bind(status)
+                .bind(client_id)
+                .execute(pool)
+                .await
                 {
                     tracing::warn!("Failed to update client {} status in DB: {e}", client_id);
                 }
             }
             DbPool::Postgres(pool) => {
-                if let Err(e) = sqlx::query("UPDATE clients SET status = $1, updated_at = NOW() WHERE id = $2")
-                    .bind(status)
-                    .bind(client_id)
-                    .execute(pool)
-                    .await
+                if let Err(e) =
+                    sqlx::query("UPDATE clients SET status = $1, updated_at = NOW() WHERE id = $2")
+                        .bind(status)
+                        .bind(client_id)
+                        .execute(pool)
+                        .await
                 {
                     tracing::warn!("Failed to update client {} status in DB: {e}", client_id);
                 }
@@ -461,21 +473,28 @@ impl TgManager {
                 };
 
                 // Skip clients whose session file doesn't exist (never logged in)
-                let client_ids: Vec<String> = client_ids.into_iter().filter(|id| {
-                    Path::new(&format!("tg_store/{id}.session")).exists()
-                }).collect();
+                let client_ids: Vec<String> = client_ids
+                    .into_iter()
+                    .filter(|id| Path::new(&format!("tg_store/{id}.session")).exists())
+                    .collect();
 
                 if client_ids.is_empty() {
                     continue;
                 }
 
-                tracing::info!("Auto-reconnect: checking {} offline client(s)", client_ids.len());
+                tracing::info!(
+                    "Auto-reconnect: checking {} offline client(s)",
+                    client_ids.len()
+                );
 
                 if client_ids.is_empty() {
                     continue;
                 }
 
-                tracing::info!("Auto-reconnect: checking {} offline client(s)", client_ids.len());
+                tracing::info!(
+                    "Auto-reconnect: checking {} offline client(s)",
+                    client_ids.len()
+                );
 
                 // Create a temporary TgManager to use start_client
                 let mgr = TgManager {
@@ -519,7 +538,13 @@ mod tests {
                 .await
                 .expect("Failed to create test DB"),
         );
-        TgManager::new(config, db, clients, option_cache, Arc::new(RwLock::new(HashMap::new())))
+        TgManager::new(
+            config,
+            db,
+            clients,
+            option_cache,
+            Arc::new(RwLock::new(HashMap::new())),
+        )
     }
 
     #[tokio::test]

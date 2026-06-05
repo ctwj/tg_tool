@@ -35,8 +35,8 @@ pub async fn full_collect(
         }
     }
 
-    let packed = target_packed
-        .ok_or_else(|| AppError::NotFound(format!("未找到频道: {channel_id}")))?;
+    let packed =
+        target_packed.ok_or_else(|| AppError::NotFound(format!("未找到频道: {channel_id}")))?;
 
     let mut messages = client.iter_messages(packed).limit(limit as usize);
     let mut collected = 0usize;
@@ -45,7 +45,9 @@ pub async fn full_collect(
     // 先收集所有消息到内存，然后一次性写入数据库
     let mut batch: Vec<(i64, NaiveDateTime, String, Option<String>)> = Vec::new();
 
-    while let Some(msg) = messages.next().await
+    while let Some(msg) = messages
+        .next()
+        .await
         .map_err(|e| AppError::Internal(format!("获取消息失败: {e}")))?
     {
         let message_id = msg.id() as i64;
@@ -63,7 +65,9 @@ pub async fn full_collect(
         match db {
             crate::state::DbPool::Sqlite(pool) => {
                 // 开启事务
-                let mut tx = pool.begin().await
+                let mut tx = pool
+                    .begin()
+                    .await
                     .map_err(|e| AppError::Internal(format!("开启事务失败: {e}")))?;
 
                 for (message_id, post_time, raw_data, remote_id) in &batch {
@@ -85,11 +89,14 @@ pub async fn full_collect(
                     }
                 }
 
-                tx.commit().await
+                tx.commit()
+                    .await
                     .map_err(|e| AppError::Internal(format!("提交事务失败: {e}")))?;
             }
             crate::state::DbPool::Postgres(pool) => {
-                let mut tx = pool.begin().await
+                let mut tx = pool
+                    .begin()
+                    .await
                     .map_err(|e| AppError::Internal(format!("开启事务失败: {e}")))?;
 
                 for (message_id, post_time, raw_data, remote_id) in &batch {
@@ -111,13 +118,18 @@ pub async fn full_collect(
                     }
                 }
 
-                tx.commit().await
+                tx.commit()
+                    .await
                     .map_err(|e| AppError::Internal(format!("提交事务失败: {e}")))?;
             }
         }
     }
 
-    tracing::info!("Collected {} new messages for collector {}", collected, collector_id);
+    tracing::info!(
+        "Collected {} new messages for collector {}",
+        collected,
+        collector_id
+    );
     Ok(collected)
 }
 

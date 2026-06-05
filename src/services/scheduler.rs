@@ -132,11 +132,36 @@ pub async fn update_scheduler(
         state.api_token = api_token;
         state.target = target;
         state.batch_size = batch_size;
-        state.auth_type = option_cache.read().await.get("push_auth_type").cloned().unwrap_or_default();
-        state.auth_key = option_cache.read().await.get("push_auth_key").cloned().unwrap_or_default();
-        state.http_method = option_cache.read().await.get("push_http_method").cloned().unwrap_or_default();
-        state.body_template = option_cache.read().await.get("push_body_template").cloned().unwrap_or_default();
-        state.custom_headers = option_cache.read().await.get("push_custom_headers").cloned().unwrap_or_default();
+        state.auth_type = option_cache
+            .read()
+            .await
+            .get("push_auth_type")
+            .cloned()
+            .unwrap_or_default();
+        state.auth_key = option_cache
+            .read()
+            .await
+            .get("push_auth_key")
+            .cloned()
+            .unwrap_or_default();
+        state.http_method = option_cache
+            .read()
+            .await
+            .get("push_http_method")
+            .cloned()
+            .unwrap_or_default();
+        state.body_template = option_cache
+            .read()
+            .await
+            .get("push_body_template")
+            .cloned()
+            .unwrap_or_default();
+        state.custom_headers = option_cache
+            .read()
+            .await
+            .get("push_custom_headers")
+            .cloned()
+            .unwrap_or_default();
     }
 
     if minutes > 0 {

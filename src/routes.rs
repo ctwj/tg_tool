@@ -3,8 +3,8 @@ use crate::models::user::User;
 use crate::state::AppState;
 use axum::{
     Router,
-    middleware::{self, Next},
     extract::Request,
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{delete, get, post, put},
 };
@@ -18,8 +18,16 @@ async fn auth_guard(req: Request, next: Next) -> Response {
         .unwrap_or_else(|| panic!("AppState missing"));
 
     // 在 await 之前提取所有需要的 headers 数据，避免跨 await 持有 &Request
-    let auth_header = req.headers().get("Authorization").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
-    let cookie_header = req.headers().get("cookie").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+    let auth_header = req
+        .headers()
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let cookie_header = req
+        .headers()
+        .get("cookie")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
 
     let auth_result = crate::middleware::auth::extract_current_user_from_parts(
         &state,
@@ -67,23 +75,14 @@ pub fn build_router(state: AppState) -> Router {
             "/auth/register-status",
             get(handlers::auth::register_status),
         )
-        .route(
-            "/auth/captcha-status",
-            get(handlers::auth::captcha_status),
-        )
-        .route(
-            "/auth/captcha-image",
-            get(handlers::auth::captcha_image),
-        )
+        .route("/auth/captcha-status", get(handlers::auth::captcha_status))
+        .route("/auth/captcha-image", get(handlers::auth::captcha_image))
         .route("/status", get(handlers::misc::system_status))
         .route(
             "/files/download/{filename}",
             get(handlers::file::download_file),
         )
-        .route(
-            "/images/{photo_id}",
-            get(handlers::image::get_image),
-        )
+        .route("/images/{photo_id}", get(handlers::image::get_image))
         .route(
             "/images/{client_id}/{photo_id}",
             get(handlers::image::get_image_with_client),
@@ -161,14 +160,20 @@ pub fn build_router(state: AppState) -> Router {
         .route("/push/retry", post(handlers::push::retry_push))
         .route("/push/scheduler", put(handlers::push::update_scheduler))
         .route("/push/config-check", get(handlers::push::config_check))
-        .route("/push/extract-config", put(handlers::resource::update_extract_config))
-        // Resources
         .route(
-            "/resources",
-            get(handlers::resource::list_resources),
+            "/push/extract-config",
+            put(handlers::resource::update_extract_config),
         )
-        .route("/resources/extract", post(handlers::resource::extract_resources))
-        .route("/resources/stats", get(handlers::resource::get_resource_stats))
+        // Resources
+        .route("/resources", get(handlers::resource::list_resources))
+        .route(
+            "/resources/extract",
+            post(handlers::resource::extract_resources),
+        )
+        .route(
+            "/resources/stats",
+            get(handlers::resource::get_resource_stats),
+        )
         .route(
             "/resources/{id}",
             get(handlers::resource::get_resource)

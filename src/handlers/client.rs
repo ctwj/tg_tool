@@ -23,7 +23,9 @@ pub async fn list_clients(State(state): State<AppState>) -> Result<Json<Value>, 
             .await?
         }
     };
-    Ok(Json(json!({ "success": true, "data": { "list": clients } })))
+    Ok(Json(
+        json!({ "success": true, "data": { "list": clients } }),
+    ))
 }
 
 pub async fn add_client(
@@ -97,15 +99,25 @@ pub async fn start_client(
     // Update status in database
     match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
-            let result = sqlx::query("UPDATE clients SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-                .bind(&status).bind(&id).execute(pool).await?;
+            let result = sqlx::query(
+                "UPDATE clients SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            )
+            .bind(&status)
+            .bind(&id)
+            .execute(pool)
+            .await?;
             if result.rows_affected() == 0 {
                 return Err(AppError::NotFound("客户端不存在".into()));
             }
         }
         crate::state::DbPool::Postgres(pool) => {
-            let result = sqlx::query("UPDATE clients SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2")
-                .bind(&status).bind(&id).execute(pool).await?;
+            let result = sqlx::query(
+                "UPDATE clients SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+            )
+            .bind(&status)
+            .bind(&id)
+            .execute(pool)
+            .await?;
             if result.rows_affected() == 0 {
                 return Err(AppError::NotFound("客户端不存在".into()));
             }
@@ -118,7 +130,9 @@ pub async fn start_client(
         "客户端已连接，需要认证"
     };
 
-    Ok(Json(json!({ "success": true, "data": { "status": status, "message": message } })))
+    Ok(Json(
+        json!({ "success": true, "data": { "status": status, "message": message } }),
+    ))
 }
 
 pub async fn stop_client(
@@ -158,26 +172,36 @@ pub async fn auth_client(
 
     let auth_state = match auth_type {
         "phone" => {
-            crate::services::tg_auth::request_login_code(
-                &id, value, &state.tg_clients, &state.db,
-            )
-            .await?
+            crate::services::tg_auth::request_login_code(&id, value, &state.tg_clients, &state.db)
+                .await?
         }
         "code" => {
             crate::services::tg_auth::submit_code(
-                &id, value, &state.tg_clients, &state.db, &state.tg_manager,
+                &id,
+                value,
+                &state.tg_clients,
+                &state.db,
+                &state.tg_manager,
             )
             .await?
         }
         "password" => {
             crate::services::tg_auth::submit_password(
-                &id, value, &state.tg_clients, &state.db, &state.tg_manager,
+                &id,
+                value,
+                &state.tg_clients,
+                &state.db,
+                &state.tg_manager,
             )
             .await?
         }
         "bot_token" => {
             crate::services::tg_auth::bot_sign_in(
-                &id, value, &state.tg_clients, &state.db, &state.tg_manager,
+                &id,
+                value,
+                &state.tg_clients,
+                &state.db,
+                &state.tg_manager,
             )
             .await?
         }
@@ -198,7 +222,9 @@ pub async fn auth_client(
         crate::services::tg_auth::AuthState::Unauthenticated => "未认证",
     };
 
-    Ok(Json(json!({ "success": true, "data": { "status": status, "message": message } })))
+    Ok(Json(
+        json!({ "success": true, "data": { "status": status, "message": message } }),
+    ))
 }
 
 pub async fn get_chats(

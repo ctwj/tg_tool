@@ -101,11 +101,21 @@ pub async fn update_user(
 
     // Build dynamic SET clause
     let mut sets = Vec::new();
-    if display_name.is_some() { sets.push("display_name = ?"); }
-    if email.is_some() { sets.push("email = ?"); }
-    if password.is_some() { sets.push("password = ?"); }
-    if role.is_some() { sets.push("role = ?"); }
-    if status.is_some() { sets.push("status = ?"); }
+    if display_name.is_some() {
+        sets.push("display_name = ?");
+    }
+    if email.is_some() {
+        sets.push("email = ?");
+    }
+    if password.is_some() {
+        sets.push("password = ?");
+    }
+    if role.is_some() {
+        sets.push("role = ?");
+    }
+    if status.is_some() {
+        sets.push("status = ?");
+    }
     if sets.is_empty() {
         return Ok(Json(json!({ "success": true, "message": "用户已更新" })));
     }
@@ -118,15 +128,29 @@ pub async fn update_user(
 
     match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
-            let set_str = sets.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", ")
+            let set_str = sets
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
                 + ", updated_at = CURRENT_TIMESTAMP";
             let sql = format!("UPDATE users SET {set_str} WHERE id = ?");
             let mut q = sqlx::query(&sql);
-            if let Some(v) = display_name { q = q.bind(v); }
-            if let Some(v) = email { q = q.bind(v); }
-            if let Some(v) = &hashed { q = q.bind(v); }
-            if let Some(v) = role { q = q.bind(v as i32); }
-            if let Some(v) = status { q = q.bind(v as i32); }
+            if let Some(v) = display_name {
+                q = q.bind(v);
+            }
+            if let Some(v) = email {
+                q = q.bind(v);
+            }
+            if let Some(v) = &hashed {
+                q = q.bind(v);
+            }
+            if let Some(v) = role {
+                q = q.bind(v as i32);
+            }
+            if let Some(v) = status {
+                q = q.bind(v as i32);
+            }
             q = q.bind(id);
             let result = q.execute(pool).await?;
             if result.rows_affected() == 0 {
@@ -136,19 +160,47 @@ pub async fn update_user(
         crate::state::DbPool::Postgres(pool) => {
             let mut pg_parts = Vec::new();
             let mut pg_idx = 1u32;
-            if display_name.is_some() { pg_parts.push(format!("display_name = ${pg_idx}")); pg_idx += 1; }
-            if email.is_some() { pg_parts.push(format!("email = ${pg_idx}")); pg_idx += 1; }
-            if hashed.is_some() { pg_parts.push(format!("password = ${pg_idx}")); pg_idx += 1; }
-            if role.is_some() { pg_parts.push(format!("role = ${pg_idx}")); pg_idx += 1; }
-            if status.is_some() { pg_parts.push(format!("status = ${pg_idx}")); pg_idx += 1; }
+            if display_name.is_some() {
+                pg_parts.push(format!("display_name = ${pg_idx}"));
+                pg_idx += 1;
+            }
+            if email.is_some() {
+                pg_parts.push(format!("email = ${pg_idx}"));
+                pg_idx += 1;
+            }
+            if hashed.is_some() {
+                pg_parts.push(format!("password = ${pg_idx}"));
+                pg_idx += 1;
+            }
+            if role.is_some() {
+                pg_parts.push(format!("role = ${pg_idx}"));
+                pg_idx += 1;
+            }
+            if status.is_some() {
+                pg_parts.push(format!("status = ${pg_idx}"));
+                pg_idx += 1;
+            }
             pg_parts.push("updated_at = CURRENT_TIMESTAMP".to_string());
-            let sql = format!("UPDATE users SET {} WHERE id = ${pg_idx}", pg_parts.join(", "));
+            let sql = format!(
+                "UPDATE users SET {} WHERE id = ${pg_idx}",
+                pg_parts.join(", ")
+            );
             let mut q = sqlx::query(&sql);
-            if let Some(v) = display_name { q = q.bind(v); }
-            if let Some(v) = email { q = q.bind(v); }
-            if let Some(v) = &hashed { q = q.bind(v); }
-            if let Some(v) = role { q = q.bind(v as i32); }
-            if let Some(v) = status { q = q.bind(v as i32); }
+            if let Some(v) = display_name {
+                q = q.bind(v);
+            }
+            if let Some(v) = email {
+                q = q.bind(v);
+            }
+            if let Some(v) = &hashed {
+                q = q.bind(v);
+            }
+            if let Some(v) = role {
+                q = q.bind(v as i32);
+            }
+            if let Some(v) = status {
+                q = q.bind(v as i32);
+            }
             q = q.bind(id);
             let result = q.execute(pool).await?;
             if result.rows_affected() == 0 {

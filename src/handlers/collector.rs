@@ -43,7 +43,9 @@ pub async fn list_collectors(
             ).fetch_all(pool).await?
         }
     };
-    Ok(Json(json!({ "success": true, "data": { "list": collectors } })))
+    Ok(Json(
+        json!({ "success": true, "data": { "list": collectors } }),
+    ))
 }
 
 pub async fn create_collector(
@@ -96,11 +98,15 @@ pub async fn get_collector(
     let collector: Option<crate::models::collector::Collector> = match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
             sqlx::query_as(&format!("{SELECT_COLLECTOR} WHERE id = ?"))
-                .bind(id).fetch_optional(pool).await?
+                .bind(id)
+                .fetch_optional(pool)
+                .await?
         }
         crate::state::DbPool::Postgres(pool) => {
             sqlx::query_as(&format!("{SELECT_COLLECTOR} WHERE id = $1"))
-                .bind(id).fetch_optional(pool).await?
+                .bind(id)
+                .fetch_optional(pool)
+                .await?
         }
     };
     match collector {
@@ -123,28 +129,56 @@ pub async fn update_collector(
 
     // Build dynamic SET clause
     let mut sets = Vec::new();
-    if client_id.is_some() { sets.push("client_id = ?"); }
-    if channel_id.is_some() { sets.push("channel_id = ?"); }
-    if channel_name.is_some() { sets.push("channel_name = ?"); }
-    if collector_type.is_some() { sets.push("collector_type = ?"); }
-    if is_active.is_some() { sets.push("is_active = ?"); }
-    if remark.is_some() { sets.push("remark = ?"); }
+    if client_id.is_some() {
+        sets.push("client_id = ?");
+    }
+    if channel_id.is_some() {
+        sets.push("channel_id = ?");
+    }
+    if channel_name.is_some() {
+        sets.push("channel_name = ?");
+    }
+    if collector_type.is_some() {
+        sets.push("collector_type = ?");
+    }
+    if is_active.is_some() {
+        sets.push("is_active = ?");
+    }
+    if remark.is_some() {
+        sets.push("remark = ?");
+    }
     if sets.is_empty() {
         return Ok(Json(json!({ "success": true, "message": "采集器已更新" })));
     }
 
     match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
-            let set_str: String = sets.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", ")
+            let set_str: String = sets
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
                 + ", updated_at = CURRENT_TIMESTAMP";
             let sql = format!("UPDATE collectors SET {set_str} WHERE id = ?");
             let mut q = sqlx::query(&sql);
-            if let Some(v) = client_id { q = q.bind(v); }
-            if let Some(v) = channel_id { q = q.bind(v); }
-            if let Some(v) = channel_name { q = q.bind(v); }
-            if let Some(v) = collector_type { q = q.bind(v); }
-            if let Some(v) = is_active { q = q.bind(v); }
-            if let Some(v) = remark { q = q.bind(v); }
+            if let Some(v) = client_id {
+                q = q.bind(v);
+            }
+            if let Some(v) = channel_id {
+                q = q.bind(v);
+            }
+            if let Some(v) = channel_name {
+                q = q.bind(v);
+            }
+            if let Some(v) = collector_type {
+                q = q.bind(v);
+            }
+            if let Some(v) = is_active {
+                q = q.bind(v);
+            }
+            if let Some(v) = remark {
+                q = q.bind(v);
+            }
             q = q.bind(id);
             let result = q.execute(pool).await?;
             if result.rows_affected() == 0 {
@@ -155,21 +189,54 @@ pub async fn update_collector(
             // Rebuild with $N placeholders for Postgres
             let mut pg_parts = Vec::new();
             let mut pg_idx = 1u32;
-            if client_id.is_some() { pg_parts.push(format!("client_id = ${pg_idx}")); pg_idx += 1; }
-            if channel_id.is_some() { pg_parts.push(format!("channel_id = ${pg_idx}")); pg_idx += 1; }
-            if channel_name.is_some() { pg_parts.push(format!("channel_name = ${pg_idx}")); pg_idx += 1; }
-            if collector_type.is_some() { pg_parts.push(format!("collector_type = ${pg_idx}")); pg_idx += 1; }
-            if is_active.is_some() { pg_parts.push(format!("is_active = ${pg_idx}")); pg_idx += 1; }
-            if remark.is_some() { pg_parts.push(format!("remark = ${pg_idx}")); pg_idx += 1; }
+            if client_id.is_some() {
+                pg_parts.push(format!("client_id = ${pg_idx}"));
+                pg_idx += 1;
+            }
+            if channel_id.is_some() {
+                pg_parts.push(format!("channel_id = ${pg_idx}"));
+                pg_idx += 1;
+            }
+            if channel_name.is_some() {
+                pg_parts.push(format!("channel_name = ${pg_idx}"));
+                pg_idx += 1;
+            }
+            if collector_type.is_some() {
+                pg_parts.push(format!("collector_type = ${pg_idx}"));
+                pg_idx += 1;
+            }
+            if is_active.is_some() {
+                pg_parts.push(format!("is_active = ${pg_idx}"));
+                pg_idx += 1;
+            }
+            if remark.is_some() {
+                pg_parts.push(format!("remark = ${pg_idx}"));
+                pg_idx += 1;
+            }
             pg_parts.push("updated_at = CURRENT_TIMESTAMP".to_string());
-            let sql = format!("UPDATE collectors SET {} WHERE id = ${pg_idx}", pg_parts.join(", "));
+            let sql = format!(
+                "UPDATE collectors SET {} WHERE id = ${pg_idx}",
+                pg_parts.join(", ")
+            );
             let mut q = sqlx::query(&sql);
-            if let Some(v) = client_id { q = q.bind(v); }
-            if let Some(v) = channel_id { q = q.bind(v); }
-            if let Some(v) = channel_name { q = q.bind(v); }
-            if let Some(v) = collector_type { q = q.bind(v); }
-            if let Some(v) = is_active { q = q.bind(v); }
-            if let Some(v) = remark { q = q.bind(v); }
+            if let Some(v) = client_id {
+                q = q.bind(v);
+            }
+            if let Some(v) = channel_id {
+                q = q.bind(v);
+            }
+            if let Some(v) = channel_name {
+                q = q.bind(v);
+            }
+            if let Some(v) = collector_type {
+                q = q.bind(v);
+            }
+            if let Some(v) = is_active {
+                q = q.bind(v);
+            }
+            if let Some(v) = remark {
+                q = q.bind(v);
+            }
             q = q.bind(id);
             let result = q.execute(pool).await?;
             if result.rows_affected() == 0 {
@@ -256,11 +323,15 @@ pub async fn fetch_history(
     let collector: Option<crate::models::collector::Collector> = match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
             sqlx::query_as(&format!("{SELECT_COLLECTOR} WHERE id = ?"))
-                .bind(id).fetch_optional(pool).await?
+                .bind(id)
+                .fetch_optional(pool)
+                .await?
         }
         crate::state::DbPool::Postgres(pool) => {
             sqlx::query_as(&format!("{SELECT_COLLECTOR} WHERE id = $1"))
-                .bind(id).fetch_optional(pool).await?
+                .bind(id)
+                .fetch_optional(pool)
+                .await?
         }
     };
     let collector = match collector {
@@ -280,14 +351,20 @@ pub async fn fetch_history(
         } else {
             // Fall back to any active client
             let clients = state.tg_clients.read().await;
-            let fallback = clients.iter().find(|(_, e)| e.status == "active").map(|(id, _)| id.clone());
+            let fallback = clients
+                .iter()
+                .find(|(_, e)| e.status == "active")
+                .map(|(id, _)| id.clone());
             drop(clients);
             fallback.ok_or_else(|| AppError::BadRequest("没有可用的活跃客户端".into()))?
         }
     } else {
         // Legacy: find any active client
         let clients = state.tg_clients.read().await;
-        let fallback = clients.iter().find(|(_, e)| e.status == "active").map(|(id, _)| id.clone());
+        let fallback = clients
+            .iter()
+            .find(|(_, e)| e.status == "active")
+            .map(|(id, _)| id.clone());
         drop(clients);
         fallback.ok_or_else(|| AppError::BadRequest("没有可用的活跃客户端".into()))?
     };
@@ -302,7 +379,9 @@ pub async fn fetch_history(
         &state.db,
     )
     .await?;
-    Ok(Json(json!({ "success": true, "data": { "message": format!("采集完成，新增 {} 条", count) } })))
+    Ok(Json(
+        json!({ "success": true, "data": { "message": format!("采集完成，新增 {} 条", count) } }),
+    ))
 }
 
 pub async fn list_histories(
@@ -319,11 +398,17 @@ pub async fn list_histories(
         None => String::new(),
     };
 
-    let (list, total): (Vec<crate::models::collector_history::CollectorHistory>, i64) = match (&state.db, &params.collector_id) {
+    let (list, total): (Vec<crate::models::collector_history::CollectorHistory>, i64) = match (
+        &state.db,
+        &params.collector_id,
+    ) {
         (crate::state::DbPool::Sqlite(pool), Some(cid)) => {
-            let total: i64 = sqlx::query_scalar(
-                &format!("SELECT COUNT(*) FROM collector_histories WHERE collector_id = ?{ext_sql}")
-            ).bind(cid).fetch_one(pool).await?;
+            let total: i64 = sqlx::query_scalar(&format!(
+                "SELECT COUNT(*) FROM collector_histories WHERE collector_id = ?{ext_sql}"
+            ))
+            .bind(cid)
+            .fetch_one(pool)
+            .await?;
             let list = sqlx::query_as(
                 &format!("SELECT id, collector_id, channel_id, message_id, post_time, raw_data, is_auto_push, remote_id, created_at, is_extracted FROM collector_histories WHERE collector_id = ?{ext_sql} ORDER BY id DESC LIMIT ? OFFSET ?")
             ).bind(cid).bind(page_size).bind(offset).fetch_all(pool).await?;
@@ -334,19 +419,28 @@ pub async fn list_histories(
                 Some(v) => format!(" AND is_extracted = {}", v),
                 None => String::new(),
             };
-            let total: i64 = sqlx::query_scalar(
-                &format!("SELECT COUNT(*) FROM collector_histories WHERE collector_id = $1{ext_sql_pg}")
-            ).bind(cid).fetch_one(pool).await?;
+            let total: i64 = sqlx::query_scalar(&format!(
+                "SELECT COUNT(*) FROM collector_histories WHERE collector_id = $1{ext_sql_pg}"
+            ))
+            .bind(cid)
+            .fetch_one(pool)
+            .await?;
             let list = sqlx::query_as(
                 &format!("SELECT id, collector_id, channel_id, message_id, post_time, raw_data, is_auto_push, remote_id, created_at, is_extracted FROM collector_histories WHERE collector_id = $1{ext_sql_pg} ORDER BY id DESC LIMIT $2 OFFSET $3")
             ).bind(cid).bind(page_size).bind(offset).fetch_all(pool).await?;
             (list, total)
         }
         (crate::state::DbPool::Sqlite(pool), None) => {
-            let where_clause = if ext_sql.is_empty() { String::new() } else { format!(" WHERE 1=1{ext_sql}") };
-            let total: i64 = sqlx::query_scalar(
-                &format!("SELECT COUNT(*) FROM collector_histories{where_clause}")
-            ).fetch_one(pool).await?;
+            let where_clause = if ext_sql.is_empty() {
+                String::new()
+            } else {
+                format!(" WHERE 1=1{ext_sql}")
+            };
+            let total: i64 = sqlx::query_scalar(&format!(
+                "SELECT COUNT(*) FROM collector_histories{where_clause}"
+            ))
+            .fetch_one(pool)
+            .await?;
             let list = sqlx::query_as(
                 &format!("SELECT id, collector_id, channel_id, message_id, post_time, raw_data, is_auto_push, remote_id, created_at, is_extracted FROM collector_histories{where_clause} ORDER BY id DESC LIMIT ? OFFSET ?")
             ).bind(page_size).bind(offset).fetch_all(pool).await?;
@@ -357,14 +451,18 @@ pub async fn list_histories(
                 Some(v) => format!(" WHERE is_extracted = {}", v),
                 None => String::new(),
             };
-            let total: i64 = sqlx::query_scalar(
-                &format!("SELECT COUNT(*) FROM collector_histories{ext_sql_pg}")
-            ).fetch_one(pool).await?;
+            let total: i64 = sqlx::query_scalar(&format!(
+                "SELECT COUNT(*) FROM collector_histories{ext_sql_pg}"
+            ))
+            .fetch_one(pool)
+            .await?;
             let list = sqlx::query_as(
                 &format!("SELECT id, collector_id, channel_id, message_id, post_time, raw_data, is_auto_push, remote_id, created_at, is_extracted FROM collector_histories{ext_sql_pg} ORDER BY id DESC LIMIT $1 OFFSET $2")
             ).bind(page_size).bind(offset).fetch_all(pool).await?;
             (list, total)
         }
     };
-    Ok(Json(json!({ "success": true, "data": { "list": list, "pagination": { "page": page, "page_size": page_size, "total": total } } })))
+    Ok(Json(
+        json!({ "success": true, "data": { "list": list, "pagination": { "page": page, "page_size": page_size, "total": total } } }),
+    ))
 }

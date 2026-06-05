@@ -102,8 +102,7 @@ pub async fn call_ai_api(
     message: &str,
     proxy_url: Option<&str>,
 ) -> Result<AiExtractResult, String> {
-    let mut builder = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30));
+    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30));
 
     if let Some(proxy) = proxy_url {
         if !proxy.is_empty() {
@@ -234,7 +233,10 @@ pub async fn ai_extract(
     let (prompt, proxy_enabled, proxy_url) = {
         let cache = option_cache.read().await;
         let p = cache.get("push_ai_prompt").cloned().unwrap_or_default();
-        let enabled = cache.get("push_ai_use_proxy").map(|v| v == "1" || v == "true").unwrap_or(false);
+        let enabled = cache
+            .get("push_ai_use_proxy")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
         let proxy = cache.get("proxy_url").cloned().unwrap_or_default();
         (p, enabled, proxy)
     };
@@ -247,7 +249,11 @@ pub async fn ai_extract(
             None => break,
         };
 
-        let proxy_arg = if proxy_enabled && !proxy_url.is_empty() { Some(proxy_url.as_str()) } else { None };
+        let proxy_arg = if proxy_enabled && !proxy_url.is_empty() {
+            Some(proxy_url.as_str())
+        } else {
+            None
+        };
         match call_ai_api(&endpoint, &prompt, raw_data, proxy_arg).await {
             Ok(ai_result) => {
                 tracing::info!(
@@ -463,11 +469,23 @@ mod tests {
     #[test]
     fn test_default_prompt_contains_field_constraints() {
         // 验证 DEFAULT_PROMPT 包含每个字段的约束描述
-        assert!(DEFAULT_PROMPT.contains("title"), "提示词应包含 title 字段约束");
+        assert!(
+            DEFAULT_PROMPT.contains("title"),
+            "提示词应包含 title 字段约束"
+        );
         assert!(DEFAULT_PROMPT.contains("url"), "提示词应包含 url 字段约束");
-        assert!(DEFAULT_PROMPT.contains("description"), "提示词应包含 description 字段约束");
-        assert!(DEFAULT_PROMPT.contains("category"), "提示词应包含 category 字段约束");
-        assert!(DEFAULT_PROMPT.contains("tags"), "提示词应包含 tags 字段约束");
+        assert!(
+            DEFAULT_PROMPT.contains("description"),
+            "提示词应包含 description 字段约束"
+        );
+        assert!(
+            DEFAULT_PROMPT.contains("category"),
+            "提示词应包含 category 字段约束"
+        );
+        assert!(
+            DEFAULT_PROMPT.contains("tags"),
+            "提示词应包含 tags 字段约束"
+        );
     }
 
     // --- T008: 默认提示词包含 JSON 输出示例 ---
@@ -475,8 +493,14 @@ mod tests {
     #[test]
     fn test_default_prompt_contains_example() {
         // 验证 DEFAULT_PROMPT 包含 JSON 输出示例（包含示例字段值）
-        assert!(DEFAULT_PROMPT.contains("quark") || DEFAULT_PROMPT.contains("aliyun"), "提示词应包含网盘类型示例");
-        assert!(DEFAULT_PROMPT.contains("pan.quark") || DEFAULT_PROMPT.contains("example"), "提示词应包含链接示例");
+        assert!(
+            DEFAULT_PROMPT.contains("quark") || DEFAULT_PROMPT.contains("aliyun"),
+            "提示词应包含网盘类型示例"
+        );
+        assert!(
+            DEFAULT_PROMPT.contains("pan.quark") || DEFAULT_PROMPT.contains("example"),
+            "提示词应包含链接示例"
+        );
     }
 
     // --- T017: 嵌套花括号 JSON 解析 ---
@@ -495,7 +519,8 @@ mod tests {
     #[test]
     fn test_ai_extract_partial_field_fallback() {
         // 模拟 AI 返回部分字段为空
-        let ai_json = r#"{"title":"AI标题","url":[],"description":"","category":"quark","tags":""}"#;
+        let ai_json =
+            r#"{"title":"AI标题","url":[],"description":"","category":"quark","tags":""}"#;
         let ai_result: AiExtractResult = serde_json::from_str(ai_json).unwrap();
 
         let rule_draft = ResourceDraft {
@@ -509,18 +534,38 @@ mod tests {
 
         // 合并逻辑：空字段回退到规则结果
         let merged = ResourceDraft {
-            title: if ai_result.title.is_empty() { rule_draft.title.clone() } else { ai_result.title },
-            url: if ai_result.url.is_empty() { rule_draft.url.clone() } else { ai_result.url },
-            description: if ai_result.description.is_empty() { rule_draft.description.clone() } else { ai_result.description },
-            category: if ai_result.category.is_empty() { rule_draft.category.clone() } else { ai_result.category },
-            tags: if ai_result.tags.is_empty() { rule_draft.tags.clone() } else { ai_result.tags },
+            title: if ai_result.title.is_empty() {
+                rule_draft.title.clone()
+            } else {
+                ai_result.title
+            },
+            url: if ai_result.url.is_empty() {
+                rule_draft.url.clone()
+            } else {
+                ai_result.url
+            },
+            description: if ai_result.description.is_empty() {
+                rule_draft.description.clone()
+            } else {
+                ai_result.description
+            },
+            category: if ai_result.category.is_empty() {
+                rule_draft.category.clone()
+            } else {
+                ai_result.category
+            },
+            tags: if ai_result.tags.is_empty() {
+                rule_draft.tags.clone()
+            } else {
+                ai_result.tags
+            },
             source: "tg".to_string(),
         };
 
-        assert_eq!(merged.title, "AI标题");      // AI 有值，用 AI
+        assert_eq!(merged.title, "AI标题"); // AI 有值，用 AI
         assert_eq!(merged.url, vec!["https://pan.quark.cn/s/abc"]); // AI 为空，回退规则
         assert_eq!(merged.description, "规则描述"); // AI 为空，回退规则
-        assert_eq!(merged.tags, "电影");            // AI 为空，回退规则
+        assert_eq!(merged.tags, "电影"); // AI 为空，回退规则
     }
 
     // --- T019: 端点过滤 disabled ---

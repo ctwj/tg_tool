@@ -64,14 +64,8 @@ async fn forward_webhook(
     let (webhook_url, http_method) = if let Some(config_str) = config {
         let cfg: serde_json::Value = serde_json::from_str(config_str)
             .map_err(|e| AppError::BadRequest(format!("转发配置解析失败: {e}")))?;
-        let url = cfg["webhook_url"]
-            .as_str()
-            .unwrap_or(target)
-            .to_string();
-        let method = cfg["method"]
-            .as_str()
-            .unwrap_or("POST")
-            .to_string();
+        let url = cfg["webhook_url"].as_str().unwrap_or(target).to_string();
+        let method = cfg["method"].as_str().unwrap_or("POST").to_string();
         (url, method)
     } else {
         (target.to_string(), "POST".to_string())

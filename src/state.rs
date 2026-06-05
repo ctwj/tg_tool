@@ -136,9 +136,7 @@ impl AppState {
     /// 获取 TG APP ID：优先使用系统配置，回退到环境变量
     pub async fn tg_app_id(&self) -> i32 {
         let cache = self.option_cache.read().await;
-        if let Some(v) = cache
-            .get("tg_app_id")
-            .and_then(|v| v.parse::<i32>().ok())
+        if let Some(v) = cache.get("tg_app_id").and_then(|v| v.parse::<i32>().ok())
             && v != 0
         {
             return v;

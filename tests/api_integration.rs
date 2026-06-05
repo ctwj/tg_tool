@@ -70,25 +70,25 @@ fn make_test_state(db: DbPool) -> (AppState, tgTool::state::TgClientMap) {
         rate_limit_max: 10000,
         rate_limit_window_secs: 60,
     };
-    let tg_clients = std::sync::Arc::new(tokio::sync::RwLock::new(
-        std::collections::HashMap::new(),
+    let tg_clients =
+        std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+    let option_cache =
+        std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+    let peer_cache =
+        std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+    let tg_manager = std::sync::Arc::new(tgTool::services::tg_manager::TgManager::new(
+        config.clone(),
+        db.clone(),
+        tg_clients.clone(),
+        option_cache,
+        peer_cache,
     ));
-    let option_cache = std::sync::Arc::new(tokio::sync::RwLock::new(
-        std::collections::HashMap::new(),
-    ));
-    let peer_cache = std::sync::Arc::new(tokio::sync::RwLock::new(
-        std::collections::HashMap::new(),
-    ));
-    let tg_manager = std::sync::Arc::new(
-        tgTool::services::tg_manager::TgManager::new(
-            config.clone(),
-            db.clone(),
-            tg_clients.clone(),
-            option_cache,
-            peer_cache,
-        ),
+    let state = AppState::new(
+        db,
+        config,
+        tg_manager,
+        std::path::PathBuf::from("image_cache"),
     );
-    let state = AppState::new(db, config, tg_manager, std::path::PathBuf::from("image_cache"));
     (state, tg_clients)
 }
 
@@ -115,7 +115,12 @@ fn build_request(method: &str, uri: &str, body: Option<String>) -> axum::http::R
 }
 
 /// 构建一个带认证 token 的 HTTP request
-fn build_auth_request(method: &str, uri: &str, token: &str, body: Option<String>) -> axum::http::Request<Body> {
+fn build_auth_request(
+    method: &str,
+    uri: &str,
+    token: &str,
+    body: Option<String>,
+) -> axum::http::Request<Body> {
     let mut builder = axum::http::Request::builder()
         .method(method)
         .uri(uri)
@@ -130,7 +135,11 @@ fn build_auth_request(method: &str, uri: &str, token: &str, body: Option<String>
 
 /// 以 root 用户登录，返回 auth token
 async fn get_root_token(app: &mut axum::Router) -> String {
-    let req = build_request("POST", "/api/auth/login", Some(r#"{"username":"root","password":"123456"}"#.to_string()));
+    let req = build_request(
+        "POST",
+        "/api/auth/login",
+        Some(r#"{"username":"root","password":"123456"}"#.to_string()),
+    );
     let resp = app.clone().oneshot(req).await.unwrap();
     let body = parse_body(resp.into_body()).await;
     assert_success(&body);
@@ -341,7 +350,12 @@ async fn test_list_users() {
     let token = get_root_token(&mut app).await;
 
     let response = app
-        .oneshot(build_auth_request("GET", "/api/users?page=1&page_size=10", &token, None))
+        .oneshot(build_auth_request(
+            "GET",
+            "/api/users?page=1&page_size=10",
+            &token,
+            None,
+        ))
         .await
         .unwrap();
 
@@ -382,7 +396,12 @@ async fn test_rule_crud() {
     // 列出规则
     let response = app
         .clone()
-        .oneshot(build_auth_request("GET", "/api/rules?page=1&page_size=10", &token, None))
+        .oneshot(build_auth_request(
+            "GET",
+            "/api/rules?page=1&page_size=10",
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
@@ -390,7 +409,12 @@ async fn test_rule_crud() {
     // 切换规则状态
     let response = app
         .clone()
-        .oneshot(build_auth_request("PUT", "/api/rules/1/toggle", &token, None))
+        .oneshot(build_auth_request(
+            "PUT",
+            "/api/rules/1/toggle",
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
@@ -449,14 +473,24 @@ async fn test_collector_crud() {
     // 切换采集器状态
     let response = app
         .clone()
-        .oneshot(build_auth_request("PUT", "/api/collectors/1/toggle", &token, None))
+        .oneshot(build_auth_request(
+            "PUT",
+            "/api/collectors/1/toggle",
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
 
     // 删除采集器
     let response = app
-        .oneshot(build_auth_request("DELETE", "/api/collectors/1", &token, None))
+        .oneshot(build_auth_request(
+            "DELETE",
+            "/api/collectors/1",
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
@@ -494,8 +528,13 @@ async fn test_client_add_and_remove() {
     assert_eq!(response.status(), 200);
     let body = parse_body(response.into_body()).await;
     assert_success(&body);
-    let list = body["data"]["list"].as_array().expect("list should be array");
-    assert!(!list.is_empty(), "list should not be empty after adding client");
+    let list = body["data"]["list"]
+        .as_array()
+        .expect("list should be array");
+    assert!(
+        !list.is_empty(),
+        "list should not be empty after adding client"
+    );
     let c = &list[0];
     assert_eq!(c["client_type"], "Client");
     assert_eq!(c["phone"], "+123456");
@@ -640,7 +679,12 @@ async fn test_file_endpoints() {
     // 列出文件
     let response = app
         .clone()
-        .oneshot(build_auth_request("GET", "/api/files?page=1&page_size=10", &token, None))
+        .oneshot(build_auth_request(
+            "GET",
+            "/api/files?page=1&page_size=10",
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
@@ -729,7 +773,12 @@ async fn test_client_start_stop() {
     // 启动客户端 — 测试环境无法连接 Telegram 服务器，返回 500 是预期行为
     let resp = app
         .clone()
-        .oneshot(build_auth_request("POST", &format!("/api/clients/{client_id}/start"), &token, None))
+        .oneshot(build_auth_request(
+            "POST",
+            &format!("/api/clients/{client_id}/start"),
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), 500);
@@ -751,7 +800,12 @@ async fn test_client_start_stop() {
     // 检查状态应为 active
     let resp = app
         .clone()
-        .oneshot(build_auth_request("GET", &format!("/api/clients/{client_id}"), &token, None))
+        .oneshot(build_auth_request(
+            "GET",
+            &format!("/api/clients/{client_id}"),
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
@@ -761,7 +815,12 @@ async fn test_client_start_stop() {
     // 停止客户端
     let resp = app
         .clone()
-        .oneshot(build_auth_request("POST", &format!("/api/clients/{client_id}/stop"), &token, None))
+        .oneshot(build_auth_request(
+            "POST",
+            &format!("/api/clients/{client_id}/stop"),
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
@@ -769,7 +828,12 @@ async fn test_client_start_stop() {
     // 停止后状态应为 offline
     let resp = app
         .clone()
-        .oneshot(build_auth_request("GET", &format!("/api/clients/{client_id}"), &token, None))
+        .oneshot(build_auth_request(
+            "GET",
+            &format!("/api/clients/{client_id}"),
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     let body = parse_body(resp.into_body()).await;
@@ -778,14 +842,24 @@ async fn test_client_start_stop() {
     // 启动不存在的客户端 → 500（连接失败）
     let resp = app
         .clone()
-        .oneshot(build_auth_request("POST", "/api/clients/nonexistent123/start", &token, None))
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/clients/nonexistent123/start",
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), 500);
 
     // 停止不存在的客户端 → 404（DB 中不存在，更新 0 行）
     let resp = app
-        .oneshot(build_auth_request("POST", "/api/clients/nonexistent123/stop", &token, None))
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/clients/nonexistent123/stop",
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);
@@ -854,7 +928,12 @@ async fn test_client_auth() {
 
     // 获取聊天列表 — 客户端未连接，返回 404
     let resp = app
-        .oneshot(build_auth_request("GET", &format!("/api/clients/{client_id}/chats"), &token, None))
+        .oneshot(build_auth_request(
+            "GET",
+            &format!("/api/clients/{client_id}/chats"),
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);
@@ -878,14 +957,17 @@ async fn test_rule_crud_with_data_verification() {
             "POST",
             "/api/rules",
             &token,
-            Some(serde_json::json!({
-                "source_chat_id": -100123456,
-                "source_chat_name": "Test Channel",
-                "forward_method": "Chat",
-                "forward_target": "-100999",
-                "is_active": true,
-                "remark": "initial remark"
-            }).to_string()),
+            Some(
+                serde_json::json!({
+                    "source_chat_id": -100123456,
+                    "source_chat_name": "Test Channel",
+                    "forward_method": "Chat",
+                    "forward_target": "-100999",
+                    "is_active": true,
+                    "remark": "initial remark"
+                })
+                .to_string(),
+            ),
         ))
         .await
         .unwrap();
@@ -900,7 +982,9 @@ async fn test_rule_crud_with_data_verification() {
     assert_eq!(resp.status(), 200);
     let body = parse_body(resp.into_body()).await;
     assert_success(&body);
-    let list = body["data"]["list"].as_array().expect("list should be array");
+    let list = body["data"]["list"]
+        .as_array()
+        .expect("list should be array");
     assert_eq!(list.len(), 1);
     assert_eq!(list[0]["source_chat_id"], -100123456);
     assert_eq!(list[0]["source_chat_name"], "Test Channel");
@@ -912,7 +996,12 @@ async fn test_rule_crud_with_data_verification() {
     // Toggle → is_active 应翻转
     let _ = app
         .clone()
-        .oneshot(build_auth_request("PUT", "/api/rules/1/toggle", &token, None))
+        .oneshot(build_auth_request(
+            "PUT",
+            "/api/rules/1/toggle",
+            &token,
+            None,
+        ))
         .await
         .unwrap();
 
@@ -979,7 +1068,12 @@ async fn test_rule_get_update_not_found() {
 
     // UPDATE 空body → 短路返回成功
     let resp = app
-        .oneshot(build_auth_request("PUT", "/api/rules/1", &token, Some("{}".to_string())))
+        .oneshot(build_auth_request(
+            "PUT",
+            "/api/rules/1",
+            &token,
+            Some("{}".to_string()),
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
@@ -999,13 +1093,16 @@ async fn test_rule_update_fields() {
             "POST",
             "/api/rules",
             &token,
-            Some(serde_json::json!({
-                "source_chat_id": 111,
-                "source_chat_name": "Original",
-                "forward_method": "Chat",
-                "forward_target": "-100",
-                "is_active": true
-            }).to_string()),
+            Some(
+                serde_json::json!({
+                    "source_chat_id": 111,
+                    "source_chat_name": "Original",
+                    "forward_method": "Chat",
+                    "forward_target": "-100",
+                    "is_active": true
+                })
+                .to_string(),
+            ),
         ))
         .await
         .unwrap();
@@ -1017,12 +1114,15 @@ async fn test_rule_update_fields() {
             "PUT",
             "/api/rules/1",
             &token,
-            Some(serde_json::json!({
-                "source_chat_name": "Updated Channel",
-                "forward_target": "-200",
-                "is_active": false,
-                "remark": "new remark"
-            }).to_string()),
+            Some(
+                serde_json::json!({
+                    "source_chat_name": "Updated Channel",
+                    "forward_target": "-200",
+                    "is_active": false,
+                    "remark": "new remark"
+                })
+                .to_string(),
+            ),
         ))
         .await
         .unwrap();
@@ -1077,7 +1177,12 @@ async fn test_rule_messages_pagination() {
     // 获取第1页 (page_size=3)
     let resp = app
         .clone()
-        .oneshot(build_auth_request("GET", "/api/rules/1/messages?page=1&page_size=3", &token, None))
+        .oneshot(build_auth_request(
+            "GET",
+            "/api/rules/1/messages?page=1&page_size=3",
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
@@ -1090,7 +1195,12 @@ async fn test_rule_messages_pagination() {
 
     // 获取第2页
     let resp = app
-        .oneshot(build_auth_request("GET", "/api/rules/1/messages?page=2&page_size=3", &token, None))
+        .oneshot(build_auth_request(
+            "GET",
+            "/api/rules/1/messages?page=2&page_size=3",
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     let body = parse_body(resp.into_body()).await;
@@ -1115,14 +1225,17 @@ async fn test_collector_crud_with_data_verification() {
             "POST",
             "/api/collectors",
             &token,
-            Some(serde_json::json!({
-                "client_id": "test_client",
-                "channel_id": -100888,
-                "channel_name": "News",
-                "collector_type": "origin",
-                "is_active": true,
-                "remark": "test"
-            }).to_string()),
+            Some(
+                serde_json::json!({
+                    "client_id": "test_client",
+                    "channel_id": -100888,
+                    "channel_name": "News",
+                    "collector_type": "origin",
+                    "is_active": true,
+                    "remark": "test"
+                })
+                .to_string(),
+            ),
         ))
         .await
         .unwrap();
@@ -1144,7 +1257,12 @@ async fn test_collector_crud_with_data_verification() {
     // Toggle → is_active 翻转
     let _ = app
         .clone()
-        .oneshot(build_auth_request("PUT", "/api/collectors/1/toggle", &token, None))
+        .oneshot(build_auth_request(
+            "PUT",
+            "/api/collectors/1/toggle",
+            &token,
+            None,
+        ))
         .await
         .unwrap();
 
@@ -1167,7 +1285,12 @@ async fn test_collector_get_update_not_found() {
     // GET 不存在 → 404
     let resp = app
         .clone()
-        .oneshot(build_auth_request("GET", "/api/collectors/999", &token, None))
+        .oneshot(build_auth_request(
+            "GET",
+            "/api/collectors/999",
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);
@@ -1188,7 +1311,12 @@ async fn test_collector_get_update_not_found() {
     // UPDATE 空 body → 短路成功
     let resp = app
         .clone()
-        .oneshot(build_auth_request("PUT", "/api/collectors/1", &token, Some("{}".to_string())))
+        .oneshot(build_auth_request(
+            "PUT",
+            "/api/collectors/1",
+            &token,
+            Some("{}".to_string()),
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
@@ -1213,7 +1341,9 @@ async fn test_collector_get_update_not_found() {
             "PUT",
             "/api/collectors/1",
             &token,
-            Some(serde_json::json!({"channel_name": "Updated", "remark": "new remark"}).to_string()),
+            Some(
+                serde_json::json!({"channel_name": "Updated", "remark": "new remark"}).to_string(),
+            ),
         ))
         .await
         .unwrap();
@@ -1260,7 +1390,12 @@ async fn test_collector_histories_pagination() {
 
     // 获取历史列表
     let resp = app
-        .oneshot(build_auth_request("GET", "/api/collectors/histories?page=1&page_size=2", &token, None))
+        .oneshot(build_auth_request(
+            "GET",
+            "/api/collectors/histories?page=1&page_size=2",
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
@@ -1296,14 +1431,24 @@ async fn test_fetch_history_no_active_client() {
     // 触发采集 → 应返回 400（没有活跃客户端）
     let resp = app
         .clone()
-        .oneshot(build_auth_request("POST", "/api/collectors/1/fetch", &token, None))
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/collectors/1/fetch",
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), 400);
 
     // 不存在的采集器 → 404
     let resp = app
-        .oneshot(build_auth_request("POST", "/api/collectors/999/fetch", &token, None))
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/collectors/999/fetch",
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);
@@ -1330,7 +1475,10 @@ async fn test_list_users_no_password_leak() {
     let list = body["data"]["list"].as_array().unwrap();
     assert!(!list.is_empty());
     // password 字段不应出现在返回中
-    assert!(list[0].get("password").is_none(), "password should not be in response");
+    assert!(
+        list[0].get("password").is_none(),
+        "password should not be in response"
+    );
     assert_eq!(list[0]["username"], "root");
     assert_eq!(list[0]["role"], 100);
 }
@@ -1349,7 +1497,10 @@ async fn test_user_get_update_lifecycle() {
             "POST",
             "/api/users",
             &token,
-            Some(serde_json::json!({"username": "lifecycle", "password": "pass123", "role": 1}).to_string()),
+            Some(
+                serde_json::json!({"username": "lifecycle", "password": "pass123", "role": 1})
+                    .to_string(),
+            ),
         ))
         .await
         .unwrap();
@@ -1373,7 +1524,10 @@ async fn test_user_get_update_lifecycle() {
             "PUT",
             "/api/users/2",
             &token,
-            Some(serde_json::json!({"display_name": "Display Name", "role": 10, "status": 1}).to_string()),
+            Some(
+                serde_json::json!({"display_name": "Display Name", "role": 10, "status": 1})
+                    .to_string(),
+            ),
         ))
         .await
         .unwrap();
@@ -1506,8 +1660,11 @@ async fn test_push_retry() {
     assert!(body["message"].as_str().unwrap().contains("1 条"));
 
     // 验证数据库中 status 已变为 pending
-    let status: String = sqlx::query_scalar("SELECT status FROM push_histories WHERE batch_id = 'retry-batch'")
-        .fetch_one(&pool).await.unwrap();
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM push_histories WHERE batch_id = 'retry-batch'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(status, "pending");
 }
 
@@ -1560,7 +1717,12 @@ async fn test_push_list_histories_structure() {
         .execute(&pool).await.unwrap();
 
     let resp = app
-        .oneshot(build_auth_request("GET", "/api/push/histories?page=1&page_size=10", &token, None))
+        .oneshot(build_auth_request(
+            "GET",
+            "/api/push/histories?page=1&page_size=10",
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
@@ -1631,7 +1793,11 @@ async fn test_file_download_not_found() {
     let app = build_test_app(state);
 
     let resp = app
-        .oneshot(build_request("GET", "/api/files/download/nonexistent.txt", None))
+        .oneshot(build_request(
+            "GET",
+            "/api/files/download/nonexistent.txt",
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);
@@ -1766,7 +1932,11 @@ async fn test_t020_public_routes_no_auth_needed() {
 
     // GET /api/files/download/nonexistent → 公开路由，但文件不存在返回 404
     let resp = app
-        .oneshot(build_request("GET", "/api/files/download/nothing.txt", None))
+        .oneshot(build_request(
+            "GET",
+            "/api/files/download/nothing.txt",
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), 404); // 404 不是 401，说明没有 auth 检查
@@ -2095,4 +2265,3 @@ async fn test_captcha_single_use() {
     assert!(!body["success"].as_bool().unwrap());
     assert_eq!(body["data"]["captcha_required"], true);
 }
-

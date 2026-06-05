@@ -23,7 +23,10 @@ pub async fn trigger_push(
     let api_url = cache.get("push_api_url").cloned().unwrap_or_default();
     let api_token = cache.get("push_api_token").cloned().unwrap_or_default();
     let target = cache.get("push_target").cloned().unwrap_or_default();
-    let auth_type = cache.get("push_auth_type").cloned().unwrap_or_else(|| "custom_header".to_string());
+    let auth_type = cache
+        .get("push_auth_type")
+        .cloned()
+        .unwrap_or_else(|| "custom_header".to_string());
     drop(cache);
 
     let mut missing = Vec::new();
@@ -43,7 +46,10 @@ pub async fn trigger_push(
         })));
     }
 
-    let batch_size: i64 = body.get("batch_size").and_then(|v| v.as_i64()).unwrap_or(1000);
+    let batch_size: i64 = body
+        .get("batch_size")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(1000);
 
     match crate::services::push::trigger_push(
         &api_url,
@@ -56,7 +62,9 @@ pub async fn trigger_push(
     .await
     {
         Ok(result) => Ok(Json(json!({ "success": true, "data": result }))),
-        Err(e) => Ok(Json(json!({ "success": false, "message": format!("推送失败: {e}") }))),
+        Err(e) => Ok(Json(
+            json!({ "success": false, "message": format!("推送失败: {e}") }),
+        )),
     }
 }
 
@@ -76,7 +84,8 @@ pub async fn list_histories(
     let (list, total): (Vec<crate::models::push_history::PushHistory>, i64) = match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
             let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM push_histories")
-                .fetch_one(pool).await?;
+                .fetch_one(pool)
+                .await?;
             let list = sqlx::query_as(
                 "SELECT id, batch_id, target, status, data_count, message, error_msg, pushed_at FROM push_histories ORDER BY id DESC LIMIT ? OFFSET ?"
             ).bind(page_size).bind(offset).fetch_all(pool).await?;
@@ -84,14 +93,17 @@ pub async fn list_histories(
         }
         crate::state::DbPool::Postgres(pool) => {
             let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM push_histories")
-                .fetch_one(pool).await?;
+                .fetch_one(pool)
+                .await?;
             let list = sqlx::query_as(
                 "SELECT id, batch_id, target, status, data_count, message, error_msg, pushed_at FROM push_histories ORDER BY id DESC LIMIT $1 OFFSET $2"
             ).bind(page_size).bind(offset).fetch_all(pool).await?;
             (list, total)
         }
     };
-    Ok(Json(json!({ "success": true, "data": { "list": list, "pagination": { "page": page, "page_size": page_size, "total": total } } })))
+    Ok(Json(
+        json!({ "success": true, "data": { "list": list, "pagination": { "page": page, "page_size": page_size, "total": total } } }),
+    ))
 }
 
 pub async fn retry_push(
@@ -102,14 +114,20 @@ pub async fn retry_push(
     let count = match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
             sqlx::query("UPDATE push_histories SET status = 'pending' WHERE status = 'failed'")
-                .execute(pool).await?.rows_affected()
+                .execute(pool)
+                .await?
+                .rows_affected()
         }
         crate::state::DbPool::Postgres(pool) => {
             sqlx::query("UPDATE push_histories SET status = 'pending' WHERE status = 'failed'")
-                .execute(pool).await?.rows_affected()
+                .execute(pool)
+                .await?
+                .rows_affected()
         }
     };
-    Ok(Json(json!({ "success": true, "message": format!("已标记 {} 条失败记录待重试", count) })))
+    Ok(Json(
+        json!({ "success": true, "message": format!("已标记 {} 条失败记录待重试", count) }),
+    ))
 }
 
 pub async fn update_scheduler(
@@ -126,8 +144,10 @@ pub async fn update_scheduler(
             match &state.db {
                 crate::state::DbPool::Sqlite(pool) => {
                     sqlx::query("INSERT OR REPLACE INTO options (key, value) VALUES (?, ?)")
-                        .bind(&cache_key).bind(&val_str)
-                        .execute(pool).await?;
+                        .bind(&cache_key)
+                        .bind(&val_str)
+                        .execute(pool)
+                        .await?;
                 }
                 crate::state::DbPool::Postgres(pool) => {
                     sqlx::query("INSERT INTO options (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2")
@@ -172,7 +192,9 @@ pub async fn update_scheduler(
         crate::services::scheduler::stop_scheduler(state.scheduler.clone()).await;
     }
 
-    Ok(Json(json!({ "success": true, "message": "调度配置已更新" })))
+    Ok(Json(
+        json!({ "success": true, "message": "调度配置已更新" }),
+    ))
 }
 
 /// 推送配置校验 — 检查必要配置是否完整（含通用推送配置）
@@ -183,9 +205,7 @@ pub async fn config_check(State(state): State<AppState>) -> Result<Json<Value>, 
     let mut hints = serde_json::Map::new();
 
     // 基本必填项
-    let checks = [
-        ("push_api_url", "请配置推送 API 地址"),
-    ];
+    let checks = [("push_api_url", "请配置推送 API 地址")];
 
     for (key, hint) in &checks {
         let val = cache.get(*key).cloned().unwrap_or_default();
@@ -196,7 +216,10 @@ pub async fn config_check(State(state): State<AppState>) -> Result<Json<Value>, 
     }
 
     // 认证相关校验
-    let auth_type = cache.get("push_auth_type").cloned().unwrap_or_else(|| "custom_header".to_string());
+    let auth_type = cache
+        .get("push_auth_type")
+        .cloned()
+        .unwrap_or_else(|| "custom_header".to_string());
     if auth_type != "none" {
         let api_token = cache.get("push_api_token").cloned().unwrap_or_default();
         if api_token.is_empty() {

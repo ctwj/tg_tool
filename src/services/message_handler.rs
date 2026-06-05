@@ -69,24 +69,20 @@ pub async fn handle_new_message(
 
     // 2. Match active collectors
     let collectors: Vec<(i64, i64)> = match db {
-        crate::state::DbPool::Sqlite(pool) => {
-            sqlx::query_as(
-                "SELECT id, channel_id FROM collectors WHERE channel_id = ? AND is_active = 1",
-            )
-            .bind(chat_id)
-            .fetch_all(pool)
-            .await
-            .unwrap_or_default()
-        }
-        crate::state::DbPool::Postgres(pool) => {
-            sqlx::query_as(
-                "SELECT id, channel_id FROM collectors WHERE channel_id = $1 AND is_active = true",
-            )
-            .bind(chat_id)
-            .fetch_all(pool)
-            .await
-            .unwrap_or_default()
-        }
+        crate::state::DbPool::Sqlite(pool) => sqlx::query_as(
+            "SELECT id, channel_id FROM collectors WHERE channel_id = ? AND is_active = 1",
+        )
+        .bind(chat_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default(),
+        crate::state::DbPool::Postgres(pool) => sqlx::query_as(
+            "SELECT id, channel_id FROM collectors WHERE channel_id = $1 AND is_active = true",
+        )
+        .bind(chat_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default(),
     };
 
     // Serialize message to JSON manually (grammers Message doesn't impl Serialize)
@@ -108,7 +104,10 @@ pub async fn handle_new_message(
         )
         .await
         {
-            tracing::warn!("Save realtime message failed for collector {}: {e}", collector_id);
+            tracing::warn!(
+                "Save realtime message failed for collector {}: {e}",
+                collector_id
+            );
         }
     }
 

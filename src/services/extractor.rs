@@ -214,7 +214,14 @@ pub fn extract_title_by_keywords(text: &str) -> Option<String> {
 /// 通过关键词提取描述
 /// 移植自 demo/common/extract-info.go extractDescriptionInfo
 pub fn extract_description_by_keywords(text: &str) -> Option<String> {
-    let keywords = ["亮点：", "描述：", "资源简介：", "资源介绍：", "简介：", "介绍："];
+    let keywords = [
+        "亮点：",
+        "描述：",
+        "资源简介：",
+        "资源介绍：",
+        "简介：",
+        "介绍：",
+    ];
     for keyword in keywords {
         if let Some(pos) = text.find(keyword) {
             let after = &text[pos + keyword.len()..];
@@ -291,10 +298,7 @@ pub fn should_split_multiple(links: &[(String, String)]) -> bool {
 
 /// 多资源拆分 — 每个链接独立成一条资源
 /// 移植自 demo/controller/tool_push.go extractMultipleResources
-pub fn split_multiple_resources(
-    text: &str,
-    links: &[(String, String)],
-) -> Vec<ResourceDraft> {
+pub fn split_multiple_resources(text: &str, links: &[(String, String)]) -> Vec<ResourceDraft> {
     let lines: Vec<&str> = text.lines().collect();
     let mut resources = Vec::new();
 
@@ -585,10 +589,7 @@ mod tests {
     #[test]
     fn test_extract_title_resource_name() {
         let text = "资源名称：XXX\nhttps://pan.quark.cn/s/abc";
-        assert_eq!(
-            extract_title_by_keywords(text),
-            Some("XXX".to_string())
-        );
+        assert_eq!(extract_title_by_keywords(text), Some("XXX".to_string()));
     }
 
     #[test]
@@ -685,9 +686,18 @@ mod tests {
     #[test]
     fn test_should_not_split_mixed() {
         let links = vec![
-            ("https://pan.quark.cn/s/a".to_string(), SERVICE_QUARK.to_string()),
-            ("https://pan.baidu.com/s/b".to_string(), SERVICE_BAIDU.to_string()),
-            ("https://drive.uc.cn/s/c".to_string(), SERVICE_UC.to_string()),
+            (
+                "https://pan.quark.cn/s/a".to_string(),
+                SERVICE_QUARK.to_string(),
+            ),
+            (
+                "https://pan.baidu.com/s/b".to_string(),
+                SERVICE_BAIDU.to_string(),
+            ),
+            (
+                "https://drive.uc.cn/s/c".to_string(),
+                SERVICE_UC.to_string(),
+            ),
         ];
         // 3 条不同类别各 1 个，不应拆分（但 >3 的判断不满足）
         assert!(!should_split_multiple(&links));
@@ -697,9 +707,18 @@ mod tests {
     fn test_split_multiple_resources() {
         let text = "资源1\nhttps://pan.quark.cn/s/abc\n资源2\nhttps://pan.quark.cn/s/def\n资源3\nhttps://pan.quark.cn/s/ghi";
         let links = vec![
-            ("https://pan.quark.cn/s/abc".to_string(), SERVICE_QUARK.to_string()),
-            ("https://pan.quark.cn/s/def".to_string(), SERVICE_QUARK.to_string()),
-            ("https://pan.quark.cn/s/ghi".to_string(), SERVICE_QUARK.to_string()),
+            (
+                "https://pan.quark.cn/s/abc".to_string(),
+                SERVICE_QUARK.to_string(),
+            ),
+            (
+                "https://pan.quark.cn/s/def".to_string(),
+                SERVICE_QUARK.to_string(),
+            ),
+            (
+                "https://pan.quark.cn/s/ghi".to_string(),
+                SERVICE_QUARK.to_string(),
+            ),
         ];
         let resources = split_multiple_resources(text, &links);
         assert_eq!(resources.len(), 3);
@@ -749,7 +768,11 @@ mod tests {
         let resources = extract_resources(text);
         assert!(!resources.is_empty());
         // 标题应该来自第一行（因为第一行是非空行作为备用标题）
-        assert!(resources[0].url.contains(&"https://pan.quark.cn/s/abc123".to_string()));
+        assert!(
+            resources[0]
+                .url
+                .contains(&"https://pan.quark.cn/s/abc123".to_string())
+        );
     }
 
     #[test]
@@ -798,7 +821,11 @@ https://pan.quark.cn/s/link5";
     fn test_extract_title_fallback_truncation() {
         // 构造一条没有关键词标题且首行超长的消息（>50 字符）
         let long_line = "这是一行非常非常长的资源标题文本内容用来验证当没有关键词匹配时系统会自动将首行截断到五十个字符以内并且添加省略号后缀以提示用户该标题已被截断处理";
-        assert!(long_line.chars().count() > 50, "测试字符串需超过 50 字符，实际为 {}", long_line.chars().count());
+        assert!(
+            long_line.chars().count() > 50,
+            "测试字符串需超过 50 字符，实际为 {}",
+            long_line.chars().count()
+        );
         let text = format!("{}\nhttps://pan.quark.cn/s/abc", long_line);
         let resources = extract_resources(&text);
         assert!(!resources.is_empty());
@@ -827,9 +854,18 @@ https://pan.quark.cn/s/link5";
         let text = "#C++ #前端/Vue #React.js #AI·大模型\nhttps://pan.quark.cn/s/abc";
         let tags = extract_tags(text);
         assert!(tags.contains(&"C++".to_string()), "应提取 C++ 标签");
-        assert!(tags.contains(&"前端/Vue".to_string()), "应提取 前端/Vue 标签");
-        assert!(tags.contains(&"React.js".to_string()), "应提取 React.js 标签");
-        assert!(tags.contains(&"AI·大模型".to_string()), "应提取 AI·大模型 标签");
+        assert!(
+            tags.contains(&"前端/Vue".to_string()),
+            "应提取 前端/Vue 标签"
+        );
+        assert!(
+            tags.contains(&"React.js".to_string()),
+            "应提取 React.js 标签"
+        );
+        assert!(
+            tags.contains(&"AI·大模型".to_string()),
+            "应提取 AI·大模型 标签"
+        );
     }
 
     // --- T016: 复杂 t.me 广告 + 网盘链接 ---

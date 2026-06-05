@@ -84,8 +84,8 @@ pub async fn send_message(
         }
     }
 
-    let packed = target_packed
-        .ok_or_else(|| AppError::NotFound(format!("未找到目标聊天: {chat_id}")))?;
+    let packed =
+        target_packed.ok_or_else(|| AppError::NotFound(format!("未找到目标聊天: {chat_id}")))?;
 
     client
         .send_message(packed, text)

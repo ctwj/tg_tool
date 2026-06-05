@@ -147,7 +147,10 @@ pub async fn login(
 
     if !crypto::verify_password(&req.password, &user.password)? {
         // Increment fail count
-        let mut entry = state.login_attempts.entry(ip.clone()).or_insert((0, Instant::now()));
+        let mut entry = state
+            .login_attempts
+            .entry(ip.clone())
+            .or_insert((0, Instant::now()));
         entry.0 += 1;
         let new_count = entry.0;
         drop(entry);
@@ -179,9 +182,7 @@ pub async fn logout() -> Result<Json<Value>, AppError> {
 }
 
 /// Public endpoint: query whether registration is allowed (no auth required)
-pub async fn register_status(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, AppError> {
+pub async fn register_status(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     let cache = state.option_cache.read().await;
     let allow = cache
         .get("allow_register")
@@ -226,9 +227,7 @@ pub async fn captcha_status(
 }
 
 /// Public endpoint: generate a captcha image
-pub async fn captcha_image(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, AppError> {
+pub async fn captcha_image(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     use base64::Engine;
     use captcha_rs::CaptchaBuilder;
     use image::ImageFormat;
@@ -304,30 +303,60 @@ pub async fn update_me(
     match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
             let mut sets = Vec::new();
-            if display_name.is_some() { sets.push("display_name = ?"); }
-            if email.is_some() { sets.push("email = ?"); }
-            if hashed.is_some() { sets.push("password = ?"); }
+            if display_name.is_some() {
+                sets.push("display_name = ?");
+            }
+            if email.is_some() {
+                sets.push("email = ?");
+            }
+            if hashed.is_some() {
+                sets.push("password = ?");
+            }
             sets.push("updated_at = CURRENT_TIMESTAMP");
             let sql = format!("UPDATE users SET {} WHERE id = ?", sets.join(", "));
             let mut q = sqlx::query(&sql);
-            if let Some(v) = display_name { q = q.bind(v); }
-            if let Some(v) = email { q = q.bind(v); }
-            if let Some(v) = &hashed { q = q.bind(v); }
+            if let Some(v) = display_name {
+                q = q.bind(v);
+            }
+            if let Some(v) = email {
+                q = q.bind(v);
+            }
+            if let Some(v) = &hashed {
+                q = q.bind(v);
+            }
             q = q.bind(user.id);
             q.execute(pool).await?;
         }
         crate::state::DbPool::Postgres(pool) => {
             let mut pg_parts = Vec::new();
             let mut pg_idx = 1u32;
-            if display_name.is_some() { pg_parts.push(format!("display_name = ${pg_idx}")); pg_idx += 1; }
-            if email.is_some() { pg_parts.push(format!("email = ${pg_idx}")); pg_idx += 1; }
-            if hashed.is_some() { pg_parts.push(format!("password = ${pg_idx}")); pg_idx += 1; }
+            if display_name.is_some() {
+                pg_parts.push(format!("display_name = ${pg_idx}"));
+                pg_idx += 1;
+            }
+            if email.is_some() {
+                pg_parts.push(format!("email = ${pg_idx}"));
+                pg_idx += 1;
+            }
+            if hashed.is_some() {
+                pg_parts.push(format!("password = ${pg_idx}"));
+                pg_idx += 1;
+            }
             pg_parts.push("updated_at = CURRENT_TIMESTAMP".to_string());
-            let sql = format!("UPDATE users SET {} WHERE id = ${pg_idx}", pg_parts.join(", "));
+            let sql = format!(
+                "UPDATE users SET {} WHERE id = ${pg_idx}",
+                pg_parts.join(", ")
+            );
             let mut q = sqlx::query(&sql);
-            if let Some(v) = display_name { q = q.bind(v); }
-            if let Some(v) = email { q = q.bind(v); }
-            if let Some(v) = &hashed { q = q.bind(v); }
+            if let Some(v) = display_name {
+                q = q.bind(v);
+            }
+            if let Some(v) = email {
+                q = q.bind(v);
+            }
+            if let Some(v) = &hashed {
+                q = q.bind(v);
+            }
             q = q.bind(user.id);
             q.execute(pool).await?;
         }

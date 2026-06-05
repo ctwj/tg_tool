@@ -112,9 +112,9 @@ pub async fn submit_code(
             tracing::info!("Client {} requires 2FA password", client_id);
             Ok(AuthState::WaitPassword)
         }
-        Err(grammers_client::SignInError::SignUpRequired { .. }) => {
-            Err(AppError::BadRequest("该手机号需要先注册 Telegram 账号".into()))
-        }
+        Err(grammers_client::SignInError::SignUpRequired { .. }) => Err(AppError::BadRequest(
+            "该手机号需要先注册 Telegram 账号".into(),
+        )),
         Err(grammers_client::SignInError::InvalidCode) => {
             // Restore login_token so user can retry
             let mut clients = tg_clients.write().await;
@@ -153,7 +153,10 @@ pub async fn submit_password(
 
     drop(clients);
 
-    match client.check_password(password_token.clone(), password.as_bytes()).await {
+    match client
+        .check_password(password_token.clone(), password.as_bytes())
+        .await
+    {
         Ok(user) => {
             save_session(client_id, tg_clients).await?;
             update_client_status(client_id, "active", db).await?;
@@ -238,36 +241,38 @@ fn extract_user_info(user: &grammers_client::types::User) -> UserInfo {
 async fn save_session(client_id: &str, tg_clients: &TgClientMap) -> Result<(), AppError> {
     let clients = tg_clients.read().await;
     if let Some(entry) = clients.get(client_id)
-        && let Some(client) = &entry.client {
-            let path = &entry.session_path;
-            client.session().save_to_file(path).map_err(|e| {
-                AppError::Internal(format!("保存 session 文件失败: {e}"))
-            })?;
-            tracing::info!("Session saved for client {} to {}", client_id, path);
-        }
+        && let Some(client) = &entry.client
+    {
+        let path = &entry.session_path;
+        client
+            .session()
+            .save_to_file(path)
+            .map_err(|e| AppError::Internal(format!("保存 session 文件失败: {e}")))?;
+        tracing::info!("Session saved for client {} to {}", client_id, path);
+    }
     Ok(())
 }
 
 /// Update client status in database
-async fn update_client_status(
-    client_id: &str,
-    status: &str,
-    db: &DbPool,
-) -> Result<(), AppError> {
+async fn update_client_status(client_id: &str, status: &str, db: &DbPool) -> Result<(), AppError> {
     match db {
         crate::state::DbPool::Sqlite(pool) => {
-            sqlx::query("UPDATE clients SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-                .bind(status)
-                .bind(client_id)
-                .execute(pool)
-                .await?;
+            sqlx::query(
+                "UPDATE clients SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            )
+            .bind(status)
+            .bind(client_id)
+            .execute(pool)
+            .await?;
         }
         crate::state::DbPool::Postgres(pool) => {
-            sqlx::query("UPDATE clients SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2")
-                .bind(status)
-                .bind(client_id)
-                .execute(pool)
-                .await?;
+            sqlx::query(
+                "UPDATE clients SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+            )
+            .bind(status)
+            .bind(client_id)
+            .execute(pool)
+            .await?;
         }
     }
     Ok(())
@@ -369,7 +374,11 @@ mod tests {
         );
         let config = crate::config::Config::load();
         let mgr = Arc::new(crate::services::tg_manager::TgManager::new(
-            config, db.clone(), tg_clients.clone(), Arc::new(RwLock::new(HashMap::new())), Arc::new(RwLock::new(HashMap::new())),
+            config,
+            db.clone(),
+            tg_clients.clone(),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(HashMap::new())),
         ));
         let result = submit_code("nonexistent", "12345", &tg_clients, &db, &mgr).await;
         assert!(result.is_err());
@@ -402,7 +411,11 @@ mod tests {
         );
         let config = crate::config::Config::load();
         let mgr = Arc::new(crate::services::tg_manager::TgManager::new(
-            config, db.clone(), tg_clients.clone(), Arc::new(RwLock::new(HashMap::new())), Arc::new(RwLock::new(HashMap::new())),
+            config,
+            db.clone(),
+            tg_clients.clone(),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(HashMap::new())),
         ));
         let result = submit_code("test_client", "12345", &tg_clients, &db, &mgr).await;
         assert!(result.is_err());
@@ -436,7 +449,11 @@ mod tests {
         );
         let config = crate::config::Config::load();
         let mgr = Arc::new(crate::services::tg_manager::TgManager::new(
-            config, db.clone(), tg_clients.clone(), Arc::new(RwLock::new(HashMap::new())), Arc::new(RwLock::new(HashMap::new())),
+            config,
+            db.clone(),
+            tg_clients.clone(),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(HashMap::new())),
         ));
         let result = submit_password("test_client", "mypass", &tg_clients, &db, &mgr).await;
         assert!(result.is_err());
@@ -458,7 +475,11 @@ mod tests {
         );
         let config = crate::config::Config::load();
         let mgr = Arc::new(crate::services::tg_manager::TgManager::new(
-            config, db.clone(), tg_clients.clone(), Arc::new(RwLock::new(HashMap::new())), Arc::new(RwLock::new(HashMap::new())),
+            config,
+            db.clone(),
+            tg_clients.clone(),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(HashMap::new())),
         ));
         let result = bot_sign_in("nonexistent", "bot:token", &tg_clients, &db, &mgr).await;
         assert!(result.is_err());

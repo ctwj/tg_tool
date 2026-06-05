@@ -20,16 +20,19 @@ pub async fn list_files(
     State(state): State<AppState>,
     Query(_params): Query<PaginationParams>,
 ) -> Result<Json<Value>, AppError> {
-    let files: Vec<crate::models::file::FileRecord> = match &state.db {
-        crate::state::DbPool::Sqlite(pool) => {
-            sqlx::query_as("SELECT id, filename, uploader_id, link, created_at FROM files ORDER BY id DESC")
-                .fetch_all(pool).await?
-        }
-        crate::state::DbPool::Postgres(pool) => {
-            sqlx::query_as("SELECT id, filename, uploader_id, link, created_at FROM files ORDER BY id DESC")
-                .fetch_all(pool).await?
-        }
-    };
+    let files: Vec<crate::models::file::FileRecord> =
+        match &state.db {
+            crate::state::DbPool::Sqlite(pool) => sqlx::query_as(
+                "SELECT id, filename, uploader_id, link, created_at FROM files ORDER BY id DESC",
+            )
+            .fetch_all(pool)
+            .await?,
+            crate::state::DbPool::Postgres(pool) => sqlx::query_as(
+                "SELECT id, filename, uploader_id, link, created_at FROM files ORDER BY id DESC",
+            )
+            .fetch_all(pool)
+            .await?,
+        };
     Ok(Json(json!({ "success": true, "data": { "list": files } })))
 }
 
@@ -45,14 +48,19 @@ pub async fn upload_file(
             .map_err(|e| AppError::Internal(format!("创建上传目录失败: {e}")))?;
     }
 
-    while let Some(field) = multipart.next_field().await
+    while let Some(field) = multipart
+        .next_field()
+        .await
         .map_err(|e| AppError::BadRequest(format!("读取上传数据失败: {e}")))?
     {
-        let filename = field.file_name()
+        let filename = field
+            .file_name()
             .map(|n| n.to_string())
             .unwrap_or_else(|| "unnamed".to_string());
 
-        let data = field.bytes().await
+        let data = field
+            .bytes()
+            .await
             .map_err(|e| AppError::BadRequest(format!("读取文件内容失败: {e}")))?;
 
         // Generate unique filename to avoid collision
@@ -67,13 +75,19 @@ pub async fn upload_file(
         match &state.db {
             crate::state::DbPool::Sqlite(pool) => {
                 sqlx::query("INSERT INTO files (filename, uploader_id, link) VALUES (?, ?, ?)")
-                    .bind(&filename).bind(user.id).bind(&link)
-                    .execute(pool).await?;
+                    .bind(&filename)
+                    .bind(user.id)
+                    .bind(&link)
+                    .execute(pool)
+                    .await?;
             }
             crate::state::DbPool::Postgres(pool) => {
                 sqlx::query("INSERT INTO files (filename, uploader_id, link) VALUES ($1, $2, $3)")
-                    .bind(&filename).bind(user.id).bind(&link)
-                    .execute(pool).await?;
+                    .bind(&filename)
+                    .bind(user.id)
+                    .bind(&link)
+                    .execute(pool)
+                    .await?;
             }
         }
         tracing::info!("File uploaded: {} ({} bytes)", filename, data.len());
@@ -88,12 +102,20 @@ pub async fn delete_file(
     // Look up file record to get filename for disk deletion
     let file: Option<crate::models::file::FileRecord> = match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
-            sqlx::query_as("SELECT id, filename, uploader_id, link, created_at FROM files WHERE id = ?")
-                .bind(id).fetch_optional(pool).await?
+            sqlx::query_as(
+                "SELECT id, filename, uploader_id, link, created_at FROM files WHERE id = ?",
+            )
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
         }
         crate::state::DbPool::Postgres(pool) => {
-            sqlx::query_as("SELECT id, filename, uploader_id, link, created_at FROM files WHERE id = $1")
-                .bind(id).fetch_optional(pool).await?
+            sqlx::query_as(
+                "SELECT id, filename, uploader_id, link, created_at FROM files WHERE id = $1",
+            )
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
         }
     };
     let file = match file {
@@ -112,25 +134,28 @@ pub async fn delete_file(
     match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
             sqlx::query("DELETE FROM files WHERE id = ?")
-                .bind(id).execute(pool).await?;
+                .bind(id)
+                .execute(pool)
+                .await?;
         }
         crate::state::DbPool::Postgres(pool) => {
             sqlx::query("DELETE FROM files WHERE id = $1")
-                .bind(id).execute(pool).await?;
+                .bind(id)
+                .execute(pool)
+                .await?;
         }
     }
     Ok(Json(json!({ "success": true, "message": "文件已删除" })))
 }
 
-pub async fn download_file(
-    Path(filename): Path<String>,
-) -> Result<Response, AppError> {
+pub async fn download_file(Path(filename): Path<String>) -> Result<Response, AppError> {
     let filepath = std::path::Path::new("./uploads").join(&filename);
     if !filepath.exists() {
         return Err(AppError::NotFound("文件不存在".into()));
     }
 
-    let data = tokio::fs::read(&filepath).await
+    let data = tokio::fs::read(&filepath)
+        .await
         .map_err(|e| AppError::Internal(format!("读取文件失败: {e}")))?;
 
     // Guess content type from extension
@@ -146,5 +171,6 @@ pub async fn download_file(
             ),
         ],
         Body::from(data),
-    ).into_response())
+    )
+        .into_response())
 }

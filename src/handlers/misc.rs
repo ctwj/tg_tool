@@ -34,17 +34,13 @@ pub async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
 /// Ping database with SELECT 1
 async fn check_db_health(db: &crate::state::DbPool) -> bool {
     match db {
-        crate::state::DbPool::Sqlite(pool) => {
-            sqlx::query_scalar::<_, i64>("SELECT 1")
-                .fetch_one(pool)
-                .await
-                .is_ok()
-        }
-        crate::state::DbPool::Postgres(pool) => {
-            sqlx::query_scalar::<_, i64>("SELECT 1")
-                .fetch_one(pool)
-                .await
-                .is_ok()
-        }
+        crate::state::DbPool::Sqlite(pool) => sqlx::query_scalar::<_, i64>("SELECT 1")
+            .fetch_one(pool)
+            .await
+            .is_ok(),
+        crate::state::DbPool::Postgres(pool) => sqlx::query_scalar::<_, i64>("SELECT 1")
+            .fetch_one(pool)
+            .await
+            .is_ok(),
     }
 }

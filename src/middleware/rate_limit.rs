@@ -1,5 +1,11 @@
 use crate::state::AppState;
-use axum::{Json, extract::Request, http::StatusCode, middleware::Next, response::{IntoResponse, Response}};
+use axum::{
+    Json,
+    extract::Request,
+    http::StatusCode,
+    middleware::Next,
+    response::{IntoResponse, Response},
+};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
