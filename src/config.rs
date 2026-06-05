@@ -22,11 +22,11 @@ pub struct Config {
     pub tg_store: PathBuf,
 
     /// Telegram APP ID
-    #[arg(long, env = "TG_APP_ID")]
+    #[arg(long, default_value = "0", env = "TG_APP_ID")]
     pub tg_app_id: i32,
 
     /// Telegram APP Hash
-    #[arg(long, env = "TG_APP_HASH")]
+    #[arg(long, default_value = "", env = "TG_APP_HASH")]
     pub tg_app_hash: String,
 
     /// 数据库连接串（留空使用 SQLite）
