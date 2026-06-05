@@ -136,4 +136,5 @@ cargo test -- --nocapture           # 显示 println! 输出
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
 - [注册开关配置 Plan](specs/010-registration-toggle/plan.md) — allow_register 系统配置，控制登录页注册 Tab 显示与 API 注册权限
+- [登录验证码 Plan](specs/011-login-captcha/plan.md) — 登录接口图形验证码保护，连续失败 3 次后强制验证码
 <!-- SPECKIT END -->

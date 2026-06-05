@@ -35,3 +35,13 @@ export async function getRegisterStatus(): Promise<ApiResponse<{ allow_register:
   const res = await apiClient.get('/auth/register-status')
   return res.data
 }
+
+export async function getCaptchaStatus(): Promise<ApiResponse<{ required: boolean }>> {
+  const res = await apiClient.get('/auth/captcha-status')
+  return res.data
+}
+
+export async function getCaptchaImage(): Promise<ApiResponse<{ captcha_key: string; captcha_image: string }>> {
+  const res = await apiClient.get('/auth/captcha-image')
+  return res.data
+}

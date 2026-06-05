@@ -1847,3 +1847,252 @@ async fn test_get_me_unconnected_client() {
 // Phase 005: 推送配置校验 + 资源管理 集成测试
 // ============================================================
 
+// ============================================================
+// Phase 011: 登录验证码 集成测试
+// ============================================================
+
+#[tokio::test]
+async fn test_captcha_status_initially_not_required() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let app = build_test_app(state);
+
+    let resp = app
+        .oneshot(build_request("GET", "/api/auth/captcha-status", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert!(body["success"].as_bool().unwrap());
+    assert_eq!(body["data"]["required"], false);
+}
+
+#[tokio::test]
+async fn test_captcha_image_generation() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let app = build_test_app(state);
+
+    let resp = app
+        .oneshot(build_request("GET", "/api/auth/captcha-image", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert!(body["success"].as_bool().unwrap());
+    assert!(body["data"]["captcha_key"].is_string());
+    assert!(body["data"]["captcha_image"].is_string());
+    let image = body["data"]["captcha_image"].as_str().unwrap();
+    assert!(image.starts_with("data:image/png;base64,"));
+}
+
+#[tokio::test]
+async fn test_login_captcha_triggered_after_3_failures() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let app = build_test_app(state);
+
+    // Fail 2 times with wrong password — should return 401
+    for _ in 0..2 {
+        let resp = app
+            .clone()
+            .oneshot(build_request(
+                "POST",
+                "/api/auth/login",
+                Some(r#"{"username":"root","password":"wrong"}"#.to_string()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 401);
+    }
+
+    // 3rd failure triggers captcha_required — returns 200 with captcha_required flag
+    let resp = app
+        .clone()
+        .oneshot(build_request(
+            "POST",
+            "/api/auth/login",
+            Some(r#"{"username":"root","password":"wrong"}"#.to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert!(!body["success"].as_bool().unwrap());
+    assert_eq!(body["data"]["captcha_required"], true);
+
+    // captcha-status should now show required
+    let resp = app
+        .clone()
+        .oneshot(build_request("GET", "/api/auth/captcha-status", None))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_eq!(body["data"]["required"], true);
+}
+
+#[tokio::test]
+async fn test_login_with_captcha_wrong_code_rejected() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let app = build_test_app(state.clone());
+
+    // Fail 3 times to trigger captcha
+    for _ in 0..3 {
+        let _ = app
+            .clone()
+            .oneshot(build_request(
+                "POST",
+                "/api/auth/login",
+                Some(r#"{"username":"root","password":"wrong"}"#.to_string()),
+            ))
+            .await
+            .unwrap();
+    }
+
+    // Get a captcha
+    let resp = app
+        .clone()
+        .oneshot(build_request("GET", "/api/auth/captcha-image", None))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    let captcha_key = body["data"]["captcha_key"].as_str().unwrap().to_string();
+
+    // Try login with wrong captcha code
+    let login_body = format!(
+        r#"{{"username":"root","password":"123456","captcha_key":"{}","captcha_code":"zzzzz"}}"#,
+        captcha_key
+    );
+    let resp = app
+        .clone()
+        .oneshot(build_request("POST", "/api/auth/login", Some(login_body)))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert!(!body["success"].as_bool().unwrap());
+    // Should indicate captcha error (still required)
+    assert_eq!(body["data"]["captcha_required"], true);
+}
+
+#[tokio::test]
+async fn test_login_with_correct_captcha_succeeds() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let captcha_store = state.captcha_store.clone();
+    let app = build_test_app(state);
+
+    // Fail 3 times to trigger captcha
+    for _ in 0..3 {
+        let _ = app
+            .clone()
+            .oneshot(build_request(
+                "POST",
+                "/api/auth/login",
+                Some(r#"{"username":"root","password":"wrong"}"#.to_string()),
+            ))
+            .await
+            .unwrap();
+    }
+
+    // Get captcha and extract the answer from the store
+    let resp = app
+        .clone()
+        .oneshot(build_request("GET", "/api/auth/captcha-image", None))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    let captcha_key = body["data"]["captcha_key"].as_str().unwrap().to_string();
+
+    // Get the answer from the store
+    let answer = captcha_store
+        .get(&captcha_key)
+        .map(|e| e.value().answer.clone())
+        .unwrap();
+
+    // Login with correct captcha
+    let login_body = format!(
+        r#"{{"username":"root","password":"123456","captcha_key":"{}","captcha_code":"{}"}}"#,
+        captcha_key, answer
+    );
+    let resp = app
+        .clone()
+        .oneshot(build_request("POST", "/api/auth/login", Some(login_body)))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert!(body["success"].as_bool().unwrap());
+    assert!(body["data"]["token"].is_string());
+
+    // After successful login, captcha-status should be cleared
+    let resp = app
+        .clone()
+        .oneshot(build_request("GET", "/api/auth/captcha-status", None))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_eq!(body["data"]["required"], false);
+}
+
+#[tokio::test]
+async fn test_captcha_single_use() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let captcha_store = state.captcha_store.clone();
+    let app = build_test_app(state.clone());
+
+    // Fail 3 times
+    for _ in 0..3 {
+        let _ = app
+            .clone()
+            .oneshot(build_request(
+                "POST",
+                "/api/auth/login",
+                Some(r#"{"username":"root","password":"wrong"}"#.to_string()),
+            ))
+            .await
+            .unwrap();
+    }
+
+    // Get captcha
+    let captcha_store = state.captcha_store.clone();
+    let resp = app
+        .clone()
+        .oneshot(build_request("GET", "/api/auth/captcha-image", None))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    let captcha_key = body["data"]["captcha_key"].as_str().unwrap().to_string();
+    let answer = captcha_store
+        .get(&captcha_key)
+        .map(|e| e.value().answer.clone())
+        .unwrap();
+
+    // Use captcha with wrong password — captcha consumed
+    let login_body = format!(
+        r#"{{"username":"root","password":"wrong","captcha_key":"{}","captcha_code":"{}"}}"#,
+        captcha_key, answer
+    );
+    let _ = app
+        .clone()
+        .oneshot(build_request("POST", "/api/auth/login", Some(login_body)))
+        .await
+        .unwrap();
+
+    // Try same captcha again with correct password — should fail (captcha already used)
+    let login_body2 = format!(
+        r#"{{"username":"root","password":"123456","captcha_key":"{}","captcha_code":"{}"}}"#,
+        captcha_key, answer
+    );
+    let resp = app
+        .clone()
+        .oneshot(build_request("POST", "/api/auth/login", Some(login_body2)))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert!(!body["success"].as_bool().unwrap());
+    assert_eq!(body["data"]["captcha_required"], true);
+}
+

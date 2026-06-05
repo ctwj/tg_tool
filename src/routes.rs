@@ -67,6 +67,14 @@ pub fn build_router(state: AppState) -> Router {
             "/auth/register-status",
             get(handlers::auth::register_status),
         )
+        .route(
+            "/auth/captcha-status",
+            get(handlers::auth::captcha_status),
+        )
+        .route(
+            "/auth/captcha-image",
+            get(handlers::auth::captcha_image),
+        )
         .route("/status", get(handlers::misc::system_status))
         .route(
             "/files/download/{filename}",
