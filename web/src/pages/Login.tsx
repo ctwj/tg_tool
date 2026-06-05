@@ -1,9 +1,9 @@
 import React from 'react'
 import { Form, Input, Button, message, Tabs } from 'antd'
-import { UserOutlined, LockOutlined, MailOutlined, SendOutlined } from '@ant-design/icons'
+import { UserOutlined, LockOutlined, MailOutlined, SendOutlined, ReloadOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
-import { getRegisterStatus } from '../api/auth'
+import { getRegisterStatus, getCaptchaStatus, getCaptchaImage } from '../api/auth'
 
 const Login: React.FC = () => {
   const navigate = useNavigate()
@@ -11,6 +11,38 @@ const Login: React.FC = () => {
   const [loading, setLoading] = React.useState(false)
   const [allowRegister, setAllowRegister] = React.useState(true)
   const [statusLoaded, setStatusLoaded] = React.useState(false)
+  const [captchaRequired, setCaptchaRequired] = React.useState(false)
+  const [captchaKey, setCaptchaKey] = React.useState('')
+  const [captchaImage, setCaptchaImage] = React.useState('')
+  const [captchaLoading, setCaptchaLoading] = React.useState(false)
+
+  const loadCaptchaStatus = async () => {
+    try {
+      const res = await getCaptchaStatus()
+      const required = res.data?.required === true
+      setCaptchaRequired(required)
+      if (required) {
+        await loadCaptchaImage()
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  const loadCaptchaImage = async () => {
+    setCaptchaLoading(true)
+    try {
+      const res = await getCaptchaImage()
+      if (res.data?.captcha_key && res.data?.captcha_image) {
+        setCaptchaKey(res.data.captcha_key)
+        setCaptchaImage(res.data.captcha_image)
+      }
+    } catch {
+      message.error('获取验证码失败')
+    } finally {
+      setCaptchaLoading(false)
+    }
+  }
 
   React.useEffect(() => {
     getRegisterStatus()
@@ -23,15 +55,27 @@ const Login: React.FC = () => {
       .finally(() => {
         setStatusLoaded(true)
       })
+    loadCaptchaStatus()
   }, [])
 
-  const onLogin = async (values: { username: string; password: string }) => {
+  const onLogin = async (values: { username: string; password: string; captcha_code?: string }) => {
     setLoading(true)
     try {
-      await login(values.username, values.password)
+      const ck = captchaRequired ? captchaKey : undefined
+      const cc = captchaRequired ? values.captcha_code : undefined
+      await login(values.username, values.password, ck, cc)
       message.success('登录成功')
       navigate('/dashboard')
     } catch (e: any) {
+      // Check if captcha is now required
+      if (e.data?.captcha_required) {
+        setCaptchaRequired(true)
+        loadCaptchaImage()
+      }
+      // Auto-refresh captcha if it was expired/invalid and captcha is already shown
+      if (captchaRequired && e.message?.includes('验证码')) {
+        loadCaptchaImage()
+      }
       message.error(e.message || '登录失败')
     } finally {
       setLoading(false)
@@ -49,6 +93,42 @@ const Login: React.FC = () => {
       setLoading(false)
     }
   }
+
+  const captchaInput = captchaRequired ? (
+    <Form.Item name="captcha_code" rules={[{ required: true, message: '请输入验证码' }]}>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Input
+          placeholder="验证码"
+          size="large"
+          style={{ borderRadius: 10, height: 46, flex: 1 }}
+          maxLength={4}
+        />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          {captchaImage && (
+            <img
+              src={captchaImage}
+              alt="captcha"
+              style={{
+                height: 46,
+                borderRadius: 6,
+                cursor: 'pointer',
+                opacity: captchaLoading ? 0.5 : 1,
+              }}
+              onClick={loadCaptchaImage}
+              title="点击刷新验证码"
+            />
+          )}
+          <Button
+            icon={<ReloadOutlined />}
+            size="large"
+            style={{ borderRadius: 10, height: 46 }}
+            onClick={loadCaptchaImage}
+            loading={captchaLoading}
+          />
+        </div>
+      </div>
+    </Form.Item>
+  ) : null
 
   return (
     <div className="login-bg" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>
@@ -127,6 +207,7 @@ const Login: React.FC = () => {
                         style={{ borderRadius: 10, height: 46 }}
                       />
                     </Form.Item>
+                    {captchaInput}
                     <Form.Item style={{ marginBottom: 0 }}>
                       <Button
                         type="primary"
@@ -220,6 +301,7 @@ const Login: React.FC = () => {
                 style={{ borderRadius: 10, height: 46 }}
               />
             </Form.Item>
+            {captchaInput}
             <Form.Item style={{ marginBottom: 0 }}>
               <Button
                 type="primary"

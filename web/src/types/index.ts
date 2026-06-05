@@ -31,6 +31,8 @@ export interface User {
 export interface LoginForm {
   username: string
   password: string
+  captcha_key?: string
+  captcha_code?: string
 }
 
 export interface RegisterForm {

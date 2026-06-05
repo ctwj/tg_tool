@@ -72,6 +72,18 @@ async fn main() {
     // Start auto-reconnector for offline clients (every 30s)
     tg_manager.spawn_auto_reconnector(30);
 
+    // Start captcha store cleanup task (every 60s, remove entries older than 5min)
+    {
+        let captcha_store = state.captcha_store.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                let now = std::time::Instant::now();
+                captcha_store.retain(|_, entry| now.duration_since(entry.created_at).as_secs() < 300);
+            }
+        });
+    }
+
     // Check if auto extract is enabled
     {
         let cache = state.option_cache.read().await;

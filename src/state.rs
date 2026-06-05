@@ -19,6 +19,19 @@ pub struct UserInfo {
 /// 对话目标解析缓存 (chat_id -> (PackedChat, cached_at))
 pub type PeerCache = Arc<RwLock<HashMap<i64, (grammers_client::types::PackedChat, Instant)>>>;
 
+/// 验证码条目
+#[derive(Debug, Clone)]
+pub struct CaptchaEntry {
+    pub answer: String,
+    pub created_at: Instant,
+}
+
+/// 验证码存储 (captcha_key -> CaptchaEntry)
+pub type CaptchaStore = Arc<DashMap<String, CaptchaEntry>>;
+
+/// 登录失败追踪 (IP -> (fail_count, window_start))
+pub type LoginAttempts = Arc<DashMap<String, (u32, Instant)>>;
+
 /// Type alias for the database pool (supports both SQLite and Postgres)
 #[derive(Clone)]
 pub enum DbPool {
@@ -84,6 +97,8 @@ pub struct AppState {
     pub extract_scheduler: crate::services::scheduler::ExtractSchedulerHandle,
     pub peer_cache: PeerCache,
     pub rate_limiter: crate::middleware::rate_limit::RateLimiter,
+    pub captcha_store: CaptchaStore,
+    pub login_attempts: LoginAttempts,
     /// 图片缓存目录路径
     pub image_cache_dir: PathBuf,
     /// 正在下载的图片 ID 标记（防并发重复下载）
@@ -111,6 +126,8 @@ impl AppState {
             extract_scheduler: crate::services::scheduler::create_extract_scheduler(),
             peer_cache: Arc::new(RwLock::new(HashMap::new())),
             rate_limiter,
+            captcha_store: Arc::new(DashMap::new()),
+            login_attempts: Arc::new(DashMap::new()),
             image_cache_dir,
             inflight_downloads: Arc::new(DashMap::new()),
         }

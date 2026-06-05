@@ -1,5 +1,18 @@
 import axios from 'axios'
 
+export interface ApiErrorData {
+  captcha_required?: boolean
+  [key: string]: unknown
+}
+
+export class ApiError extends Error {
+  data?: ApiErrorData
+  constructor(message: string, data?: ApiErrorData) {
+    super(message)
+    this.data = data
+  }
+}
+
 const apiClient = axios.create({
   baseURL: '/api',
   timeout: 30000,
@@ -25,7 +38,8 @@ apiClient.interceptors.response.use(
   (response) => {
     const data = response.data
     if (data.success === false) {
-      return Promise.reject(new Error(data.message || '请求失败'))
+      const err = new ApiError(data.message || '请求失败', data.data)
+      return Promise.reject(err)
     }
     return response
   },

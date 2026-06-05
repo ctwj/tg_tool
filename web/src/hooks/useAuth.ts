@@ -38,8 +38,13 @@ export function useAuth() {
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const login = async (username: string, password: string) => {
-    const res = await apiClient.post('/auth/login', { username, password })
+  const login = async (username: string, password: string, captchaKey?: string, captchaCode?: string) => {
+    const data: Record<string, string | undefined> = { username, password }
+    if (captchaKey && captchaCode) {
+      data.captcha_key = captchaKey
+      data.captcha_code = captchaCode
+    }
+    const res = await apiClient.post('/auth/login', data)
     const { token } = res.data.data
     localStorage.setItem(TOKEN_KEY, token)
     apiClient.defaults.headers.common.Authorization = `Bearer ${token}`

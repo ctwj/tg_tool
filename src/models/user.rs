@@ -36,6 +36,8 @@ pub struct UpdateUserRequest {
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
+    pub captcha_key: Option<String>,
+    pub captcha_code: Option<String>,
 }
 
 /// User info returned to client (no password)
