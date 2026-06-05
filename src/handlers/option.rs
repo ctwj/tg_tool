@@ -104,7 +104,9 @@ pub async fn test_ai_endpoint(
         }
     };
 
-    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15));
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .no_proxy();
     if !proxy_arg.is_empty() {
         if let Ok(p) = reqwest::Proxy::all(&proxy_arg) {
             builder = builder.proxy(p);

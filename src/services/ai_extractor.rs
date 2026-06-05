@@ -102,7 +102,9 @@ pub async fn call_ai_api(
     message: &str,
     proxy_url: Option<&str>,
 ) -> Result<AiExtractResult, String> {
-    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30));
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .no_proxy(); // 默认禁用系统代理，避免被 Windows 系统代理干扰
 
     if let Some(proxy) = proxy_url {
         if !proxy.is_empty() {

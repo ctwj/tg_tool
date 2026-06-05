@@ -81,6 +81,7 @@ async fn forward_webhook(
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
+        .no_proxy()
         .build()
         .map_err(|e| AppError::Internal(format!("创建 HTTP 客户端失败: {e}")))?;
 
