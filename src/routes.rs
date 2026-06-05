@@ -171,6 +171,10 @@ pub fn build_router(state: AppState) -> Router {
             post(handlers::resource::extract_resources),
         )
         .route(
+            "/resources/extract/{history_id}",
+            post(handlers::resource::extract_single),
+        )
+        .route(
             "/resources/stats",
             get(handlers::resource::get_resource_stats),
         )
@@ -209,6 +213,10 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers::option::get_options).put(handlers::option::update_options),
         )
         .route("/options/test-proxy", post(handlers::option::test_proxy))
+        .route(
+            "/options/test-http-proxy",
+            post(handlers::option::test_http_proxy),
+        )
         .route("/options/ai-test", post(handlers::option::test_ai_endpoint))
         .layer(middleware::from_fn(root_guard))
         .layer(middleware::from_fn(auth_guard))

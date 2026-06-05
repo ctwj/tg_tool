@@ -22,6 +22,7 @@ pub async fn get_options(State(state): State<AppState>) -> Result<Json<Value>, A
             "已配置".to_string()
         },
         "proxy_url": "",
+        "http_proxy_url": "",
     });
 
     Ok(Json(json!({
@@ -98,14 +99,13 @@ pub async fn test_ai_endpoint(
             .map(|v| v == "1" || v == "true")
             .unwrap_or(false);
         if use_proxy {
-            cache.get("proxy_url").cloned().unwrap_or_default()
+            cache.get("http_proxy_url").cloned().unwrap_or_default()
         } else {
             String::new()
         }
     };
 
-    let mut builder = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15));
+    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15));
     if !proxy_arg.is_empty() {
         if let Ok(p) = reqwest::Proxy::all(&proxy_arg) {
             builder = builder.proxy(p);
@@ -219,6 +219,53 @@ pub async fn test_proxy(State(state): State<AppState>) -> Result<Json<Value>, Ap
         Err(e) => Ok(Json(json!({
             "success": false,
             "message": format!("代理连接失败: {e}"),
+            "latency_ms": elapsed,
+        }))),
+    }
+}
+
+/// 测试 HTTP 代理连通性
+pub async fn test_http_proxy(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+    let proxy_url = state.http_proxy_url().await;
+
+    let proxy_url = match proxy_url {
+        Some(url) if !url.is_empty() => url,
+        _ => {
+            return Ok(Json(json!({
+                "success": false,
+                "message": "未配置 HTTP 代理地址",
+            })));
+        }
+    };
+
+    let proxy = reqwest::Proxy::all(&proxy_url)
+        .map_err(|e| AppError::BadRequest(format!("HTTP 代理配置无效: {e}")))?;
+
+    let client = reqwest::Client::builder()
+        .proxy(proxy)
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| AppError::Internal(format!("创建 HTTP 客户端失败: {e}")))?;
+
+    let start = std::time::Instant::now();
+
+    let result = client
+        .get("https://httpbin.org/ip")
+        .send()
+        .await
+        .and_then(|resp| resp.error_for_status());
+
+    let elapsed = start.elapsed().as_millis();
+
+    match result {
+        Ok(_) => Ok(Json(json!({
+            "success": true,
+            "message": format!("HTTP 代理连接成功，耗时 {}ms", elapsed),
+            "latency_ms": elapsed,
+        }))),
+        Err(e) => Ok(Json(json!({
+            "success": false,
+            "message": format!("HTTP 代理连接失败: {e}"),
             "latency_ms": elapsed,
         }))),
     }

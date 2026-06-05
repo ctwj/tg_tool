@@ -197,6 +197,156 @@ async fn mark_extracted(db: &DbPool, history_id: i64) -> Result<(), AppError> {
     Ok(())
 }
 
+/// 单条记录资源提取
+/// 从指定 collector_history 中提取资源
+/// dry_run=true 时仅返回结果不写入数据库
+pub async fn extract_single_record(
+    db: &DbPool,
+    option_cache: &OptionCache,
+    history_id: i64,
+    dry_run: bool,
+    extract_mode: String,
+) -> Result<serde_json::Value, AppError> {
+    // 1. 读取单条记录
+    let (raw_data, remote_id, is_extracted): (Option<String>, Option<String>, bool) = match db {
+        DbPool::Sqlite(pool) => {
+            let row: Option<(Option<String>, Option<String>, bool)> = sqlx::query_as(
+                "SELECT raw_data, remote_id, is_extracted FROM collector_histories WHERE id = ?",
+            )
+            .bind(history_id)
+            .fetch_optional(pool)
+            .await?;
+            match row {
+                Some(r) => r,
+                None => return Err(AppError::NotFound("采集记录不存在".to_string())),
+            }
+        }
+        DbPool::Postgres(pool) => {
+            let row: Option<(Option<String>, Option<String>, bool)> = sqlx::query_as(
+                "SELECT raw_data, remote_id, is_extracted FROM collector_histories WHERE id = $1",
+            )
+            .bind(history_id)
+            .fetch_optional(pool)
+            .await?;
+            match row {
+                Some(r) => r,
+                None => return Err(AppError::NotFound("采集记录不存在".to_string())),
+            }
+        }
+    };
+
+    // 2. 检查 raw_data
+    let raw_text = match &raw_data {
+        Some(r) if !r.trim().is_empty() => {
+            // 从 JSON 中提取 text 字段
+            if let Ok(msg) = serde_json::from_str::<serde_json::Value>(r) {
+                msg.get("text")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or(r)
+                    .to_string()
+            } else {
+                r.clone()
+            }
+        }
+        _ => return Err(AppError::BadRequest("该记录无内容可提取".to_string())),
+    };
+
+    // 3. 检查已提取状态
+    if is_extracted && !dry_run {
+        return Err(AppError::BadRequest(
+            "该记录已提取，请使用测试模式".to_string(),
+        ));
+    }
+
+    // 4. 规则提取
+    let rule_drafts = extractor::extract_resources(&raw_text);
+    if rule_drafts.is_empty() {
+        return Ok(json!({
+            "success": true,
+            "data": {
+                "resources": [],
+                "extract_mode": extract_mode,
+            }
+        }));
+    }
+
+    // 5. AI 模式：一次批量调用；规则模式：直接用规则结果
+    let final_drafts = if extract_mode == "ai" {
+        ai_extractor::ai_extract_batch(&raw_text, &rule_drafts, option_cache).await
+    } else {
+        rule_drafts
+    };
+
+    // 6. 处理每个 draft（写库 + 构建返回结果）
+    let mut results = Vec::new();
+    for draft in &final_drafts {
+        let img = remote_id
+            .as_deref()
+            .filter(|rid| !rid.is_empty())
+            .map(|rid| rid.to_string())
+            .unwrap_or_default();
+
+        // 非 dry_run 时写入数据库
+        if !dry_run {
+            let new_resource = NewExtractedResource {
+                collector_history_id: history_id,
+                title: draft.title.clone(),
+                url: if draft.url.is_empty() {
+                    None
+                } else {
+                    Some(draft.url.join(","))
+                },
+                description: if draft.description.is_empty() {
+                    None
+                } else {
+                    Some(draft.description.clone())
+                },
+                category: if draft.category.is_empty() {
+                    None
+                } else {
+                    Some(draft.category.clone())
+                },
+                tags: if draft.tags.is_empty() {
+                    None
+                } else {
+                    Some(draft.tags.clone())
+                },
+                img: if img.is_empty() {
+                    None
+                } else {
+                    Some(img.clone())
+                },
+                source: "tg".to_string(),
+                extra: None,
+                extract_mode: extract_mode.clone(),
+            };
+            let _ = insert_resource(db, &new_resource).await;
+        }
+
+        results.push(json!({
+            "title": draft.title,
+            "url": draft.url,
+            "description": draft.description,
+            "category": draft.category,
+            "tags": draft.tags,
+            "source": draft.source,
+        }));
+    }
+
+    // 6. 非 dry_run 时标记已提取
+    if !dry_run {
+        mark_extracted(db, history_id).await?;
+    }
+
+    Ok(json!({
+        "success": true,
+        "data": {
+            "resources": results,
+            "extract_mode": extract_mode,
+        }
+    }))
+}
+
 /// 插入新资源记录
 /// 插入资源 — 如果任意 share_id 已存在则跳过（去重）
 /// 返回 true 表示新插入，false 表示跳过重复

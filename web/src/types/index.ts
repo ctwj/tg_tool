@@ -219,6 +219,21 @@ export interface ExtractionResult {
   errors: number
 }
 
+// Resource draft view (single extraction result)
+export interface ResourceDraftView {
+  title: string
+  url: string[]
+  description: string
+  category: string
+  tags: string
+  source: string
+}
+
+export interface SingleExtractResponse {
+  resources: ResourceDraftView[]
+  extract_mode: string
+}
+
 // System status
 export interface SystemStatus {
   version: string

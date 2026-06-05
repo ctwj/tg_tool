@@ -28,6 +28,8 @@ const Settings: React.FC = () => {
   const [loading, setLoading] = useState(false)
   const [testLoading, setTestLoading] = useState(false)
   const [testResult, setTestResult] = useState<ProxyTestResult | null>(null)
+  const [httpTestLoading, setHttpTestLoading] = useState(false)
+  const [httpTestResult, setHttpTestResult] = useState<ProxyTestResult | null>(null)
   const [envDefaults, setEnvDefaults] = useState<Record<string, string>>({})
 
   // ─── 图床群组选择 ───
@@ -143,6 +145,29 @@ const Settings: React.FC = () => {
       message.error(msg)
     } finally {
       setTestLoading(false)
+    }
+  }
+
+  const testHttpProxy = async () => {
+    setHttpTestLoading(true)
+    setHttpTestResult(null)
+    try {
+      const values = form.getFieldsValue()
+      await apiClient.put('/options', values)
+
+      const res = await apiClient.post('/options/test-http-proxy')
+      setHttpTestResult(res.data)
+      if (res.data.success) {
+        message.success(res.data.message)
+      } else {
+        message.warning(res.data.message)
+      }
+    } catch (e: any) {
+      const msg = e.response?.data?.message || e.message || '测试失败'
+      setHttpTestResult({ success: false, message: msg })
+      message.error(msg)
+    } finally {
+      setHttpTestLoading(false)
     }
   }
 
@@ -327,60 +352,6 @@ const Settings: React.FC = () => {
                 />
 
                 <Form form={form} onFinish={saveOptions} layout="vertical">
-                  {/* 代理配置 */}
-                  <Form.Item
-                    name="proxy_url"
-                    label="代理地址"
-                    help="支持 HTTP/SOCKS5 代理，如 socks5://127.0.0.1:1080 或 http://proxy:8080"
-                  >
-                    <Input placeholder={getPlaceholder('proxy_url') || 'socks5://127.0.0.1:1080'} />
-                  </Form.Item>
-
-                  {testResult && (
-                    <div style={{ marginBottom: 16 }}>
-                      {testResult.success ? (
-                        <Alert
-                          message={
-                            <Space>
-                              <CheckCircleOutlined style={{ color: '#52c41a' }} />
-                              <span>{testResult.message}</span>
-                            </Space>
-                          }
-                          type="success"
-                          showIcon={false}
-                          style={{ borderRadius: 8 }}
-                        />
-                      ) : (
-                        <Alert
-                          message={
-                            <Space>
-                              <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
-                              <span>{testResult.message}</span>
-                            </Space>
-                          }
-                          type="error"
-                          showIcon={false}
-                          style={{ borderRadius: 8 }}
-                        />
-                      )}
-                    </div>
-                  )}
-
-                  <Form.Item>
-                    <Space>
-                      <Button type="primary" htmlType="submit" loading={loading}>
-                        保存设置
-                      </Button>
-                      <Button
-                        icon={<ThunderboltOutlined />}
-                        onClick={testProxy}
-                        loading={testLoading}
-                      >
-                        测试代理连接
-                      </Button>
-                    </Space>
-                  </Form.Item>
-
                   {/* Telegram 配置 */}
                   <Card
                     title="Telegram 配置"
@@ -402,13 +373,116 @@ const Settings: React.FC = () => {
                     >
                       <Input placeholder={getPlaceholder('tg_app_hash') || '从 my.telegram.org 获取'} />
                     </Form.Item>
+                    <Form.Item
+                      name="proxy_url"
+                      label="Telegram 代理地址"
+                      help="Telegram 客户端使用的代理，通常为 SOCKS5 代理，如 socks5://127.0.0.1:1080"
+                    >
+                      <Input placeholder={getPlaceholder('proxy_url') || 'socks5://127.0.0.1:1080'} />
+                    </Form.Item>
+
+                    {testResult && (
+                      <div style={{ marginBottom: 16 }}>
+                        {testResult.success ? (
+                          <Alert
+                            message={
+                              <Space>
+                                <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                                <span>{testResult.message}</span>
+                              </Space>
+                            }
+                            type="success"
+                            showIcon={false}
+                            style={{ borderRadius: 8 }}
+                          />
+                        ) : (
+                          <Alert
+                            message={
+                              <Space>
+                                <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
+                                <span>{testResult.message}</span>
+                              </Space>
+                            }
+                            type="error"
+                            showIcon={false}
+                            style={{ borderRadius: 8 }}
+                          />
+                        )}
+                      </div>
+                    )}
+
+                    <Form.Item>
+                      <Button
+                        icon={<ThunderboltOutlined />}
+                        onClick={testProxy}
+                        loading={testLoading}
+                      >
+                        测试 Telegram 代理
+                      </Button>
+                    </Form.Item>
+                  </Card>
+
+                  {/* HTTP 代理配置 */}
+                  <Card
+                    title="HTTP 代理配置"
+                    size="small"
+                    style={{ marginBottom: 16, borderRadius: 10 }}
+                    type="inner"
+                  >
+                    <Form.Item
+                      name="http_proxy_url"
+                      label="HTTP 代理地址"
+                      help="HTTP API 请求使用的代理（如 AI 提取），如 http://127.0.0.1:7890"
+                    >
+                      <Input placeholder="http://127.0.0.1:7890" />
+                    </Form.Item>
+
+                    {httpTestResult && (
+                      <div style={{ marginBottom: 16 }}>
+                        {httpTestResult.success ? (
+                          <Alert
+                            message={
+                              <Space>
+                                <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                                <span>{httpTestResult.message}</span>
+                              </Space>
+                            }
+                            type="success"
+                            showIcon={false}
+                            style={{ borderRadius: 8 }}
+                          />
+                        ) : (
+                          <Alert
+                            message={
+                              <Space>
+                                <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
+                                <span>{httpTestResult.message}</span>
+                              </Space>
+                            }
+                            type="error"
+                            showIcon={false}
+                            style={{ borderRadius: 8 }}
+                          />
+                        )}
+                      </div>
+                    )}
+
+                    <Form.Item>
+                      <Button
+                        icon={<GlobalOutlined />}
+                        onClick={testHttpProxy}
+                        loading={httpTestLoading}
+                      >
+                        测试 HTTP 代理
+                      </Button>
+                    </Form.Item>
                   </Card>
 
                   {/* 安全配置 */}
                   <Card
                     title="安全配置"
                     size="small"
-                    style={{ marginTop: 16, borderRadius: 10 }}
+                    style={{ marginBottom: 16, borderRadius: 10 }}
                     type="inner"
                   >
                     <Form.Item
@@ -422,6 +496,12 @@ const Settings: React.FC = () => {
                       <Switch checkedChildren="开启" unCheckedChildren="关闭" />
                     </Form.Item>
                   </Card>
+
+                  <Form.Item>
+                    <Button type="primary" htmlType="submit" loading={loading} size="large">
+                      保存设置
+                    </Button>
+                  </Form.Item>
                 </Form>
               </Card>
             ),
