@@ -113,7 +113,16 @@ impl TgManager {
             .map_err(|e| AppError::Internal(format!("检查认证状态失败: {e}")))?;
 
         let status = if is_auth {
-            // Already logged in, start update listener
+            // Sync dialogs to populate chat_hashes (required for supergroup/channel tracking)
+            // Without this, get_channel_difference cannot work for megagroups/supergroups
+            let mut dialogs = client.iter_dialogs();
+            let mut sync_count = 0u32;
+            while let Ok(Some(_)) = dialogs.next().await {
+                sync_count += 1;
+            }
+            tracing::info!("Synced {} dialogs for client {}", sync_count, client_id);
+
+            // Now start update listener — chat_hashes has all channels loaded
             self.spawn_update_listener(client_id.to_string(), client.clone());
             "active".to_string()
         } else {
