@@ -49,11 +49,8 @@ jobs:
         run: cargo build --locked
 
   test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+    name: Test
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -74,7 +71,7 @@ jobs:
         run: cargo test --locked
 
   # ==========================================================
-  # 构建前端（仅一次，产物共享给所有平台）
+  # 构建前端（仅一次）
   # ==========================================================
   frontend:
     name: Build Frontend
@@ -100,29 +97,9 @@ jobs:
   # 构建 Release 产物
   # ==========================================================
   build:
-    name: Build ${{ matrix.target }}
+    name: Build Linux
     needs: [check, test, frontend]
-    strategy:
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-            artifact: tgTool-linux-amd64
-            ext: ""
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            artifact: tgTool-windows-amd64
-            ext: .exe
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            artifact: tgTool-macos-amd64
-            ext: ""
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            artifact: tgTool-macos-arm64
-            ext: ""
-
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -135,17 +112,10 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: x86_64-unknown-linux-musl
 
-      - name: Install cross-compilation tools (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
-          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then
-            sudo apt-get install -y gcc-aarch64-linux-gnu
-            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-          fi
+      - name: Install musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -154,41 +124,35 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-build-
 
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
           sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
           echo "Building version: ${VERSION}"
 
       - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }} --features embed-frontend
-
-      - name: Rename binary
-        shell: bash
-        run: |
-          mv target/${{ matrix.target }}/release/tgTool${{ matrix.ext }} tgTool-${{ matrix.target }}${{ matrix.ext }}
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl --features embed-frontend
 
       - name: Install UPX
-        if: runner.os == 'Linux'
         run: |
           wget -q https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-amd64_linux.tar.xz
           tar xf upx-4.2.4-amd64_linux.tar.xz
           sudo cp upx-4.2.4-amd64_linux/upx /usr/local/bin/
 
       - name: Compress binary with UPX
-        if: runner.os == 'Linux'
-        run: upx --best tgTool-${{ matrix.target }}${{ matrix.ext }}
+        run: |
+          mv target/x86_64-unknown-linux-musl/release/tgTool tgTool-x86_64-unknown-linux-musl
+          upx --best tgTool-x86_64-unknown-linux-musl
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: tgTool-${{ matrix.target }}${{ matrix.ext }}
+          name: tgTool-linux-amd64
+          path: tgTool-x86_64-unknown-linux-musl
           if-no-files-found: error
 
   # ==========================================================
@@ -205,14 +169,12 @@ jobs:
 
       - name: Determine version
         id: version
-        shell: bash
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ inputs.version }}"
           else
             VERSION="${GITHUB_REF#refs/tags/}"
           fi
-          # Ensure v prefix
           if [[ ! "$VERSION" =~ ^v ]]; then
             VERSION="v${VERSION}"
           fi
