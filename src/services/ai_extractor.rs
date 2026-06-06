@@ -106,7 +106,9 @@ pub async fn call_ai_api(
     message: &str,
     proxy_url: Option<&str>,
 ) -> Result<AiExtractResult, String> {
-    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(90));
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .connect_timeout(std::time::Duration::from_secs(30));
 
     if let Some(proxy) = proxy_url
         && !proxy.is_empty()
@@ -442,8 +444,9 @@ pub async fn ai_extract_batch(
             }
             Err(e) => {
                 tracing::warn!(
-                    "AI 批量提取失败 (endpoint={}): {e}，尝试下一个端点",
-                    endpoint.url
+                    "AI 批量提取失败 (endpoint={}, proxy={}): {e}，尝试下一个端点",
+                    endpoint.url,
+                    proxy_arg.unwrap_or("none")
                 );
                 last_error = e;
             }
@@ -520,7 +523,9 @@ async fn call_ai_batch_api(
     message: &str,
     proxy_url: Option<&str>,
 ) -> Result<Vec<ResourceDraft>, String> {
-    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(90));
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .connect_timeout(std::time::Duration::from_secs(30));
 
     if let Some(proxy) = proxy_url
         && !proxy.is_empty()

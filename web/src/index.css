@@ -51,11 +51,14 @@ body {
 }
 
 /* 固定列背景，防止滚动时透出下方内容 */
-.ant-table-cell-fix-right {
+.resource-table .ant-table-cell-fix-right {
   background: #fff !important;
 }
-.ant-table-tbody > tr:hover > .ant-table-cell-fix-right {
+.resource-table .ant-table-tbody > tr:hover > td.ant-table-cell-fix-right {
   background: rgba(99, 102, 241, 0.04) !important;
+}
+.resource-table .ant-table-thead > tr > th.ant-table-cell-fix-right {
+  background: #fafafa !important;
 }
 
 /* 侧边栏菜单项 hover */

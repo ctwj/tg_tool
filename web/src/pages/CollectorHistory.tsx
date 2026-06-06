@@ -110,7 +110,7 @@ const CollectorHistory: React.FC = () => {
       const res = await apiClient.post(`/resources/extract/${extractingRecord.id}`, {
         dry_run: dryRun,
         extract_mode: extractMode,
-      })
+      }, { timeout: 120000 })
       if (res.data?.success) {
         setExtractResults(res.data.data?.resources ?? [])
         if (!dryRun) {

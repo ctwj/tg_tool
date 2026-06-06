@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react'
-import { Card, Form, Input, Button, message, Space, Alert, Tabs, Modal, Tag, Switch, InputNumber, Select, Spin, Collapse, Typography } from 'antd'
+import { Card, Form, Input, Button, message, Space, Alert, Tabs, Modal, Tag, Switch, InputNumber, Select, Collapse, Typography } from 'antd'
 import { CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined, PlusOutlined, ExperimentOutlined, EditOutlined, DeleteOutlined, ApiOutlined, PictureOutlined, CloudOutlined, GlobalOutlined } from '@ant-design/icons'
 import apiClient from '../api/client'
-import type { AiEndpoint, Client, Chat } from '../types'
+import type { AiEndpoint } from '../types'
 import PageHeader from '../components/PageHeader'
 
 const { Text, Paragraph } = Typography
@@ -32,12 +32,9 @@ const Settings: React.FC = () => {
   const [httpTestResult, setHttpTestResult] = useState<ProxyTestResult | null>(null)
   const [envDefaults, setEnvDefaults] = useState<Record<string, string>>({})
 
-  // ─── 图床群组选择 ───
-  const [clients, setClients] = useState<Client[]>([])
-  const [chats, setChats] = useState<Chat[]>([])
-  const [chatsLoading, setChatsLoading] = useState(false)
-  const [selectedClientId, setSelectedClientId] = useState<string>('')
+  // ─── 图床配置 ───
   const [imageSaving, setImageSaving] = useState(false)
+  const [testPhotoId, setTestPhotoId] = useState('')
 
   // ─── 大模型配置 ───
   const [endpoints, setEndpoints] = useState<AiEndpoint[]>([])
@@ -69,34 +66,8 @@ const Settings: React.FC = () => {
     }
   }
 
-  const fetchClients = async () => {
-    try {
-      const res = await apiClient.get('/clients')
-      const list: Client[] = res.data.data?.list ?? []
-      setClients(list.filter(c => c.status === 'active'))
-    } catch {
-      /* ignore */
-    }
-  }
-
-  const fetchChats = async (clientId: string) => {
-    if (!clientId) { setChats([]); return }
-    setChatsLoading(true)
-    setChats([])
-    try {
-      const res = await apiClient.get(`/clients/${clientId}/chats`)
-      const list: Chat[] = res.data.data?.chats ?? []
-      setChats(list)
-    } catch {
-      message.error('获取聊天列表失败')
-    } finally {
-      setChatsLoading(false)
-    }
-  }
-
   useEffect(() => {
     fetchOptions()
-    fetchClients()
   }, [form])
 
   const saveOptions = async (values: Record<string, string>) => {
@@ -178,16 +149,6 @@ const Settings: React.FC = () => {
   }
 
   // ─── 图床群组：级联选择 ───
-
-  const onImageGroupClientChange = (clientId: string) => {
-    setSelectedClientId(clientId)
-    form.setFieldsValue({ image_group: undefined })
-    fetchChats(clientId)
-  }
-
-  const onImageGroupChatChange = (chatId: number) => {
-    form.setFieldsValue({ image_group: String(chatId) })
-  }
 
   // ─── 大模型配置：端点管理 ───
 
@@ -518,49 +479,6 @@ const Settings: React.FC = () => {
                 {/* 图床设置 */}
                 <Card title="图床设置" style={{ borderRadius: 12 }}>
                   <Form form={form} layout="vertical">
-                    <Form.Item label="选择客户端" help="选择一个已连接的客户端来加载群组列表">
-                      <Select
-                        placeholder="请先选择客户端"
-                        value={selectedClientId || undefined}
-                        onChange={onImageGroupClientChange}
-                        notFoundContent={clients.length === 0 ? '没有活跃的客户端，请先启动客户端' : undefined}
-                      >
-                        {clients.map(c => (
-                          <Select.Option key={c.id} value={c.id}>
-                            {c.client_type === 'Bot' ? 'Bot ' : ''}
-                            {c.phone || c.id.substring(0, 8)}...
-                          </Select.Option>
-                        ))}
-                      </Select>
-                    </Form.Item>
-                    <Form.Item label="图床群组" help="选择用于图床上传的群组">
-                      <Space direction="vertical" style={{ width: '100%' }}>
-                        <Select
-                          placeholder={selectedClientId ? '加载中...' : '请先选择客户端'}
-                          onChange={onImageGroupChatChange}
-                          loading={chatsLoading}
-                          disabled={!selectedClientId || chatsLoading}
-                          showSearch
-                          optionFilterProp="label"
-                          notFoundContent={
-                            !selectedClientId ? '请先选择客户端' :
-                            chatsLoading ? <Spin size="small" /> :
-                            chats.length === 0 ? '没有可用的群组' : undefined
-                          }
-                          value={form.getFieldValue('image_group') ? Number(form.getFieldValue('image_group')) : undefined}
-                        >
-                          {chats.filter(c => c.type === 'channel' || c.type === 'group').map(c => (
-                            <Select.Option key={c.id} value={c.id} label={c.name}>
-                              {c.type === 'channel' ? '频道' : '群组'} {c.name}
-                              <span style={{ color: '#999', fontSize: 12, marginLeft: 8 }}>({c.id})</span>
-                            </Select.Option>
-                          ))}
-                        </Select>
-                      </Space>
-                    </Form.Item>
-                    <Form.Item name="image_group" label="群组 ID" help="也可直接输入群组 ID">
-                      <Input placeholder="-100xxxxxxxxxx" />
-                    </Form.Item>
                     <Form.Item
                       name="TelegramImageDomain"
                       label="图床域名"
@@ -582,6 +500,39 @@ const Settings: React.FC = () => {
                       </Button>
                     </Form.Item>
                   </Form>
+                </Card>
+
+                {/* 链接测试 */}
+                <Card title="链接测试" style={{ borderRadius: 12 }}>
+                  <Space direction="vertical" style={{ width: '100%' }} size={12}>
+                    <Input
+                      placeholder="输入文件 ID（photo_id）"
+                      value={testPhotoId}
+                      onChange={e => setTestPhotoId(e.target.value)}
+                      style={{ maxWidth: 400 }}
+                    />
+                    {testPhotoId && (() => {
+                      const domain = form.getFieldValue('TelegramImageDomain')?.replace(/\/+$/, '')
+                      const apiUrl = `${window.location.origin}/api/images/${testPhotoId}`
+                      const imgUrl = domain ? `${domain}/${testPhotoId}` : null
+                      return (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 0' }}>
+                          <div>
+                            <Text type="secondary" style={{ fontSize: 12 }}>API 地址：</Text>
+                            <a href={apiUrl} target="_blank" rel="noreferrer" style={{ fontSize: 13, wordBreak: 'break-all' }}>{apiUrl}</a>
+                          </div>
+                          {imgUrl ? (
+                            <div>
+                              <Text type="secondary" style={{ fontSize: 12 }}>图床域名：</Text>
+                              <a href={imgUrl} target="_blank" rel="noreferrer" style={{ fontSize: 13, color: '#6366f1', wordBreak: 'break-all' }}>{imgUrl}</a>
+                            </div>
+                          ) : (
+                            <Alert message="请先配置图床域名" type="warning" showIcon style={{ borderRadius: 8 }} />
+                          )}
+                        </div>
+                      )
+                    })()}
+                  </Space>
                 </Card>
 
                 {/* Nginx 配置说明 */}

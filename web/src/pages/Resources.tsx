@@ -61,6 +61,7 @@ const Resources: React.FC = () => {
   })
   const [extractSaving, setExtractSaving] = useState(false)
   const [configVisible, setConfigVisible] = useState(false)
+  const [imageDomain, setImageDomain] = useState('')
 
   // 网盘类型选项
   const categoryOptions = [
@@ -130,6 +131,7 @@ const Resources: React.FC = () => {
           ai_prompt: data.push_ai_prompt || '',
           ai_use_proxy: data.push_ai_use_proxy === '1' || data.push_ai_use_proxy === 'true',
         })
+        setImageDomain(data.TelegramImageDomain || '')
       } catch { /* ignore */ }
     }
     fetchExtractConfig()
@@ -139,7 +141,7 @@ const Resources: React.FC = () => {
   const handleExtract = async () => {
     setExtracting(true)
     try {
-      const resp = await apiClient.post('/resources/extract', { batch_size: 1000 })
+      const resp = await apiClient.post('/resources/extract', { batch_size: 1000 }, { timeout: 300000 })
       if (resp.data?.success) {
         const result: ExtractionResult = resp.data.data
         message.success(`提取完成：扫描 ${result.total_scanned} 条，提取 ${result.extracted} 条，跳过 ${result.skipped} 条`)
@@ -229,9 +231,23 @@ const Resources: React.FC = () => {
       title: '封面ID',
       dataIndex: 'img',
       key: 'img',
-      width: 120,
+      width: 140,
       ellipsis: true,
-      render: (img: string) => img ? <Text copyable style={{ fontSize: 12 }}>{img}</Text> : '-',
+      render: (img: string) => {
+        if (!img) return '-'
+        if (imageDomain) {
+          const fullUrl = `${imageDomain.replace(/\/+$/, '')}/${img}`
+          return (
+            <Tooltip title={fullUrl}>
+              <Button type="link" size="small" style={{ padding: 0, fontSize: 12, height: 'auto' }}
+                onClick={() => window.open(fullUrl, '_blank')}>
+                {img}
+              </Button>
+            </Tooltip>
+          )
+        }
+        return <Tooltip title="请先在系统设置中配置图床域名"><Text type="secondary" style={{ fontSize: 12 }}>{img}</Text></Tooltip>
+      },
     },
     {
       title: '资源链接',
@@ -401,6 +417,7 @@ const Resources: React.FC = () => {
           size="middle"
           scroll={{ x: 1700, y: scrollY }}
           style={{ background: '#fff', borderRadius: 12 }}
+          className="resource-table"
         />
       </div>
 

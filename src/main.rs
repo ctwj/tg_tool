@@ -235,6 +235,14 @@ async fn run_migrations(pool: &DbPool) {
                 }
                 tracing::debug!("SQLite migration 005 skipped (already applied)");
             }
+            // Migration 006: Dedup extracted_resources + unique index on url
+            let m6 = include_str!("../migrations/006_dedup_extracted_resources_sqlite.sql");
+            if let Err(e) = sqlx::raw_sql(m6).execute(pool).await {
+                if !e.to_string().contains("already exists") {
+                    panic!("Failed to run SQLite migration 006: {e}");
+                }
+                tracing::debug!("SQLite migration 006 skipped (already applied)");
+            }
         }
         DbPool::Postgres(pool) => {
             let migration_sql = include_str!("../migrations/001_init_postgres.sql");
@@ -277,6 +285,14 @@ async fn run_migrations(pool: &DbPool) {
                     panic!("Failed to run PostgreSQL migration 005: {e}");
                 }
                 tracing::debug!("PostgreSQL migration 005 skipped (already applied)");
+            }
+            // Migration 006: Dedup extracted_resources + unique index on url
+            let m6 = include_str!("../migrations/006_dedup_extracted_resources_postgres.sql");
+            if let Err(e) = sqlx::raw_sql(m6).execute(pool).await {
+                if !e.to_string().contains("already exists") {
+                    panic!("Failed to run PostgreSQL migration 006: {e}");
+                }
+                tracing::debug!("PostgreSQL migration 006 skipped (already applied)");
             }
         }
     }

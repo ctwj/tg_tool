@@ -371,7 +371,7 @@ async fn insert_resource(db: &DbPool, r: &NewExtractedResource) -> Result<bool, 
     if !share_ids.is_empty() {
         // 优先用 share_id 逐个查重
         for sid in &share_ids {
-            let pattern = format!("%,{}，%", sid);
+            let pattern = format!("%,{},%", sid);
             let exists = match db {
                 DbPool::Sqlite(pool) => {
                     let count: i64 = sqlx::query_scalar(
@@ -440,7 +440,7 @@ async fn insert_resource(db: &DbPool, r: &NewExtractedResource) -> Result<bool, 
     match db {
         DbPool::Sqlite(pool) => {
             sqlx::query(
-                "INSERT INTO extracted_resources \
+                "INSERT OR IGNORE INTO extracted_resources \
                  (collector_history_id, title, url, description, category, tags, img, source, extra, extract_mode, share_ids) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
@@ -457,12 +457,14 @@ async fn insert_resource(db: &DbPool, r: &NewExtractedResource) -> Result<bool, 
             .bind(&share_ids_str)
             .execute(pool)
             .await?;
+            // Note: INSERT OR IGNORE silently skips on unique conflict
         }
         DbPool::Postgres(pool) => {
             sqlx::query(
                 "INSERT INTO extracted_resources \
                  (collector_history_id, title, url, description, category, tags, img, source, extra, extract_mode, share_ids) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+                 ON CONFLICT (url) DO NOTHING"
             )
             .bind(r.collector_history_id)
             .bind(&r.title)
