@@ -7,7 +7,7 @@ pub struct PushHistory {
     pub batch_id: String,
     pub target: Option<String>,
     pub status: String,
-    pub data_count: i32,
+    pub data_count: i64,
     pub message: Option<String>,
     pub error_msg: Option<String>,
     pub pushed_at: NaiveDateTime,

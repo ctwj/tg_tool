@@ -2,7 +2,7 @@
 
 -- Users table
 CREATE TABLE IF NOT EXISTS users (
-    id SERIAL PRIMARY KEY,
+    id BIGSERIAL PRIMARY KEY,
     username VARCHAR(255) NOT NULL UNIQUE,
     password VARCHAR(255) NOT NULL,
     display_name VARCHAR(255),
@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS users (
 -- Telegram clients
 CREATE TABLE IF NOT EXISTS clients (
     id VARCHAR(16) PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id),
+    user_id BIGINT NOT NULL REFERENCES users(id),
     client_type VARCHAR(20) NOT NULL,
     phone VARCHAR(255),
     token VARCHAR(255),
@@ -29,8 +29,8 @@ CREATE TABLE IF NOT EXISTS clients (
 
 -- Forward rules
 CREATE TABLE IF NOT EXISTS rules (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id),
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id),
     source_chat_id BIGINT NOT NULL,
     source_chat_name VARCHAR(255),
     forward_method VARCHAR(20) NOT NULL,
@@ -44,8 +44,8 @@ CREATE TABLE IF NOT EXISTS rules (
 
 -- Collectors
 CREATE TABLE IF NOT EXISTS collectors (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id),
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id),
     channel_id BIGINT NOT NULL,
     channel_name VARCHAR(255),
     collector_type VARCHAR(50) NOT NULL,
@@ -57,8 +57,8 @@ CREATE TABLE IF NOT EXISTS collectors (
 
 -- Forward messages
 CREATE TABLE IF NOT EXISTS messages (
-    id SERIAL PRIMARY KEY,
-    rule_id INTEGER NOT NULL REFERENCES rules(id),
+    id BIGSERIAL PRIMARY KEY,
+    rule_id BIGINT NOT NULL REFERENCES rules(id),
     chat_id BIGINT,
     message_id BIGINT,
     content TEXT,
@@ -70,8 +70,8 @@ CREATE TABLE IF NOT EXISTS messages (
 
 -- Collector histories
 CREATE TABLE IF NOT EXISTS collector_histories (
-    id SERIAL PRIMARY KEY,
-    collector_id INTEGER NOT NULL REFERENCES collectors(id),
+    id BIGSERIAL PRIMARY KEY,
+    collector_id BIGINT NOT NULL REFERENCES collectors(id),
     channel_id BIGINT NOT NULL,
     message_id BIGINT NOT NULL,
     post_time TIMESTAMP,
@@ -84,11 +84,11 @@ CREATE TABLE IF NOT EXISTS collector_histories (
 
 -- Push histories
 CREATE TABLE IF NOT EXISTS push_histories (
-    id SERIAL PRIMARY KEY,
+    id BIGSERIAL PRIMARY KEY,
     batch_id VARCHAR(255) NOT NULL,
     target VARCHAR(100),
     status VARCHAR(20) NOT NULL,
-    data_count INTEGER DEFAULT 0,
+    data_count BIGINT DEFAULT 0,
     message TEXT,
     error_msg TEXT,
     pushed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -96,16 +96,16 @@ CREATE TABLE IF NOT EXISTS push_histories (
 
 -- System options
 CREATE TABLE IF NOT EXISTS options (
-    id SERIAL PRIMARY KEY,
+    id BIGSERIAL PRIMARY KEY,
     key VARCHAR(255) NOT NULL UNIQUE,
     value TEXT
 );
 
 -- Uploaded files
 CREATE TABLE IF NOT EXISTS files (
-    id SERIAL PRIMARY KEY,
+    id BIGSERIAL PRIMARY KEY,
     filename VARCHAR(255) NOT NULL,
-    uploader_id INTEGER NOT NULL REFERENCES users(id),
+    uploader_id BIGINT NOT NULL REFERENCES users(id),
     link VARCHAR(255),
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

@@ -243,6 +243,9 @@ async fn run_migrations(pool: &DbPool) {
                 }
                 tracing::debug!("SQLite migration 006 skipped (already applied)");
             }
+            // Migration 007: no-op for SQLite
+            let m7 = include_str!("../migrations/007_int4_to_int8_sqlite.sql");
+            sqlx::raw_sql(m7).execute(pool).await.ok();
         }
         DbPool::Postgres(pool) => {
             let migration_sql = include_str!("../migrations/001_init_postgres.sql");
@@ -293,6 +296,17 @@ async fn run_migrations(pool: &DbPool) {
                     panic!("Failed to run PostgreSQL migration 006: {e}");
                 }
                 tracing::debug!("PostgreSQL migration 006 skipped (already applied)");
+            }
+            // Migration 007: Convert INT4 id/fk columns to INT8 (BIGINT)
+            {
+                let m7 = include_str!("../migrations/007_int4_to_int8_postgres.sql");
+                match sqlx::raw_sql(m7).execute(pool).await {
+                    Ok(_) => tracing::info!("PostgreSQL migration 007 applied (INT4 -> INT8)"),
+                    Err(e) => {
+                        // Already INT8 or other safe error
+                        tracing::info!("PostgreSQL migration 007 skipped: {e}");
+                    }
+                }
             }
         }
     }
