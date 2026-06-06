@@ -132,7 +132,7 @@ jobs:
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
           sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
-          cargo generate-lockfile
+          sed -i "0,/name = \"tgTool\"/{s/.*version = \".*\"/version = \"${VERSION}\"/}" Cargo.lock
           echo "Building version: ${VERSION}"
 
       - name: Build release binary
