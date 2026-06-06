@@ -186,9 +186,10 @@ jobs:
           git tag ${{ steps.version.outputs.tag }}
           git push origin ${{ steps.version.outputs.tag }}
 
-      - name: Download all artifacts
+      - name: Download binary artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: tgTool-*
           path: artifacts
 
       - name: List artifacts
