@@ -74,11 +74,34 @@ jobs:
         run: cargo test --locked
 
   # ==========================================================
+  # 构建前端（仅一次，产物共享给所有平台）
+  # ==========================================================
+  frontend:
+    name: Build Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build frontend
+        run: cd web && npm ci && npm run build
+
+      - name: Upload frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: web/dist/
+
+  # ==========================================================
   # 构建 Release 产物
   # ==========================================================
   build:
     name: Build ${{ matrix.target }}
-    needs: [check, test]
+    needs: [check, test, frontend]
     strategy:
       matrix:
         include:
@@ -102,6 +125,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: web/dist/
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -128,13 +157,6 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: web/package-lock.json
-
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
@@ -142,12 +164,6 @@ jobs:
           VERSION=${GITHUB_REF#refs/tags/v}
           sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
           echo "Building version: ${VERSION}"
-
-      - name: Build frontend
-        run: |
-          cd web
-          npm ci
-          npm run build
 
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }} --features embed-frontend
