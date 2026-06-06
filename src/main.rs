@@ -336,7 +336,7 @@ async fn ensure_root_user(pool: &DbPool) {
             row.is_some()
         }
         DbPool::Postgres(pool) => {
-            let row: Option<(i64,)> =
+            let row: Option<(i32,)> =
                 sqlx::query_as("SELECT id FROM users WHERE username = 'root'")
                     .fetch_optional(pool)
                     .await

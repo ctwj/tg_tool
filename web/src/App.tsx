@@ -15,6 +15,7 @@ import Resources from './pages/Resources'
 import Users from './pages/Users'
 import Files from './pages/Files'
 import Settings from './pages/Settings'
+import ApiStatus from './pages/ApiStatus'
 import './index.css'
 
 function App() {
@@ -51,6 +52,7 @@ function App() {
             <Route path="users" element={<Users />} />
             <Route path="files" element={<Files />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="api-status" element={<ApiStatus />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

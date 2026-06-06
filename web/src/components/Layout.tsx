@@ -31,6 +31,7 @@ const menuItems = [
   { key: '/files', icon: <FileOutlined />, label: '文件管理' },
   { key: '/users', icon: <UserOutlined />, label: '用户管理' },
   { key: '/settings', icon: <SettingOutlined />, label: '系统设置' },
+  { key: '/api-status', icon: <ApiOutlined />, label: 'API 状态' },
 ]
 
 const pageTitles: Record<string, string> = {
@@ -43,6 +44,7 @@ const pageTitles: Record<string, string> = {
   '/users': '用户管理',
   '/files': '文件管理',
   '/settings': '系统设置',
+  '/api-status': 'API 状态',
 }
 
 // 根据路径获取当前标题（支持子路径）
