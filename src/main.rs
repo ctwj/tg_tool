@@ -325,44 +325,29 @@ async fn load_option_cache(state: &AppState) {
 /// This avoids hardcoding a bcrypt hash in the migration SQL,
 /// which would break across bcrypt library version upgrades.
 async fn ensure_root_user(pool: &DbPool) {
-    // Check if root user exists
-    let exists: bool = match pool {
+    let hash = crypto::hash_password("123456").expect("Failed to hash root password");
+    let created = match pool {
         DbPool::Sqlite(pool) => {
-            let row: Option<(i64,)> =
-                sqlx::query_as("SELECT id FROM users WHERE username = 'root'")
-                    .fetch_optional(pool)
-                    .await
-                    .unwrap_or(None);
-            row.is_some()
+            sqlx::query("INSERT OR IGNORE INTO users (username, password, role, status) VALUES ('root', ?, 100, 1)")
+                .bind(&hash)
+                .execute(pool)
+                .await
+                .expect("Failed to ensure root user")
+                .rows_affected()
+                > 0
         }
         DbPool::Postgres(pool) => {
-            let row: Option<(i32,)> =
-                sqlx::query_as("SELECT id FROM users WHERE username = 'root'")
-                    .fetch_optional(pool)
-                    .await
-                    .unwrap_or(None);
-            row.is_some()
+            sqlx::query("INSERT INTO users (username, password, role, status) VALUES ('root', $1, 100, 1) ON CONFLICT (username) DO NOTHING")
+                .bind(&hash)
+                .execute(pool)
+                .await
+                .expect("Failed to ensure root user")
+                .rows_affected()
+                > 0
         }
     };
 
-    if !exists {
-        let hash = crypto::hash_password("123456").expect("Failed to hash root password");
-        match pool {
-            DbPool::Sqlite(pool) => {
-                sqlx::query("INSERT INTO users (username, password, role, status) VALUES ('root', ?, 100, 1)")
-                    .bind(&hash)
-                    .execute(pool)
-                    .await
-                    .expect("Failed to create root user");
-            }
-            DbPool::Postgres(pool) => {
-                sqlx::query("INSERT INTO users (username, password, role, status) VALUES ('root', $1, 100, 1)")
-                    .bind(&hash)
-                    .execute(pool)
-                    .await
-                    .expect("Failed to create root user");
-            }
-        }
+    if created {
         tracing::info!("Created default root user");
     }
 }
