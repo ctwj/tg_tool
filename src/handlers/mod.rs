@@ -3,6 +3,7 @@ pub mod client;
 pub mod collector;
 pub mod file;
 pub mod image;
+pub mod image_forward;
 pub mod misc;
 pub mod option;
 pub mod push;

@@ -192,9 +192,22 @@ pub async fn update_scheduler(
         crate::services::scheduler::stop_scheduler(state.scheduler.clone()).await;
     }
 
-    Ok(Json(
-        json!({ "success": true, "message": "调度配置已更新" }),
-    ))
+    let sched = state.scheduler.read().await;
+    let next_run = if sched.running {
+        let elapsed = sched.last_run_at.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+        let remaining = sched.interval_minutes * 60;
+        let next_secs = remaining.saturating_sub(elapsed);
+        Some(chrono::Local::now() + chrono::Duration::seconds(next_secs as i64))
+    } else {
+        None
+    };
+    drop(sched);
+
+    Ok(Json(json!({
+        "success": true,
+        "message": "调度配置已更新",
+        "next_run_at": next_run.map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string()),
+    })))
 }
 
 /// 推送配置校验 — 检查必要配置是否完整（含通用推送配置）

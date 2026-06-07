@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 pub struct SchedulerState {
     pub running: bool,
     pub interval_minutes: u64,
+    pub last_run_at: Option<std::time::Instant>,
     pub handle: Option<tokio::task::JoinHandle<()>>,
     pub cancel: Option<CancellationToken>,
     pub api_url: String,
@@ -30,6 +31,7 @@ pub fn create_scheduler() -> SchedulerHandle {
     Arc::new(RwLock::new(SchedulerState {
         running: false,
         interval_minutes: 30,
+        last_run_at: None,
         handle: None,
         cancel: None,
         api_url: String::new(),
@@ -85,6 +87,10 @@ pub async fn start_scheduler(
                     match result {
                         Ok(v) => tracing::info!("Scheduled push result: {:?}", v),
                         Err(e) => tracing::warn!("Scheduled push failed: {e}"),
+                    }
+                    {
+                        let mut s = sched.write().await;
+                        s.last_run_at = Some(std::time::Instant::now());
                     }
                 }
                 _ = cancel.cancelled() => {
@@ -179,6 +185,7 @@ pub async fn update_scheduler(
 pub struct ExtractSchedulerState {
     pub running: bool,
     pub interval_minutes: u64,
+    pub last_run_at: Option<std::time::Instant>,
     pub handle: Option<tokio::task::JoinHandle<()>>,
     pub cancel: Option<CancellationToken>,
 }
@@ -190,6 +197,7 @@ pub fn create_extract_scheduler() -> ExtractSchedulerHandle {
     Arc::new(RwLock::new(ExtractSchedulerState {
         running: false,
         interval_minutes: 30,
+        last_run_at: None,
         handle: None,
         cancel: None,
     }))
@@ -199,8 +207,7 @@ pub fn create_extract_scheduler() -> ExtractSchedulerHandle {
 pub async fn start_extract_scheduler(
     scheduler: ExtractSchedulerHandle,
     interval_minutes: u64,
-    db: crate::state::DbPool,
-    option_cache: crate::state::OptionCache,
+    app_state: crate::state::AppState,
 ) {
     let mut state = scheduler.write().await;
     if state.running {
@@ -220,11 +227,15 @@ pub async fn start_extract_scheduler(
                 _ = tokio::time::sleep(duration) => {
                     tracing::info!("Extract scheduler tick: triggering extraction");
                     let result = crate::services::resource::trigger_extraction(
-                        &db,
-                        &option_cache,
+                        &app_state,
                         1000,
                     )
                     .await;
+                    // Update last_run_at
+                    {
+                        let mut s = sched.write().await;
+                        s.last_run_at = Some(std::time::Instant::now());
+                    }
                     match result {
                         Ok(r) => tracing::info!(
                             "Scheduled extraction result: scanned={}, extracted={}, skipped={}",
@@ -264,12 +275,11 @@ pub async fn stop_extract_scheduler(scheduler: ExtractSchedulerHandle) {
 pub async fn update_extract_scheduler(
     scheduler: ExtractSchedulerHandle,
     minutes: u64,
-    db: crate::state::DbPool,
-    option_cache: crate::state::OptionCache,
+    app_state: crate::state::AppState,
 ) {
     stop_extract_scheduler(scheduler.clone()).await;
     if minutes > 0 {
-        start_extract_scheduler(scheduler, minutes, db, option_cache).await;
+        start_extract_scheduler(scheduler, minutes, app_state).await;
     }
 }
 

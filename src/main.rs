@@ -105,8 +105,29 @@ async fn main() {
             tgTool::services::scheduler::start_extract_scheduler(
                 state.extract_scheduler.clone(),
                 extract_interval,
-                state.db.clone(),
-                state.option_cache.clone(),
+                state.clone(),
+            )
+            .await;
+        }
+    }
+
+    // Start forward scheduler if image hosting is configured
+    {
+        let cache = state.option_cache.read().await;
+        let bot_id = cache.get("ImageBotId").cloned().unwrap_or_default();
+        let chat_id = cache.get("ImageGroupChatId").cloned().unwrap_or_default();
+        let interval: u64 = cache
+            .get("ImageForwardInterval")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2);
+        drop(cache);
+
+        if !bot_id.is_empty() && !chat_id.is_empty() {
+            tracing::info!("图片转发调度器启动 (间隔: {interval}s)");
+            tgTool::services::forward_queue::start_forward_scheduler(
+                state.forward_scheduler.clone(),
+                interval,
+                state.clone(),
             )
             .await;
         }
@@ -127,6 +148,7 @@ async fn main() {
     let tg_manager_shutdown = tg_manager.clone();
     let scheduler_shutdown = state.scheduler.clone();
     let extract_scheduler_shutdown = state.extract_scheduler.clone();
+    let forward_scheduler_shutdown = state.forward_scheduler.clone();
 
     tokio::select! {
         result = axum::serve(listener, app) => {
@@ -140,6 +162,7 @@ async fn main() {
             // Stop scheduler
             tgTool::services::scheduler::stop_scheduler(scheduler_shutdown).await;
             tgTool::services::scheduler::stop_extract_scheduler(extract_scheduler_shutdown).await;
+            tgTool::services::forward_queue::stop_forward_scheduler(forward_scheduler_shutdown).await;
             tracing::info!("Schedulers stopped");
 
             // Graceful shutdown with timeout
@@ -246,6 +269,14 @@ async fn run_migrations(pool: &DbPool) {
             // Migration 007: no-op for SQLite
             let m7 = include_str!("../migrations/007_int4_to_int8_sqlite.sql");
             sqlx::raw_sql(m7).execute(pool).await.ok();
+            // Migration 008: Image mappings + forward tasks
+            let m8 = include_str!("../migrations/008_image_tables_sqlite.sql");
+            if let Err(e) = sqlx::raw_sql(m8).execute(pool).await {
+                if !e.to_string().contains("already exists") {
+                    panic!("Failed to run SQLite migration 008: {e}");
+                }
+                tracing::debug!("SQLite migration 008 skipped (already applied)");
+            }
         }
         DbPool::Postgres(pool) => {
             let migration_sql = include_str!("../migrations/001_init_postgres.sql");
@@ -306,6 +337,16 @@ async fn run_migrations(pool: &DbPool) {
                         // Already INT8 or other safe error
                         tracing::info!("PostgreSQL migration 007 skipped: {e}");
                     }
+                }
+            }
+            // Migration 008: Image mappings + forward tasks
+            {
+                let m8 = include_str!("../migrations/008_image_tables_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m8).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run PostgreSQL migration 008: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 008 skipped (already applied)");
                 }
             }
         }

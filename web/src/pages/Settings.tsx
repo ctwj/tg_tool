@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Card, Form, Input, Button, message, Space, Alert, Tabs, Modal, Tag, Switch, InputNumber, Select, Collapse, Typography } from 'antd'
+import { Card, Form, Input, Button, message, Space, Alert, Tabs, Modal, Tag, Switch, InputNumber, Select, Collapse, Typography, AutoComplete } from 'antd'
 import { CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined, PlusOutlined, ExperimentOutlined, EditOutlined, DeleteOutlined, ApiOutlined, PictureOutlined, CloudOutlined, GlobalOutlined } from '@ant-design/icons'
 import apiClient from '../api/client'
 import type { AiEndpoint } from '../types'
@@ -31,6 +31,12 @@ const Settings: React.FC = () => {
   const [httpTestLoading, setHttpTestLoading] = useState(false)
   const [httpTestResult, setHttpTestResult] = useState<ProxyTestResult | null>(null)
   const [envDefaults, setEnvDefaults] = useState<Record<string, string>>({})
+  const [botClients, setBotClients] = useState<any[]>([])
+  const [botChats, setBotChats] = useState<any[]>([])
+  const [botChatsLoading, setBotChatsLoading] = useState(false)
+  const [chatIdValue, setChatIdValue] = useState('')
+  const [chatValidating, setChatValidating] = useState(false)
+  const [chatValidResult, setChatValidResult] = useState<{ success: boolean; msg: string } | null>(null)
 
   // ─── 图床配置 ───
   const [imageSaving, setImageSaving] = useState(false)
@@ -52,6 +58,7 @@ const Settings: React.FC = () => {
       const res = await apiClient.get('/options')
       const data = res.data.data ?? {}
       form.setFieldsValue(data)
+      setChatIdValue(data.ImageGroupChatId || '')
       if (res.data.env_defaults) setEnvDefaults(res.data.env_defaults)
 
       // 大模型配置
@@ -61,6 +68,13 @@ const Settings: React.FC = () => {
       } catch {
         setEndpoints([])
       }
+
+      // 如果已配置图床 Bot，自动加载群组列表
+      if (data.ImageBotId) {
+        apiClient.get(`/clients/${data.ImageBotId}/bot-chats`)
+          .then(res => setBotChats(res.data.data?.chats ?? []))
+          .catch(() => {})
+      }
     } catch {
       /* ignore */
     }
@@ -68,6 +82,11 @@ const Settings: React.FC = () => {
 
   useEffect(() => {
     fetchOptions()
+    // 获取 Bot 类型客户端列表
+    apiClient.get('/clients').then(res => {
+      const list = res.data.data?.list ?? []
+      setBotClients(list.filter((c: any) => c.client_type === 'Bot'))
+    }).catch(() => {})
   }, [form])
 
   const saveOptions = async (values: Record<string, string>) => {
@@ -86,7 +105,7 @@ const Settings: React.FC = () => {
   const saveImageOptions = async () => {
     setImageSaving(true)
     try {
-      const values = form.getFieldsValue(['image_group', 'TelegramImageDomain', 'ImageCacheTTL'])
+      const values = form.getFieldsValue(['image_group', 'TelegramImageDomain', 'ImageCacheTTL', 'ImageBotId', 'ImageGroupChatId', 'ImageForwardInterval'])
       await apiClient.put('/options', values)
       message.success('图床配置已保存')
     } catch {
@@ -155,8 +174,10 @@ const Settings: React.FC = () => {
   const saveAiConfig = async () => {
     setAiSaving(true)
     try {
+      const concurrency = form.getFieldValue('ai_concurrency') || '5'
       await apiClient.put('/push/extract-config', {
         ai_endpoints: JSON.stringify(endpoints),
+        ai_concurrency: concurrency,
       })
       message.success('大模型配置已保存')
     } catch (e: any) {
@@ -493,6 +514,116 @@ const Settings: React.FC = () => {
                       initialValue={7}
                     >
                       <InputNumber min={1} max={365} step={1} style={{ width: '100%' }} placeholder="7" />
+                    </Form.Item>
+                    <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16, marginTop: 8, marginBottom: 8 }}>
+                      <Text strong style={{ fontSize: 14, marginBottom: 12, display: 'block' }}>图片转发配置</Text>
+                      <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 16 }}>
+                        配置图床 Bot 和目标群组后，提取资源时的图片会自动转发到目标群组，通过 Bot API file_id 实现跨实例访问。
+                        群组和频道均支持，只需将 Bot 添加为管理员。
+                      </Text>
+                    </div>
+                    <Form.Item
+                      name="ImageBotId"
+                      label="图床 Bot"
+                      help="选择用于图片转存的 Bot 客户端（需先在客户端管理中添加 Bot 类型客户端）"
+                    >
+                      <Select
+                        placeholder="请选择图床 Bot"
+                        allowClear
+                        showSearch
+                        filterOption={(input, option) =>
+                          (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+                        }
+                        options={botClients.map((c: any) => ({
+                          value: c.id,
+                          label: `${c.phone || c.id}${c.status === 'active' ? '' : ' (离线)'}`,
+                        }))}
+                        onChange={(value: string | undefined) => {
+                          // 切换 Bot 时清空群组选择并重新加载群组列表
+                          setChatIdValue('')
+                          form.setFieldValue('ImageGroupChatId', undefined)
+                          setBotChats([])
+                          if (value) {
+                            setBotChatsLoading(true)
+                            apiClient.get(`/clients/${value}/bot-chats`)
+                              .then(res => {
+                                setBotChats(res.data.data?.chats ?? [])
+                              })
+                              .catch(() => {
+                                setBotChats([])
+                                message.warning('获取 Bot 群组列表失败，请手动输入 Chat ID')
+                              })
+                              .finally(() => setBotChatsLoading(false))
+                          }
+                        }}
+                      />
+                    </Form.Item>
+                    <Form.Item
+                      name="ImageGroupChatId"
+                      label="图床群组/频道"
+                      help="选择 Bot 后自动加载群组列表，也可手动输入。支持群组和频道，需将 Bot 添加为管理员"
+                    >
+                      <Space.Compact style={{ width: '100%' }}>
+                        <AutoComplete
+                          style={{ flex: 1 }}
+                          value={chatIdValue}
+                          placeholder={botChatsLoading ? '加载中...' : '请选择或输入 Chat ID（如 -1001234567890）'}
+                          options={botChats.map((c: any) => ({
+                            value: String(c.id),
+                            label: `${c.title} (${c.id})`,
+                          }))}
+                          filterOption={(input, option) =>
+                            (option?.label ?? '').toLowerCase().includes(input.toLowerCase()) ||
+                            (option?.value ?? '').toString().includes(input)
+                          }
+                          onChange={(val) => {
+                            setChatIdValue(val)
+                            form.setFieldValue('ImageGroupChatId', val)
+                            setChatValidResult(null)
+                          }}
+                        />
+                        <Button
+                          loading={chatValidating}
+                          onClick={async () => {
+                            const botId = form.getFieldValue('ImageBotId')
+                            const chatId = form.getFieldValue('ImageGroupChatId')
+                            if (!botId) { message.warning('请先选择图床 Bot'); return }
+                            if (!chatId) { message.warning('请输入群组/频道 Chat ID'); return }
+                            setChatValidating(true)
+                            setChatValidResult(null)
+                            try {
+                              const res = await apiClient.post(`/clients/${botId}/validate-chat`, { chat_id: chatId })
+                              const data = res.data.data
+                              setChatValidResult({ success: true, msg: `验证成功: ${data.title} (${data.type}, ID: ${data.id})` })
+                            } catch (e: any) {
+                              const msg = e.response?.data?.message || '验证失败，请检查 Chat ID 和 Bot 权限'
+                              setChatValidResult({ success: false, msg })
+                            } finally {
+                              setChatValidating(false)
+                            }
+                          }}
+                        >
+                          验证
+                        </Button>
+                      </Space.Compact>
+                    </Form.Item>
+                    {chatValidResult && (
+                      <Alert
+                        message={chatValidResult.msg}
+                        type={chatValidResult.success ? 'success' : 'error'}
+                        showIcon
+                        closable
+                        onClose={() => setChatValidResult(null)}
+                        style={{ marginBottom: 16, borderRadius: 8 }}
+                      />
+                    )}
+                    <Form.Item
+                      name="ImageForwardInterval"
+                      label="转发间隔（秒）"
+                      help="每张图片转发的时间间隔，避免触发 Telegram 频率限制"
+                      initialValue={2}
+                    >
+                      <InputNumber min={1} max={60} step={1} style={{ width: '100%' }} placeholder="2" />
                     </Form.Item>
                     <Form.Item>
                       <Button type="primary" onClick={saveImageOptions} loading={imageSaving}>
@@ -839,6 +970,19 @@ curl -I https://img.example.com/{photo_id}
                       })}
                     </div>
                   )}
+                </div>
+
+                {/* 并发配置 */}
+                <div style={{ marginBottom: 24, display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>AI 并发数</span>
+                  <InputNumber
+                    min={1}
+                    max={10}
+                    value={parseInt(form.getFieldValue('ai_concurrency') || '5')}
+                    onChange={(val) => form.setFieldValue('ai_concurrency', String(val || 5))}
+                    style={{ width: 80 }}
+                  />
+                  <span style={{ color: '#999', fontSize: 13 }}>同时处理的最大记录数（1-10，默认 5）</span>
                 </div>
 
                 <Button

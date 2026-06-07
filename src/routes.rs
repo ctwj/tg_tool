@@ -114,6 +114,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/clients/{id}/stop", post(handlers::client::stop_client))
         .route("/clients/{id}/auth", post(handlers::client::auth_client))
         .route("/clients/{id}/chats", get(handlers::client::get_chats))
+        .route(
+            "/clients/{id}/bot-chats",
+            get(handlers::client::get_bot_chats),
+        )
+        .route(
+            "/clients/{id}/validate-chat",
+            post(handlers::client::validate_bot_chat),
+        )
         // Rules
         .route(
             "/rules",
@@ -201,6 +209,19 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers::file::list_files).post(handlers::file::upload_file),
         )
         .route("/files/{id}", delete(handlers::file::delete_file))
+        // Image forward queue
+        .route(
+            "/image-forward/queue",
+            get(handlers::image_forward::queue_status),
+        )
+        .route(
+            "/image-forward/retry/{id}",
+            post(handlers::image_forward::retry_task),
+        )
+        .route(
+            "/image-forward/retry-all",
+            post(handlers::image_forward::retry_all),
+        )
         .layer(middleware::from_fn(admin_guard))
         .layer(middleware::from_fn(auth_guard))
         .layer(axum::Extension(state.clone()));
