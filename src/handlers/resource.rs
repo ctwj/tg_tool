@@ -57,7 +57,11 @@ pub async fn extract_single(
 
     // 非 dry_run 时，尝试将含图片的资源入队转发
     if !dry_run {
-        if let Some(resources) = result.get("data").and_then(|d| d.get("resources")).and_then(|r| r.as_array()) {
+        if let Some(resources) = result
+            .get("data")
+            .and_then(|d| d.get("resources"))
+            .and_then(|r| r.as_array())
+        {
             for res in resources {
                 // 从提取结果中获取标题和链接，从采集记录中已有 remote_id
                 let title = res.get("title").and_then(|v| v.as_str());
@@ -100,13 +104,7 @@ pub async fn extract_single(
                     if !rid.is_empty() {
                         let desc = res.get("description").and_then(|v| v.as_str());
                         if let Err(e) = crate::services::forward_queue::enqueue(
-                            &state,
-                            rid,
-                            ch_id,
-                            msg_id,
-                            title,
-                            desc,
-                            link,
+                            &state, rid, ch_id, msg_id, title, desc, link,
                         )
                         .await
                         {
@@ -133,9 +131,7 @@ pub async fn extract_resources(
         .and_then(|v| v.as_i64())
         .unwrap_or(1000);
 
-    let result =
-        crate::services::resource::trigger_extraction(&state, batch_size)
-            .await?;
+    let result = crate::services::resource::trigger_extraction(&state, batch_size).await?;
 
     Ok(Json(json!({
         "success": true,
@@ -275,7 +271,10 @@ pub async fn update_extract_config(
     // 返回调度器状态（下次执行时间）
     let sched = state.extract_scheduler.read().await;
     let next_run = if sched.running {
-        let elapsed = sched.last_run_at.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+        let elapsed = sched
+            .last_run_at
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(0);
         let remaining = sched.interval_minutes * 60;
         let next_secs = remaining.saturating_sub(elapsed);
         Some(chrono::Local::now() + chrono::Duration::seconds(next_secs as i64))

@@ -251,7 +251,11 @@ async fn process_next_task(state: &AppState) -> Result<(), AppError> {
             save_mapping(&state.db, &task.remote_id, &file_id).await?;
             // 更新任务状态为 forwarded
             mark_task_forwarded(&state.db, task.id, &file_id).await?;
-            tracing::info!("转发成功: remote_id={}, file_id={}", task.remote_id, file_id);
+            tracing::info!(
+                "转发成功: remote_id={}, file_id={}",
+                task.remote_id,
+                file_id
+            );
         }
         Err(e) => {
             let err_str = e.to_string();
@@ -329,19 +333,15 @@ async fn download_photo_from_channel(
     let channel_id = task
         .channel_id
         .ok_or_else(|| AppError::Internal("任务缺少 channel_id".to_string()))?;
-    let message_id = task
-        .message_id
-        .ok_or_else(|| AppError::Internal("任务缺少 message_id".to_string()))?
-        as i32;
+    let message_id =
+        task.message_id
+            .ok_or_else(|| AppError::Internal("任务缺少 message_id".to_string()))? as i32;
 
     // 解析频道 PackedChat
-    let packed_chat = crate::services::tg_api::resolve_peer(
-        channel_id,
-        &state.tg_clients,
-        &state.peer_cache,
-    )
-    .await
-    .map_err(|e| AppError::Internal(format!("解析频道失败: {e}")))?;
+    let packed_chat =
+        crate::services::tg_api::resolve_peer(channel_id, &state.tg_clients, &state.peer_cache)
+            .await
+            .map_err(|e| AppError::Internal(format!("解析频道失败: {e}")))?;
 
     // 获取 MTProto 客户端
     let tg_clients = state.tg_clients.read().await;
@@ -424,13 +424,11 @@ fn build_caption(title: Option<&str>, description: Option<&str>, link: Option<&s
 async fn save_mapping(db: &DbPool, remote_id: &str, file_id: &str) -> Result<(), AppError> {
     match db {
         DbPool::Sqlite(pool) => {
-            sqlx::query(
-                "INSERT OR IGNORE INTO image_mappings (remote_id, file_id) VALUES (?, ?)",
-            )
-            .bind(remote_id)
-            .bind(file_id)
-            .execute(pool)
-            .await?;
+            sqlx::query("INSERT OR IGNORE INTO image_mappings (remote_id, file_id) VALUES (?, ?)")
+                .bind(remote_id)
+                .bind(file_id)
+                .execute(pool)
+                .await?;
         }
         DbPool::Postgres(pool) => {
             sqlx::query(
@@ -446,11 +444,7 @@ async fn save_mapping(db: &DbPool, remote_id: &str, file_id: &str) -> Result<(),
 }
 
 /// 标记任务为 forwarded
-async fn mark_task_forwarded(
-    db: &DbPool,
-    task_id: i64,
-    file_id: &str,
-) -> Result<(), AppError> {
+async fn mark_task_forwarded(db: &DbPool, task_id: i64, file_id: &str) -> Result<(), AppError> {
     match db {
         DbPool::Sqlite(pool) => {
             sqlx::query(
@@ -505,39 +499,33 @@ async fn mark_task_failed(db: &DbPool, task_id: i64, error: &str) -> Result<(), 
 pub async fn queue_status(db: &DbPool) -> Result<serde_json::Value, AppError> {
     let (pending, forwarded, failed) = match db {
         DbPool::Sqlite(pool) => {
-            let pending: (i64,) = sqlx::query_as(
-                "SELECT COUNT(*) FROM forward_tasks WHERE status = 'pending'",
-            )
-            .fetch_one(pool)
-            .await?;
-            let forwarded: (i64,) = sqlx::query_as(
-                "SELECT COUNT(*) FROM forward_tasks WHERE status = 'forwarded'",
-            )
-            .fetch_one(pool)
-            .await?;
-            let failed: (i64,) = sqlx::query_as(
-                "SELECT COUNT(*) FROM forward_tasks WHERE status = 'failed'",
-            )
-            .fetch_one(pool)
-            .await?;
+            let pending: (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM forward_tasks WHERE status = 'pending'")
+                    .fetch_one(pool)
+                    .await?;
+            let forwarded: (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM forward_tasks WHERE status = 'forwarded'")
+                    .fetch_one(pool)
+                    .await?;
+            let failed: (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM forward_tasks WHERE status = 'failed'")
+                    .fetch_one(pool)
+                    .await?;
             (pending.0, forwarded.0, failed.0)
         }
         DbPool::Postgres(pool) => {
-            let pending: (i64,) = sqlx::query_as(
-                "SELECT COUNT(*) FROM forward_tasks WHERE status = 'pending'",
-            )
-            .fetch_one(pool)
-            .await?;
-            let forwarded: (i64,) = sqlx::query_as(
-                "SELECT COUNT(*) FROM forward_tasks WHERE status = 'forwarded'",
-            )
-            .fetch_one(pool)
-            .await?;
-            let failed: (i64,) = sqlx::query_as(
-                "SELECT COUNT(*) FROM forward_tasks WHERE status = 'failed'",
-            )
-            .fetch_one(pool)
-            .await?;
+            let pending: (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM forward_tasks WHERE status = 'pending'")
+                    .fetch_one(pool)
+                    .await?;
+            let forwarded: (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM forward_tasks WHERE status = 'forwarded'")
+                    .fetch_one(pool)
+                    .await?;
+            let failed: (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM forward_tasks WHERE status = 'failed'")
+                    .fetch_one(pool)
+                    .await?;
             (pending.0, forwarded.0, failed.0)
         }
     };

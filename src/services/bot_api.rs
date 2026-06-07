@@ -107,8 +107,8 @@ pub async fn validate_token(token: &str, proxy_url: Option<&str>) -> Result<BotI
         return Err(AppError::BadRequest("Bot Token 无效".to_string()));
     }
 
-    let api_resp: BotApiResponse<BotInfo> =
-        serde_json::from_str(&body).map_err(|e| AppError::Internal(format!("解析响应失败: {e}")))?;
+    let api_resp: BotApiResponse<BotInfo> = serde_json::from_str(&body)
+        .map_err(|e| AppError::Internal(format!("解析响应失败: {e}")))?;
 
     if !api_resp.ok {
         let desc = api_resp.description.unwrap_or_default();
@@ -153,12 +153,14 @@ pub async fn send_photo(
         .await
         .map_err(|e| AppError::Internal(format!("sendPhoto 请求失败: {e}")))?;
 
-    handle_bot_response::<BotMessage>(resp, "sendPhoto").await.map(|msg| {
-        // 取最大的图片 file_id（最后一个是最大尺寸）
-        msg.photo
-            .and_then(|sizes| sizes.last().map(|s| s.file_id.clone()))
-            .ok_or_else(|| AppError::Internal("sendPhoto 响应无 photo 数据".to_string()))
-    })?
+    handle_bot_response::<BotMessage>(resp, "sendPhoto")
+        .await
+        .map(|msg| {
+            // 取最大的图片 file_id（最后一个是最大尺寸）
+            msg.photo
+                .and_then(|sizes| sizes.last().map(|s| s.file_id.clone()))
+                .ok_or_else(|| AppError::Internal("sendPhoto 响应无 photo 数据".to_string()))
+        })?
 }
 
 /// 通过 Bot API getFile + 文件下载获取图片二进制数据
@@ -224,10 +226,7 @@ async fn handle_bot_response<T: serde::de::DeserializeOwned>(
             error_code: None,
             parameters: None,
         });
-        let retry_after = api_resp
-            .parameters
-            .and_then(|p| p.retry_after)
-            .unwrap_or(5);
+        let retry_after = api_resp.parameters.and_then(|p| p.retry_after).unwrap_or(5);
         return Err(AppError::Internal(format!(
             "FLOOD_WAIT: {method} 请求频率过高，需等待 {retry_after} 秒"
         )));
@@ -238,8 +237,8 @@ async fn handle_bot_response<T: serde::de::DeserializeOwned>(
         .await
         .map_err(|e| AppError::Internal(format!("读取响应失败: {e}")))?;
 
-    let api_resp: BotApiResponse<T> =
-        serde_json::from_str(&body).map_err(|e| AppError::Internal(format!("解析响应失败: {e}")))?;
+    let api_resp: BotApiResponse<T> = serde_json::from_str(&body)
+        .map_err(|e| AppError::Internal(format!("解析响应失败: {e}")))?;
 
     if !api_resp.ok {
         let desc = api_resp.description.unwrap_or_default();
@@ -328,10 +327,7 @@ struct BotUpdate {
 }
 
 /// 获取 Bot 所在的群组/频道列表（通过 getUpdates 提取最近活跃的聊天）
-pub async fn get_bot_chats(
-    token: &str,
-    proxy_url: Option<&str>,
-) -> Result<Vec<BotChat>, AppError> {
+pub async fn get_bot_chats(token: &str, proxy_url: Option<&str>) -> Result<Vec<BotChat>, AppError> {
     let client = build_client(proxy_url)?;
     let url = bot_api_url(token, "getUpdates");
 
@@ -379,26 +375,19 @@ pub async fn get_bot_chats(
         if let Some(member_update) = update.my_chat_member {
             if let Some(chat_obj) = member_update.get("chat") {
                 let chat_id = chat_obj.get("id").and_then(|v| v.as_i64());
-                let chat_type = chat_obj
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let chat_type = chat_obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 let chat_title = chat_obj
                     .get("title")
                     .or(chat_obj.get("username"))
                     .and_then(|v| v.as_str());
 
                 if let Some(id) = chat_id {
-                    if (chat_type == "group"
-                        || chat_type == "supergroup"
-                        || chat_type == "channel")
+                    if (chat_type == "group" || chat_type == "supergroup" || chat_type == "channel")
                         && seen.insert(id)
                     {
                         chats.push(BotChat {
                             id,
-                            title: chat_title
-                                .unwrap_or(&format!("Chat {}", id))
-                                .to_string(),
+                            title: chat_title.unwrap_or(&format!("Chat {}", id)).to_string(),
                             chat_type: chat_type.to_string(),
                         });
                     }
@@ -420,9 +409,7 @@ async fn handle_bot_response_raw<T: serde::de::DeserializeOwned>(
 
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
         let _body = resp.text().await.unwrap_or_default();
-        return Err(AppError::Internal(format!(
-            "FLOOD_WAIT: 请求频率过高"
-        )));
+        return Err(AppError::Internal(format!("FLOOD_WAIT: 请求频率过高")));
     }
 
     let body = resp
@@ -430,6 +417,5 @@ async fn handle_bot_response_raw<T: serde::de::DeserializeOwned>(
         .await
         .map_err(|e| AppError::Internal(format!("读取响应失败: {e}")))?;
 
-    serde_json::from_str(&body)
-        .map_err(|e| AppError::Internal(format!("解析响应失败: {e}")))
+    serde_json::from_str(&body).map_err(|e| AppError::Internal(format!("解析响应失败: {e}")))
 }

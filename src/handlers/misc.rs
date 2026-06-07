@@ -10,10 +10,11 @@ pub async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
                 .fetch_one(pool)
                 .await
                 .unwrap_or(0);
-            let active: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM clients WHERE status = 'active'")
-                .fetch_one(pool)
-                .await
-                .unwrap_or(0);
+            let active: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM clients WHERE status = 'active'")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0);
             (total, active)
         }
         crate::state::DbPool::Postgres(pool) => {
@@ -21,10 +22,11 @@ pub async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
                 .fetch_one(pool)
                 .await
                 .unwrap_or(0);
-            let active: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM clients WHERE status = 'active'")
-                .fetch_one(pool)
-                .await
-                .unwrap_or(0);
+            let active: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM clients WHERE status = 'active'")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0);
             (total, active)
         }
     };
@@ -45,10 +47,11 @@ pub async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
                     .fetch_one(pool)
                     .await
                     .unwrap_or(0);
-                let ca: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM collectors WHERE enabled = 1")
-                    .fetch_one(pool)
-                    .await
-                    .unwrap_or(0);
+                let ca: i64 =
+                    sqlx::query_scalar("SELECT COUNT(*) FROM collectors WHERE enabled = 1")
+                        .fetch_one(pool)
+                        .await
+                        .unwrap_or(0);
                 (rt, ra, ct, ca)
             }
             crate::state::DbPool::Postgres(pool) => {
@@ -64,10 +67,11 @@ pub async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
                     .fetch_one(pool)
                     .await
                     .unwrap_or(0);
-                let ca: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM collectors WHERE enabled = true")
-                    .fetch_one(pool)
-                    .await
-                    .unwrap_or(0);
+                let ca: i64 =
+                    sqlx::query_scalar("SELECT COUNT(*) FROM collectors WHERE enabled = true")
+                        .fetch_one(pool)
+                        .await
+                        .unwrap_or(0);
                 (rt, ra, ct, ca)
             }
         };
@@ -79,7 +83,10 @@ pub async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
     // 调度器状态
     let extract_sched = state.extract_scheduler.read().await;
     let extract_next_run = if extract_sched.running {
-        let elapsed = extract_sched.last_run_at.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+        let elapsed = extract_sched
+            .last_run_at
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(0);
         let next_secs = (extract_sched.interval_minutes * 60).saturating_sub(elapsed);
         Some(
             (chrono::Local::now() + chrono::Duration::seconds(next_secs as i64))
@@ -93,7 +100,10 @@ pub async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
 
     let push_sched = state.scheduler.read().await;
     let push_next_run = if push_sched.running {
-        let elapsed = push_sched.last_run_at.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+        let elapsed = push_sched
+            .last_run_at
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(0);
         let next_secs = (push_sched.interval_minutes * 60).saturating_sub(elapsed);
         Some(
             (chrono::Local::now() + chrono::Duration::seconds(next_secs as i64))

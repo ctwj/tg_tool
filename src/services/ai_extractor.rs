@@ -426,7 +426,10 @@ pub async fn ai_extract_batch(
 
     let (custom_prompt, proxy_enabled, proxy_url) = {
         let cache = option_cache.read().await;
-        let prompt = cache.get("push_ai_prompt").cloned().filter(|p| !p.is_empty());
+        let prompt = cache
+            .get("push_ai_prompt")
+            .cloned()
+            .filter(|p| !p.is_empty());
         let enabled = cache
             .get("push_ai_use_proxy")
             .map(|v| v == "1" || v == "true")

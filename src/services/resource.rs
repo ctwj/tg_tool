@@ -7,8 +7,8 @@ use crate::models::extracted_resource::{
 use crate::services::ai_extractor;
 use crate::services::extractor;
 use crate::state::{DbPool, OptionCache};
-use serde_json::json;
 use futures::StreamExt;
+use serde_json::json;
 
 /// 提取结果
 #[derive(Debug, serde::Serialize)]
@@ -52,7 +52,13 @@ pub async fn trigger_extraction(
     let option_cache = &state.option_cache;
 
     // 1. 查找未提取的 collector_histories（通过 is_extracted 标记）
-    let histories: Vec<(i64, Option<String>, Option<String>, Option<i64>, Option<i64>)> = match db {
+    let histories: Vec<(
+        i64,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+    )> = match db {
         DbPool::Sqlite(pool) => {
             sqlx::query_as(
                 "SELECT id, raw_data, remote_id, channel_id, message_id \
@@ -99,7 +105,9 @@ pub async fn trigger_extraction(
 
     tracing::info!(
         "开始并发资源提取: total={}, concurrency={}, mode={}",
-        total_scanned, concurrency, extract_mode
+        total_scanned,
+        concurrency,
+        extract_mode
     );
 
     // 2. 并发处理每条记录
@@ -117,10 +125,17 @@ pub async fn trigger_extraction(
             let extract_mode = extract_mode_clone.clone();
             async move {
                 process_single_record_for_batch(
-                    &db, &option_cache, &state,
-                    history_id, raw_data, remote_id, ch_id, msg_id,
+                    &db,
+                    &option_cache,
+                    &state,
+                    history_id,
+                    raw_data,
+                    remote_id,
+                    ch_id,
+                    msg_id,
                     &extract_mode,
-                ).await
+                )
+                .await
             }
         })
         .buffer_unordered(concurrency)
@@ -142,7 +157,11 @@ pub async fn trigger_extraction(
 
     tracing::info!(
         "并发资源提取完成: scanned={}, extracted={}, skipped={}, deduped={}, errors={}",
-        total_scanned, extracted, skipped, deduped, errors
+        total_scanned,
+        extracted,
+        skipped,
+        deduped,
+        errors
     );
 
     Ok(ExtractionResult {
@@ -281,7 +300,9 @@ async fn process_single_record_for_batch(
                 let first = final_drafts.first();
                 let title = first.map(|d| d.title.as_str());
                 let description = first.map(|d| d.description.as_str());
-                let link = first.map(|d| d.url.join(",").to_string()).filter(|s| !s.is_empty());
+                let link = first
+                    .map(|d| d.url.join(",").to_string())
+                    .filter(|s| !s.is_empty());
                 if let Err(e) = crate::services::forward_queue::enqueue(
                     state,
                     rid,
@@ -507,7 +528,7 @@ async fn insert_resource(db: &DbPool, r: &NewExtractedResource) -> Result<bool, 
             DbPool::Sqlite(pool) => {
                 // 按 share_ids 数量过滤，避免误匹配
                 let count: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM extracted_resources WHERE share_ids = ?"
+                    "SELECT COUNT(*) FROM extracted_resources WHERE share_ids = ?",
                 )
                 .bind(&my_fingerprint)
                 .fetch_one(pool)
@@ -517,7 +538,7 @@ async fn insert_resource(db: &DbPool, r: &NewExtractedResource) -> Result<bool, 
             }
             DbPool::Postgres(pool) => {
                 let count: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM extracted_resources WHERE share_ids = $1"
+                    "SELECT COUNT(*) FROM extracted_resources WHERE share_ids = $1",
                 )
                 .bind(&my_fingerprint)
                 .fetch_one(pool)

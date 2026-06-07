@@ -30,46 +30,46 @@ pub async fn handle_new_message(
 
     // 1. Match active forwarding rules (skip outgoing to avoid loops)
     if !outgoing {
-    // forwarding rules matching
-    let rules = match db {
-        crate::state::DbPool::Sqlite(pool) => {
-            let rows: Vec<(i64, String, String, Option<String>)> = sqlx::query_as(
+        // forwarding rules matching
+        let rules = match db {
+            crate::state::DbPool::Sqlite(pool) => {
+                let rows: Vec<(i64, String, String, Option<String>)> = sqlx::query_as(
                 "SELECT id, forward_method, forward_target, forward_config FROM rules WHERE source_chat_id = ? AND is_active = 1",
             )
             .bind(chat_id)
             .fetch_all(pool)
             .await
             .unwrap_or_default();
-            rows
-        }
-        crate::state::DbPool::Postgres(pool) => {
-            let rows: Vec<(i64, String, String, Option<String>)> = sqlx::query_as(
+                rows
+            }
+            crate::state::DbPool::Postgres(pool) => {
+                let rows: Vec<(i64, String, String, Option<String>)> = sqlx::query_as(
                 "SELECT id, forward_method, forward_target, forward_config FROM rules WHERE source_chat_id = $1 AND is_active = true",
             )
             .bind(chat_id)
             .fetch_all(pool)
             .await
             .unwrap_or_default();
-            rows
-        }
-    };
+                rows
+            }
+        };
 
-    for (rule_id, method, target, config) in &rules {
-        if let Err(e) = crate::services::forwarder::forward_message(
-            *rule_id,
-            method,
-            target,
-            config.as_deref(),
-            text,
-            tg_clients,
-            peer_cache,
-            db,
-        )
-        .await
-        {
-            tracing::warn!("Forward failed for rule {}: {e}", rule_id);
+        for (rule_id, method, target, config) in &rules {
+            if let Err(e) = crate::services::forwarder::forward_message(
+                *rule_id,
+                method,
+                target,
+                config.as_deref(),
+                text,
+                tg_clients,
+                peer_cache,
+                db,
+            )
+            .await
+            {
+                tracing::warn!("Forward failed for rule {}: {e}", rule_id);
+            }
         }
-    }
     } // end if !outgoing
 
     // 2. Match active collectors (collect ALL messages including outgoing)

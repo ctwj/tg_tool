@@ -142,12 +142,8 @@ async fn download_via_bot_api(
     };
 
     // 通过 Bot API getFile 下载
-    let data = crate::services::bot_api::get_file(
-        &bot_token,
-        &file_id,
-        proxy_url.as_deref(),
-    )
-    .await?;
+    let data =
+        crate::services::bot_api::get_file(&bot_token, &file_id, proxy_url.as_deref()).await?;
 
     if data.is_empty() {
         return Err(AppError::NotFound("图片数据为空".to_string()));

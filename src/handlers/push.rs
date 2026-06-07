@@ -194,7 +194,10 @@ pub async fn update_scheduler(
 
     let sched = state.scheduler.read().await;
     let next_run = if sched.running {
-        let elapsed = sched.last_run_at.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+        let elapsed = sched
+            .last_run_at
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(0);
         let remaining = sched.interval_minutes * 60;
         let next_secs = remaining.saturating_sub(elapsed);
         Some(chrono::Local::now() + chrono::Duration::seconds(next_secs as i64))
