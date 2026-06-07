@@ -41,6 +41,41 @@ pub async fn add_client(
     let phone = body.get("phone").and_then(|v| v.as_str()).unwrap_or("");
     let token = body.get("token").and_then(|v| v.as_str()).unwrap_or("");
 
+    // Bot 类型：验证 token 并直接设为 active
+    if client_type == "Bot" {
+        if token.is_empty() {
+            return Err(AppError::BadRequest("Bot 类型客户端必须提供 Token".to_string()));
+        }
+
+        let proxy_url = state.http_proxy_url().await;
+        let proxy_url = if proxy_url.is_none() {
+            state.proxy_url().await
+        } else {
+            proxy_url
+        };
+
+        let _bot_info = crate::services::bot_api::validate_token(
+            token,
+            proxy_url.as_deref(),
+        )
+        .await?;
+
+        // 直接插入为 active 状态（Bot 不需要认证流程）
+        match &state.db {
+            crate::state::DbPool::Sqlite(pool) => {
+                sqlx::query("INSERT INTO clients (id, user_id, client_type, phone, token, status) VALUES (?, ?, ?, ?, ?, 'active')")
+                    .bind(&id).bind(user.id).bind(client_type).bind(phone).bind(token)
+                    .execute(pool).await?;
+            }
+            crate::state::DbPool::Postgres(pool) => {
+                sqlx::query("INSERT INTO clients (id, user_id, client_type, phone, token, status) VALUES ($1, $2, $3, $4, $5, 'active')")
+                    .bind(&id).bind(user.id).bind(client_type).bind(phone).bind(token)
+                    .execute(pool).await?;
+            }
+        }
+        return Ok(Json(json!({ "success": true, "data": { "id": id, "client_type": "Bot" } })));
+    }
+
     match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
             sqlx::query("INSERT INTO clients (id, user_id, client_type, phone, token, status) VALUES (?, ?, ?, ?, ?, 'new')")
@@ -233,4 +268,124 @@ pub async fn get_chats(
 ) -> Result<Json<Value>, AppError> {
     let chats = crate::services::tg_api::get_chat_list(&id, &state.tg_clients).await?;
     Ok(Json(json!({ "success": true, "data": { "chats": chats } })))
+}
+
+/// GET /api/clients/{id}/bot-chats — 获取 Bot 所在的群组/频道列表
+pub async fn get_bot_chats(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    // 获取 Bot Token
+    let token = match &state.db {
+        crate::state::DbPool::Sqlite(pool) => {
+            let row: Option<(Option<String>, String)> = sqlx::query_as(
+                "SELECT token, client_type FROM clients WHERE id = ?",
+            )
+            .bind(&id)
+            .fetch_optional(pool)
+            .await?;
+            match row {
+                Some((Some(t), ct)) if ct == "Bot" => t,
+                Some((None, _)) => return Err(AppError::BadRequest("Bot Token 为空".to_string())),
+                Some((_, ct)) => return Err(AppError::BadRequest(format!("客户端类型不是 Bot: {ct}"))),
+                None => return Err(AppError::NotFound("客户端不存在".to_string())),
+            }
+        }
+        crate::state::DbPool::Postgres(pool) => {
+            let row: Option<(Option<String>, String)> = sqlx::query_as(
+                "SELECT token, client_type FROM clients WHERE id = $1",
+            )
+            .bind(&id)
+            .fetch_optional(pool)
+            .await?;
+            match row {
+                Some((Some(t), ct)) if ct == "Bot" => t,
+                Some((None, _)) => return Err(AppError::BadRequest("Bot Token 为空".to_string())),
+                Some((_, ct)) => return Err(AppError::BadRequest(format!("客户端类型不是 Bot: {ct}"))),
+                None => return Err(AppError::NotFound("客户端不存在".to_string())),
+            }
+        }
+    };
+
+    let proxy_url = state.http_proxy_url().await;
+    let proxy_url = if proxy_url.is_none() {
+        state.proxy_url().await
+    } else {
+        proxy_url
+    };
+
+    let chats = crate::services::bot_api::get_bot_chats(
+        &token,
+        proxy_url.as_deref(),
+    )
+    .await?;
+
+    Ok(Json(json!({ "success": true, "data": { "chats": chats } })))
+}
+
+/// POST /api/clients/{id}/validate-chat — 验证 Bot 是否有权限访问指定群组/频道
+pub async fn validate_bot_chat(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<Value>, AppError> {
+    let chat_id = body
+        .get("chat_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::BadRequest("缺少 chat_id 参数".to_string()))?;
+
+    // 获取 Bot Token（复用 get_bot_chats 的逻辑）
+    let token = match &state.db {
+        crate::state::DbPool::Sqlite(pool) => {
+            let row: Option<(Option<String>, String)> = sqlx::query_as(
+                "SELECT token, client_type FROM clients WHERE id = ?",
+            )
+            .bind(&id)
+            .fetch_optional(pool)
+            .await?;
+            match row {
+                Some((Some(t), ct)) if ct == "Bot" => t,
+                Some((None, _)) => return Err(AppError::BadRequest("Bot Token 为空".to_string())),
+                Some((_, ct)) => return Err(AppError::BadRequest(format!("客户端类型不是 Bot: {ct}"))),
+                None => return Err(AppError::NotFound("客户端不存在".to_string())),
+            }
+        }
+        crate::state::DbPool::Postgres(pool) => {
+            let row: Option<(Option<String>, String)> = sqlx::query_as(
+                "SELECT token, client_type FROM clients WHERE id = $1",
+            )
+            .bind(&id)
+            .fetch_optional(pool)
+            .await?;
+            match row {
+                Some((Some(t), ct)) if ct == "Bot" => t,
+                Some((None, _)) => return Err(AppError::BadRequest("Bot Token 为空".to_string())),
+                Some((_, ct)) => return Err(AppError::BadRequest(format!("客户端类型不是 Bot: {ct}"))),
+                None => return Err(AppError::NotFound("客户端不存在".to_string())),
+            }
+        }
+    };
+
+    let proxy_url = state.http_proxy_url().await;
+    let proxy_url = if proxy_url.is_none() {
+        state.proxy_url().await
+    } else {
+        proxy_url
+    };
+
+    let chat = crate::services::bot_api::validate_chat(
+        &token,
+        chat_id,
+        proxy_url.as_deref(),
+    )
+    .await?;
+
+    Ok(Json(json!({
+        "success": true,
+        "data": {
+            "id": chat.id,
+            "title": chat.title,
+            "type": chat.chat_type,
+        }
+    })))
 }

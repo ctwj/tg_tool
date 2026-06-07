@@ -8,6 +8,7 @@ use crate::services::ai_extractor;
 use crate::services::extractor;
 use crate::state::{DbPool, OptionCache};
 use serde_json::json;
+use futures::StreamExt;
 
 /// 提取结果
 #[derive(Debug, serde::Serialize)]
@@ -32,17 +33,29 @@ pub struct PaginationInfo {
     pub total: i64,
 }
 
+/// 从 option_cache 读取 AI 并发数（默认 5，范围 1-10）
+async fn get_ai_concurrency(option_cache: &OptionCache) -> usize {
+    let cache = option_cache.read().await;
+    let val = cache
+        .get("ai_concurrency")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(5);
+    val.clamp(1, 10)
+}
+
 /// 触发资源提取 — 扫描未提取的采集历史，调用 extractor 提取
 pub async fn trigger_extraction(
-    db: &DbPool,
-    option_cache: &OptionCache,
+    state: &crate::state::AppState,
     batch_size: i64,
 ) -> Result<ExtractionResult, AppError> {
+    let db = &state.db;
+    let option_cache = &state.option_cache;
+
     // 1. 查找未提取的 collector_histories（通过 is_extracted 标记）
-    let histories: Vec<(i64, Option<String>, Option<String>)> = match db {
+    let histories: Vec<(i64, Option<String>, Option<String>, Option<i64>, Option<i64>)> = match db {
         DbPool::Sqlite(pool) => {
             sqlx::query_as(
-                "SELECT id, raw_data, remote_id \
+                "SELECT id, raw_data, remote_id, channel_id, message_id \
                  FROM collector_histories \
                  WHERE is_extracted = 0 AND raw_data IS NOT NULL \
                  LIMIT ?",
@@ -53,7 +66,7 @@ pub async fn trigger_extraction(
         }
         DbPool::Postgres(pool) => {
             sqlx::query_as(
-                "SELECT id, raw_data, remote_id \
+                "SELECT id, raw_data, remote_id, channel_id, message_id \
                  FROM collector_histories \
                  WHERE is_extracted = false AND raw_data IS NOT NULL \
                  LIMIT $1",
@@ -65,12 +78,16 @@ pub async fn trigger_extraction(
     };
 
     let total_scanned = histories.len() as i64;
-    let mut extracted = 0i64;
-    let mut skipped = 0i64;
-    let mut errors = 0i64;
-    let mut deduped = 0i64;
+    if total_scanned == 0 {
+        return Ok(ExtractionResult {
+            total_scanned: 0,
+            extracted: 0,
+            skipped: 0,
+            errors: 0,
+        });
+    }
 
-    // 读取提取模式
+    // 读取提取模式和并发数
     let extract_mode = {
         let cache = option_cache.read().await;
         cache
@@ -78,96 +95,54 @@ pub async fn trigger_extraction(
             .cloned()
             .unwrap_or_else(|| "rule".to_string())
     };
+    let concurrency = get_ai_concurrency(option_cache).await;
 
-    for (history_id, raw_data, remote_id) in &histories {
-        let raw_text = match raw_data {
-            Some(r) => {
-                // 尝试从 JSON 中提取 text 字段
-                if let Ok(msg) = serde_json::from_str::<serde_json::Value>(r) {
-                    msg.get("text")
-                        .and_then(|t| t.as_str())
-                        .unwrap_or(r)
-                        .to_string()
-                } else {
-                    r.clone()
-                }
+    tracing::info!(
+        "开始并发资源提取: total={}, concurrency={}, mode={}",
+        total_scanned, concurrency, extract_mode
+    );
+
+    // 2. 并发处理每条记录
+    // 使用 buffered_unordered 自动维护固定并发窗口
+    let db_clone = db.clone();
+    let option_cache_clone = option_cache.clone();
+    let state_clone = state.clone();
+    let extract_mode_clone = extract_mode.clone();
+
+    let results: Vec<RecordResult> = futures::stream::iter(histories)
+        .map(|(history_id, raw_data, remote_id, ch_id, msg_id)| {
+            let db = db_clone.clone();
+            let option_cache = option_cache_clone.clone();
+            let state = state_clone.clone();
+            let extract_mode = extract_mode_clone.clone();
+            async move {
+                process_single_record_for_batch(
+                    &db, &option_cache, &state,
+                    history_id, raw_data, remote_id, ch_id, msg_id,
+                    &extract_mode,
+                ).await
             }
-            None => continue,
-        };
+        })
+        .buffer_unordered(concurrency)
+        .collect()
+        .await;
 
-        // 规则提取
-        let drafts = extractor::extract_resources(&raw_text);
-        if drafts.is_empty() {
-            skipped += 1;
-            mark_extracted(db, *history_id).await?;
-            continue;
-        }
+    // 3. 汇总结果
+    let mut extracted = 0i64;
+    let mut skipped = 0i64;
+    let mut errors = 0i64;
+    let mut deduped = 0i64;
 
-        for draft in drafts {
-            // 封面 photo_id
-            let img = remote_id
-                .as_deref()
-                .filter(|rid| !rid.is_empty())
-                .map(|rid| rid.to_string())
-                .unwrap_or_default();
-
-            // AI 增强模式
-            let (final_draft, mode) = if extract_mode == "ai" {
-                let enhanced = ai_extractor::ai_extract(&raw_text, &draft, option_cache).await;
-                (enhanced, "ai".to_string())
-            } else {
-                (draft, "rule".to_string())
-            };
-
-            let new_resource = NewExtractedResource {
-                collector_history_id: *history_id,
-                title: final_draft.title,
-                url: if final_draft.url.is_empty() {
-                    None
-                } else {
-                    Some(final_draft.url.join(","))
-                },
-                description: if final_draft.description.is_empty() {
-                    None
-                } else {
-                    Some(final_draft.description)
-                },
-                category: if final_draft.category.is_empty() {
-                    None
-                } else {
-                    Some(final_draft.category)
-                },
-                tags: if final_draft.tags.is_empty() {
-                    None
-                } else {
-                    Some(final_draft.tags)
-                },
-                img: if img.is_empty() { None } else { Some(img) },
-                source: "tg".to_string(),
-                extra: None,
-                extract_mode: mode,
-            };
-
-            match insert_resource(db, &new_resource).await {
-                Ok(true) => extracted += 1,
-                Ok(false) => deduped += 1, // URL 重复，跳过
-                Err(e) => {
-                    tracing::warn!("插入资源失败 (history_id={}): {e}", history_id);
-                    errors += 1;
-                }
-            }
-        }
-        // 标记该历史记录为已提取（无论是否有资源）
-        mark_extracted(db, *history_id).await?;
+    for r in &results {
+        extracted += r.extracted;
+        skipped += r.skipped;
+        errors += r.errors;
+        deduped += r.deduped;
     }
 
     tracing::info!(
-        "资源提取完成: scanned={}, extracted={}, skipped={}, deduped={}, errors={}",
-        total_scanned,
-        extracted,
-        skipped,
-        deduped,
-        errors
+        "并发资源提取完成: scanned={}, extracted={}, skipped={}, deduped={}, errors={}",
+        total_scanned, extracted, skipped, deduped, errors
     );
 
     Ok(ExtractionResult {
@@ -176,6 +151,161 @@ pub async fn trigger_extraction(
         skipped: skipped + deduped,
         errors,
     })
+}
+
+/// 单条记录并发处理结果
+struct RecordResult {
+    extracted: i64,
+    skipped: i64,
+    errors: i64,
+    deduped: i64,
+}
+
+/// 并发处理单条记录（错误隔离：单条失败不影响其他记录）
+async fn process_single_record_for_batch(
+    db: &DbPool,
+    option_cache: &OptionCache,
+    state: &crate::state::AppState,
+    history_id: i64,
+    raw_data: Option<String>,
+    remote_id: Option<String>,
+    ch_id: Option<i64>,
+    msg_id: Option<i64>,
+    extract_mode: &str,
+) -> RecordResult {
+    let mut result = RecordResult {
+        extracted: 0,
+        skipped: 0,
+        errors: 0,
+        deduped: 0,
+    };
+
+    let raw_text = match raw_data {
+        Some(ref r) => {
+            // 尝试从 JSON 中提取 text 字段
+            if let Ok(msg) = serde_json::from_str::<serde_json::Value>(r) {
+                msg.get("text")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or(r)
+                    .to_string()
+            } else {
+                r.clone()
+            }
+        }
+        None => {
+            // 无内容，标记已提取并跳过
+            let _ = mark_extracted(db, history_id).await;
+            result.skipped += 1;
+            return result;
+        }
+    };
+
+    // 规则提取
+    let rule_drafts = extractor::extract_resources(&raw_text);
+    if rule_drafts.is_empty() {
+        result.skipped += 1;
+        if let Err(e) = mark_extracted(db, history_id).await {
+            tracing::warn!("[record-{}] 标记已提取失败: {e}", history_id);
+        }
+        return result;
+    }
+
+    // AI 模式：一次批量调用；规则模式：直接用规则结果
+    let final_drafts = if extract_mode == "ai" {
+        ai_extractor::ai_extract_batch(&raw_text, &rule_drafts, option_cache).await
+    } else {
+        rule_drafts
+    };
+
+    tracing::info!(
+        "[record-{}] 提取到 {} 条资源 (mode={})",
+        history_id,
+        final_drafts.len(),
+        extract_mode
+    );
+
+    for draft in &final_drafts {
+        let img = remote_id
+            .as_deref()
+            .filter(|rid| !rid.is_empty())
+            .map(|rid| rid.to_string())
+            .unwrap_or_default();
+
+        let mode = if extract_mode == "ai" { "ai" } else { "rule" };
+        let new_resource = NewExtractedResource {
+            collector_history_id: history_id,
+            title: draft.title.clone(),
+            url: if draft.url.is_empty() {
+                None
+            } else {
+                Some(draft.url.join(","))
+            },
+            description: if draft.description.is_empty() {
+                None
+            } else {
+                Some(draft.description.clone())
+            },
+            category: if draft.category.is_empty() {
+                None
+            } else {
+                Some(draft.category.clone())
+            },
+            tags: if draft.tags.is_empty() {
+                None
+            } else {
+                Some(draft.tags.clone())
+            },
+            img: if img.is_empty() { None } else { Some(img) },
+            source: "tg".to_string(),
+            extra: None,
+            extract_mode: mode.to_string(),
+        };
+
+        match insert_resource(db, &new_resource).await {
+            Ok(true) => result.extracted += 1,
+            Ok(false) => result.deduped += 1,
+            Err(e) => {
+                tracing::warn!("[record-{}] 插入资源失败: {e}", history_id);
+                result.errors += 1;
+            }
+        }
+    }
+
+    // 含图片资源入队转发
+    if let Some(rid) = &remote_id {
+        if !rid.is_empty() {
+            let has_photo = raw_data.as_ref().is_some_and(|rd| {
+                rd.contains("\"media_type\":\"photo\"") || rd.contains("\"photo_id\"")
+            });
+            if has_photo {
+                let first = final_drafts.first();
+                let title = first.map(|d| d.title.as_str());
+                let description = first.map(|d| d.description.as_str());
+                let link = first.map(|d| d.url.join(",").to_string()).filter(|s| !s.is_empty());
+                if let Err(e) = crate::services::forward_queue::enqueue(
+                    state,
+                    rid,
+                    ch_id,
+                    msg_id,
+                    title,
+                    description,
+                    link.as_deref(),
+                )
+                .await
+                {
+                    tracing::warn!("[record-{}] 图片转发入队失败: {e}", history_id);
+                }
+            }
+        }
+    }
+
+    // 标记已提取
+    if let Err(e) = mark_extracted(db, history_id).await {
+        tracing::warn!("[record-{}] 标记已提取失败: {e}", history_id);
+        result.errors += 1;
+    }
+
+    result
 }
 
 /// 标记采集历史为已提取
@@ -367,37 +497,38 @@ async fn insert_resource(db: &DbPool, r: &NewExtractedResource) -> Result<bool, 
         })
         .collect();
 
-    // 去重检查
+    // 去重检查：完整 URL 列表相同才判定为重复（不同资源可能共享部分链接）
     if !share_ids.is_empty() {
-        // 优先用 share_id 逐个查重
-        for sid in &share_ids {
-            let pattern = format!("%,{},%", sid);
-            let exists = match db {
-                DbPool::Sqlite(pool) => {
-                    let count: i64 = sqlx::query_scalar(
-                        "SELECT COUNT(*) FROM extracted_resources WHERE (',' || share_ids || ',') LIKE ?"
-                    )
-                    .bind(&pattern)
-                    .fetch_one(pool)
-                    .await
-                    .unwrap_or(0);
-                    count > 0
-                }
-                DbPool::Postgres(pool) => {
-                    let count: i64 = sqlx::query_scalar(
-                        "SELECT COUNT(*) FROM extracted_resources WHERE (',' || share_ids || ',') LIKE $1"
-                    )
-                    .bind(&pattern)
-                    .fetch_one(pool)
-                    .await
-                    .unwrap_or(0);
-                    count > 0
-                }
-            };
-            if exists {
-                tracing::debug!("资源去重跳过: share_id={}", sid);
-                return Ok(false);
+        // 所有 share_id 排序后拼接，与已有记录的 share_ids 做完整匹配
+        let mut sorted = share_ids.clone();
+        sorted.sort();
+        let my_fingerprint = sorted.join(",");
+        let exists = match db {
+            DbPool::Sqlite(pool) => {
+                // 按 share_ids 数量过滤，避免误匹配
+                let count: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM extracted_resources WHERE share_ids = ?"
+                )
+                .bind(&my_fingerprint)
+                .fetch_one(pool)
+                .await
+                .unwrap_or(0);
+                count > 0
             }
+            DbPool::Postgres(pool) => {
+                let count: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM extracted_resources WHERE share_ids = $1"
+                )
+                .bind(&my_fingerprint)
+                .fetch_one(pool)
+                .await
+                .unwrap_or(0);
+                count > 0
+            }
+        };
+        if exists {
+            tracing::debug!("资源去重跳过: share_ids={}", my_fingerprint);
+            return Ok(false);
         }
     } else if let Some(ref url) = r.url {
         // 无可识别 share_id 时，回退到 URL 全串比较
@@ -434,7 +565,10 @@ async fn insert_resource(db: &DbPool, r: &NewExtractedResource) -> Result<bool, 
     let share_ids_str = if share_ids.is_empty() {
         None
     } else {
-        Some(share_ids.join(","))
+        // 排序后存储，保证去重查询时 fingerprint 一致
+        let mut sorted = share_ids;
+        sorted.sort();
+        Some(sorted.join(","))
     };
 
     match db {

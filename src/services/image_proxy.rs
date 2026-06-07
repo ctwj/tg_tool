@@ -38,93 +38,6 @@ async fn get_cache_ttl(state: &AppState) -> u64 {
         .unwrap_or(7)
 }
 
-/// 获取指定 client_id 的 Telegram 客户端
-async fn get_client_by_id(
-    state: &AppState,
-    client_id: &str,
-) -> Result<grammers_client::Client, AppError> {
-    let clients = state.tg_clients.read().await;
-    clients
-        .get(client_id)
-        .and_then(|e| {
-            if e.status == "active" {
-                e.client.clone()
-            } else {
-                None
-            }
-        })
-        .ok_or_else(|| AppError::NotFound(format!("客户端 {client_id} 不可用")))
-}
-
-/// 获取第一个活跃的 Telegram 客户端
-async fn find_first_active_client(state: &AppState) -> Result<grammers_client::Client, AppError> {
-    let clients = state.tg_clients.read().await;
-    clients
-        .values()
-        .find(|e| e.status == "active" && e.client.is_some())
-        .and_then(|e| e.client.clone())
-        .ok_or_else(|| AppError::Internal("没有可用的客户端".into()))
-}
-
-/// 从 collector_histories 表查找 photo_id 对应的 (channel_id,)
-async fn find_channel_for_photo(state: &AppState, photo_id: &str) -> Result<Option<i64>, AppError> {
-    let row: Option<(i64,)> = match &state.db {
-        crate::state::DbPool::Sqlite(pool) => {
-            sqlx::query_as("SELECT channel_id FROM collector_histories WHERE remote_id = ? LIMIT 1")
-                .bind(photo_id)
-                .fetch_optional(pool)
-                .await
-        }
-        crate::state::DbPool::Postgres(pool) => {
-            sqlx::query_as(
-                "SELECT channel_id FROM collector_histories WHERE remote_id = $1 LIMIT 1",
-            )
-            .bind(photo_id)
-            .fetch_optional(pool)
-            .await
-        }
-    }
-    .map_err(|e| AppError::Internal(format!("查询图片频道失败: {e}")))?;
-    Ok(row.map(|(ch,)| ch))
-}
-
-/// 在指定频道中查找包含目标 photo_id 的消息 Media
-async fn find_photo_in_channel(
-    client: &grammers_client::Client,
-    photo_id: &str,
-    channel_id: i64,
-) -> Result<Option<grammers_client::types::Media>, AppError> {
-    // 解析频道 PackedChat
-    let mut dialogs = client.iter_dialogs();
-    let mut target_packed = None;
-    while let Ok(Some(dialog)) = dialogs.next().await {
-        if dialog.chat().id() == channel_id {
-            target_packed = Some(dialog.chat().pack());
-            break;
-        }
-    }
-    let packed = match target_packed {
-        Some(p) => p,
-        None => return Ok(None),
-    };
-
-    // 在频道中搜索包含目标 photo_id 的消息（最多搜索 100 条）
-    let mut messages = client.iter_messages(packed);
-    let mut searched = 0u32;
-    while let Ok(Some(msg)) = messages.next().await {
-        searched += 1;
-        if let Some(grammers_client::types::Media::Photo(photo)) = msg.media()
-            && format!("{}", photo.id()) == photo_id
-        {
-            return Ok(msg.media());
-        }
-        if searched >= 100 {
-            break;
-        }
-    }
-    Ok(None)
-}
-
 /// 计算数据的 ETag（SHA256 hex）
 fn compute_etag(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
@@ -133,9 +46,10 @@ fn compute_etag(data: &[u8]) -> String {
 }
 
 /// 主入口：根据 photo_id 和可选 client_id 提供图片数据
+/// 新流程：本地缓存 → image_mappings 查 file_id → Bot API getFile 下载
 /// 返回 (图片二进制数据, content_type, etag)
 pub async fn serve_image(
-    client_id: Option<&str>,
+    _client_id: Option<&str>,
     photo_id: &str,
     state: &AppState,
 ) -> Result<(Vec<u8>, String, String), AppError> {
@@ -176,8 +90,8 @@ pub async fn serve_image(
         .inflight_downloads
         .insert(photo_id.to_string(), Instant::now());
 
-    // 5. 执行下载
-    let result = download_and_cache(client_id, photo_id, state, &cache_path).await;
+    // 5. 通过 Bot API 下载
+    let result = download_via_bot_api(state, photo_id, &cache_path).await;
 
     // 6. 移除下载标记
     state.inflight_downloads.remove(photo_id);
@@ -185,43 +99,58 @@ pub async fn serve_image(
     result
 }
 
-/// 从 Telegram 下载图片并缓存到本地
-async fn download_and_cache(
-    client_id: Option<&str>,
-    photo_id: &str,
+/// 通过 Bot API getFile 下载图片
+async fn download_via_bot_api(
     state: &AppState,
+    photo_id: &str,
     cache_path: &Path,
 ) -> Result<(Vec<u8>, String, String), AppError> {
-    // 获取客户端：指定 client_id 或第一个活跃客户端
-    let client = match client_id {
-        Some(id) => get_client_by_id(state, id).await?,
-        None => find_first_active_client(state).await?,
+    // 读取图床配置
+    let (bot_token, proxy_url) = {
+        let cache = state.option_cache.read().await;
+        let bot_id = cache.get("ImageBotId").cloned().unwrap_or_default();
+
+        if bot_id.is_empty() {
+            return Err(AppError::Internal(
+                "请先配置图床 Bot 和图床群组".to_string(),
+            ));
+        }
+
+        let token = get_bot_token(state, &bot_id).await?;
+        let proxy = cache
+            .get("http_proxy_url")
+            .and_then(|v| if v.is_empty() { None } else { Some(v.clone()) })
+            .or_else(|| {
+                cache
+                    .get("proxy_url")
+                    .and_then(|v| if v.is_empty() { None } else { Some(v.clone()) })
+            });
+
+        (token, proxy)
     };
 
-    // 从 DB 查找 photo_id 对应的频道
-    let channel_id = find_channel_for_photo(state, photo_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("图片不存在".into()))?;
+    // 查 image_mappings 获取 file_id
+    let file_id = get_file_id_for_remote_id(&state.db, photo_id).await?;
+    let file_id = match file_id {
+        Some(fid) => fid,
+        None => {
+            // 没有映射记录，可能是图片还未转发
+            return Err(AppError::NotFound(
+                "图片尚未转发到图床，请等待转发队列处理".to_string(),
+            ));
+        }
+    };
 
-    // 在该频道中查找 photo_id 对应的消息
-    let media = find_photo_in_channel(&client, photo_id, channel_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("图片不存在".into()))?;
-
-    // 使用 iter_download 流式下载
-    let downloadable = grammers_client::types::Downloadable::Media(media);
-    let mut data = Vec::new();
-    let mut download = client.iter_download(&downloadable);
-    while let Some(chunk) = download
-        .next()
-        .await
-        .map_err(|e| AppError::Internal(format!("下载图片失败: {e}")))?
-    {
-        data.extend_from_slice(&chunk);
-    }
+    // 通过 Bot API getFile 下载
+    let data = crate::services::bot_api::get_file(
+        &bot_token,
+        &file_id,
+        proxy_url.as_deref(),
+    )
+    .await?;
 
     if data.is_empty() {
-        return Err(AppError::NotFound("图片不存在".into()));
+        return Err(AppError::NotFound("图片数据为空".to_string()));
     }
 
     // 写入本地缓存
@@ -231,10 +160,57 @@ async fn download_and_cache(
 
     let etag = compute_etag(&data);
     tracing::info!(
-        "图片下载完成并缓存: {} ({} bytes, client: {})",
+        "图片通过 Bot API 下载完成: {} ({} bytes)",
         photo_id,
-        data.len(),
-        client_id.unwrap_or("default")
+        data.len()
     );
     Ok((data, "image/jpeg".to_string(), etag))
+}
+
+/// 从 clients 表获取 Bot Token
+async fn get_bot_token(state: &AppState, bot_id: &str) -> Result<String, AppError> {
+    match &state.db {
+        crate::state::DbPool::Sqlite(pool) => {
+            let row: Option<(Option<String>,)> =
+                sqlx::query_as("SELECT token FROM clients WHERE id = ?")
+                    .bind(bot_id)
+                    .fetch_optional(pool)
+                    .await?;
+            row.and_then(|r| r.0)
+        }
+        crate::state::DbPool::Postgres(pool) => {
+            let row: Option<(Option<String>,)> =
+                sqlx::query_as("SELECT token FROM clients WHERE id = $1")
+                    .bind(bot_id)
+                    .fetch_optional(pool)
+                    .await?;
+            row.and_then(|r| r.0)
+        }
+    }
+    .ok_or_else(|| AppError::NotFound(format!("Bot 客户端不存在: {bot_id}")))
+}
+
+/// 查询 image_mappings 表获取 file_id
+async fn get_file_id_for_remote_id(
+    db: &crate::state::DbPool,
+    remote_id: &str,
+) -> Result<Option<String>, AppError> {
+    match db {
+        crate::state::DbPool::Sqlite(pool) => {
+            let row: Option<(String,)> =
+                sqlx::query_as("SELECT file_id FROM image_mappings WHERE remote_id = ?")
+                    .bind(remote_id)
+                    .fetch_optional(pool)
+                    .await?;
+            Ok(row.map(|r| r.0))
+        }
+        crate::state::DbPool::Postgres(pool) => {
+            let row: Option<(String,)> =
+                sqlx::query_as("SELECT file_id FROM image_mappings WHERE remote_id = $1")
+                    .bind(remote_id)
+                    .fetch_optional(pool)
+                    .await?;
+            Ok(row.map(|r| r.0))
+        }
+    }
 }

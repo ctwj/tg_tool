@@ -8,27 +8,37 @@ import { useTableScrollY } from '../hooks/useTableScroll'
 
 const { Text } = Typography
 
-const DEFAULT_AI_PROMPT = `你是一个专业的 Telegram 消息资源提取助手。请从以下 Telegram 消息中提取结构化资源信息，返回严格的 JSON 格式。
+const DEFAULT_AI_PROMPT = `从消息中提取网盘资源，每个链接一条记录，返回JSON数组。
 
-## 字段说明
-- "title": 资源名称标题，不包含链接、标签或特殊符号
-- "url": 网盘分享链接数组，只保留有效的网盘链接（忽略 t.me 等广告链接）
-- "description": 资源描述或亮点，从"描述："、"亮点："、"简介："等关键词提取，没有则留空
-- "category": 网盘类型，必须为以下之一：quark、aliyun、baidu、uc、115、123pan、tianyi、xunlei，无法识别则留空
-- "tags": 标签，逗号分隔，最多5个，去除#前缀
+格式: {"t":"标题","u":"链接","d":"描述","tags":"标签"}
 
-## 处理规则
-- 忽略 t.me 开头的广告推广链接
-- 如果消息中出现"名称："、"标题："、"资源名称："等关键词，提取其后的内容作为 title
-- 如果消息中没有明确标题，从内容中推断一个简短描述性的标题
-- 处理中英文混合和格式混乱的消息
+提取规则:
+- t(标题): 资源的真实名称。
+  - 必须去掉"名称："、"标题："等前缀关键词，只取后面的内容
+  - 必须去掉"通过百度网盘分享的文件："等分享模板前缀，只取实际资源名
+  - 优先从"名称："、"标题："后面提取；若没有，取消息第一行(去掉emoji和#标签)
+  - 绝不要把"资源介绍"、"描述"、"亮点"等关键词或其后面的内容当标题
+- u(链接): 完整网盘链接，如果有提取码，拼接到URL的pwd参数中，如 https://pan.baidu.com/s/x?pwd=ab
+  - 同一资源的多个网盘链接，每条链接一条记录(相同标题)
+  - 没有提取码的链接保持原样
+- d(描述): "描述："、"资源介绍："、"简介："、"亮点："等关键词后面的完整段落，无则填""
+  - 不要把"来自百度网盘超级会员V4的分享"等系统消息当描述
+- tags: 3-5个标签逗号分隔(去#前缀)，无则填""
+- 忽略t.me链接、广告群、推广链接、hi.keba.host等非网盘链接
+- 网盘链接域名包括: pan.quark.cn, pan.baidu.com, pan.xunlei.com, drive.uc.cn, pan.aliyun.com, 115cdn.com, cloud.189.cn, yun.139.com 等
 
-## 输出示例
-{"title":"某部电影 4K 蓝光版","url":["https://pan.quark.cn/s/abc123"],"description":"4K 蓝光高清版本，中英双字","category":"quark","tags":"电影,4K,蓝光"}
+示例:
+消息: "名称：电影A [4K]\\n描述：精彩动作片\\n链接：\\n夸克：https://pan.quark.cn/s/abc\\n百度：https://pan.baidu.com/s/def?pwd=1234"
+结果: [{"t":"电影A [4K]","u":"https://pan.quark.cn/s/abc","d":"精彩动作片","tags":"电影,4K"},{"t":"电影A [4K]","u":"https://pan.baidu.com/s/def?pwd=1234","d":"精彩动作片","tags":"电影,4K"}]
 
-只返回 JSON，不要包含任何其他文字。
+消息: "用Gemini生成写真教程\\n📝 资源介绍：详细教程\\n🔗 下载：https://pan.quark.cn/s/xyz"
+结果: [{"t":"用Gemini生成写真教程","u":"https://pan.quark.cn/s/xyz","d":"详细教程","tags":"AI,教程"}]
 
-消息内容：`
+消息: "通过百度网盘分享的文件：大新哥《教你玩转本地生活》\\n链接：https://pan.baidu.com/s/xxx?pwd=ab12\\n提取码：ab12"
+结果: [{"t":"大新哥《教你玩转本地生活》","u":"https://pan.baidu.com/s/xxx?pwd=ab12","d":"","tags":"教程,本地生活"}]
+
+消息:
+`
 
 const Resources: React.FC = () => {
   const [resources, setResources] = useState<ExtractedResource[]>([])
@@ -59,6 +69,7 @@ const Resources: React.FC = () => {
     ai_prompt: '',
     ai_use_proxy: false,
   })
+  const [nextRunAt, setNextRunAt] = useState<string | null>(null)
   const [extractSaving, setExtractSaving] = useState(false)
   const [configVisible, setConfigVisible] = useState(false)
   const [imageDomain, setImageDomain] = useState('')
@@ -161,13 +172,14 @@ const Resources: React.FC = () => {
   const saveExtractConfig = async () => {
     setExtractSaving(true)
     try {
-      await apiClient.put('/push/extract-config', {
+      const resp = await apiClient.put('/push/extract-config', {
         extract_mode: extractConfig.extract_mode,
         auto_extract: extractConfig.auto_extract ? '1' : '0',
         extract_interval: String(extractConfig.extract_interval),
         ai_prompt: extractConfig.ai_prompt,
         ai_use_proxy: extractConfig.ai_use_proxy ? '1' : '0',
       })
+      setNextRunAt(resp.data?.next_run_at || null)
       message.success('提取配置已保存')
       setConfigVisible(false)
     } catch (e: any) {
@@ -511,13 +523,20 @@ const Resources: React.FC = () => {
           {extractConfig.auto_extract && (
             <div style={{ marginBottom: 20 }}>
               <div style={{ marginBottom: 8, fontWeight: 500 }}>提取间隔（分钟）</div>
-              <InputNumber
-                min={5}
-                max={1440}
-                value={extractConfig.extract_interval}
-                onChange={v => setExtractConfig({ ...extractConfig, extract_interval: v || 30 })}
-                style={{ width: 200 }}
-              />
+              <Space>
+                <InputNumber
+                  min={5}
+                  max={1440}
+                  value={extractConfig.extract_interval}
+                  onChange={v => setExtractConfig({ ...extractConfig, extract_interval: v || 30 })}
+                  style={{ width: 200 }}
+                />
+                {nextRunAt && (
+                  <Tag color="blue" style={{ fontSize: 12 }}>
+                    下次执行: {nextRunAt}
+                  </Tag>
+                )}
+              </Space>
             </div>
           )}
 

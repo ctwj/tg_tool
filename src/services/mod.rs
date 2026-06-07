@@ -1,7 +1,9 @@
 pub mod ai_extractor;
+pub mod bot_api;
 pub mod collector;
 pub mod crypto;
 pub mod extractor;
+pub mod forward_queue;
 pub mod forwarder;
 pub mod image_proxy;
 pub mod message_handler;

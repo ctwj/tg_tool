@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { Card, Col, Row, Typography, Tag, Space, Button } from 'antd'
-import { ApiOutlined, SendOutlined, CloudDownloadOutlined, RocketOutlined, CheckCircleOutlined, CloseCircleOutlined, LinkOutlined } from '@ant-design/icons'
+import { ApiOutlined, SendOutlined, CloudDownloadOutlined, RocketOutlined, CheckCircleOutlined, LinkOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import apiClient from '../api/client'
 
@@ -11,6 +11,12 @@ interface DashboardData {
   rules: { total: number; active: number }
   collectors: { total: number; active: number }
   version: string
+  schedulers?: {
+    extract_running: boolean
+    extract_next_run: string | null
+    push_running: boolean
+    push_next_run: string | null
+  }
 }
 
 const Dashboard: React.FC = () => {
@@ -145,38 +151,43 @@ const Dashboard: React.FC = () => {
         </Col>
         <Col span={12}>
           <Card
-            title={<span style={{ fontWeight: 600, color: '#1e1b4b' }}>客户端状态</span>}
+            title={<span style={{ fontWeight: 600, color: '#1e1b4b' }}>调度任务</span>}
             style={{ borderRadius: 12 }}
             styles={{ body: { padding: '16px 24px' } }}
           >
             <Space direction="vertical" style={{ width: '100%' }} size={16}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <CheckCircleOutlined style={{ color: '#10b981', fontSize: 18 }} />
-                  <Text>在线</Text>
-                </div>
-                <Tag color="green" style={{ fontSize: 14, padding: '2px 12px', borderRadius: 6 }}>
-                  {data?.clients.active ?? 0}
-                </Tag>
+                <Space>
+                  <CloudDownloadOutlined style={{ color: '#06b6d4', fontSize: 18 }} />
+                  <Text strong>自动提取</Text>
+                </Space>
+                {data?.schedulers?.extract_running ? (
+                  <Tag color="green">运行中</Tag>
+                ) : (
+                  <Tag>未启用</Tag>
+                )}
               </div>
+              {data?.schedulers?.extract_running && data.schedulers.extract_next_run && (
+                <Text type="secondary" style={{ fontSize: 13 }}>
+                  下次执行: {data.schedulers.extract_next_run}
+                </Text>
+              )}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <CloseCircleOutlined style={{ color: '#ef4444', fontSize: 18 }} />
-                  <Text>离线</Text>
-                </div>
-                <Tag color="red" style={{ fontSize: 14, padding: '2px 12px', borderRadius: 6 }}>
-                  {(data?.clients.total ?? 0) - (data?.clients.active ?? 0)}
-                </Tag>
+                <Space>
+                  <RocketOutlined style={{ color: '#f59e0b', fontSize: 18 }} />
+                  <Text strong>自动推送</Text>
+                </Space>
+                {data?.schedulers?.push_running ? (
+                  <Tag color="green">运行中</Tag>
+                ) : (
+                  <Tag>未启用</Tag>
+                )}
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <ApiOutlined style={{ color: '#6366f1', fontSize: 18 }} />
-                  <Text>总客户端</Text>
-                </div>
-                <Tag color="purple" style={{ fontSize: 14, padding: '2px 12px', borderRadius: 6 }}>
-                  {data?.clients.total ?? 0}
-                </Tag>
-              </div>
+              {data?.schedulers?.push_running && data.schedulers.push_next_run && (
+                <Text type="secondary" style={{ fontSize: 13 }}>
+                  下次执行: {data.schedulers.push_next_run}
+                </Text>
+              )}
             </Space>
           </Card>
         </Col>

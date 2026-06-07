@@ -55,6 +55,71 @@ pub async fn extract_single(
     )
     .await?;
 
+    // 非 dry_run 时，尝试将含图片的资源入队转发
+    if !dry_run {
+        if let Some(resources) = result.get("data").and_then(|d| d.get("resources")).and_then(|r| r.as_array()) {
+            for res in resources {
+                // 从提取结果中获取标题和链接，从采集记录中已有 remote_id
+                let title = res.get("title").and_then(|v| v.as_str());
+                let link = res.get("url").and_then(|v| v.as_str());
+                // 获取 remote_id 和 channel_id/message_id
+                let (remote_id, ch_id, msg_id) = {
+                    match &state.db {
+                        crate::state::DbPool::Sqlite(pool) => {
+                            let row: Option<(Option<String>, Option<i64>, Option<i64>)> = sqlx::query_as(
+                                "SELECT remote_id, channel_id, message_id FROM collector_histories WHERE id = ?",
+                            )
+                            .bind(history_id)
+                            .fetch_optional(pool)
+                            .await
+                            .ok()
+                            .flatten();
+                            match row {
+                                Some((rid, cid, mid)) => (rid, cid, mid),
+                                None => continue,
+                            }
+                        }
+                        crate::state::DbPool::Postgres(pool) => {
+                            let row: Option<(Option<String>, Option<i64>, Option<i64>)> = sqlx::query_as(
+                                "SELECT remote_id, channel_id, message_id FROM collector_histories WHERE id = $1",
+                            )
+                            .bind(history_id)
+                            .fetch_optional(pool)
+                            .await
+                            .ok()
+                            .flatten();
+                            match row {
+                                Some((rid, cid, mid)) => (rid, cid, mid),
+                                None => continue,
+                            }
+                        }
+                    }
+                };
+
+                if let Some(ref rid) = remote_id {
+                    if !rid.is_empty() {
+                        let desc = res.get("description").and_then(|v| v.as_str());
+                        if let Err(e) = crate::services::forward_queue::enqueue(
+                            &state,
+                            rid,
+                            ch_id,
+                            msg_id,
+                            title,
+                            desc,
+                            link,
+                        )
+                        .await
+                        {
+                            tracing::warn!("图片转发入队失败: {e}");
+                        }
+                        // 一个 remote_id 只需入队一次
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     Ok(Json(result))
 }
 
@@ -69,7 +134,7 @@ pub async fn extract_resources(
         .unwrap_or(1000);
 
     let result =
-        crate::services::resource::trigger_extraction(&state.db, &state.option_cache, batch_size)
+        crate::services::resource::trigger_extraction(&state, batch_size)
             .await?;
 
     Ok(Json(json!({
@@ -148,6 +213,7 @@ pub async fn update_extract_config(
         "ai_endpoints",
         "ai_prompt",
         "ai_use_proxy",
+        "ai_concurrency",
     ];
 
     if let Some(obj) = body.as_object() {
@@ -199,15 +265,28 @@ pub async fn update_extract_config(
         crate::services::scheduler::update_extract_scheduler(
             state.extract_scheduler.clone(),
             extract_interval,
-            state.db.clone(),
-            state.option_cache.clone(),
+            state.clone(),
         )
         .await;
     } else {
         crate::services::scheduler::stop_extract_scheduler(state.extract_scheduler.clone()).await;
     }
 
-    Ok(Json(
-        json!({ "success": true, "message": "提取配置已更新" }),
-    ))
+    // 返回调度器状态（下次执行时间）
+    let sched = state.extract_scheduler.read().await;
+    let next_run = if sched.running {
+        let elapsed = sched.last_run_at.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+        let remaining = sched.interval_minutes * 60;
+        let next_secs = remaining.saturating_sub(elapsed);
+        Some(chrono::Local::now() + chrono::Duration::seconds(next_secs as i64))
+    } else {
+        None
+    };
+    drop(sched);
+
+    Ok(Json(json!({
+        "success": true,
+        "message": "提取配置已更新",
+        "next_run_at": next_run.map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string()),
+    })))
 }

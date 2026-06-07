@@ -3,6 +3,7 @@ pub mod collector;
 pub mod collector_history;
 pub mod extracted_resource;
 pub mod file;
+pub mod forward_task;
 pub mod message;
 pub mod option;
 pub mod push_history;

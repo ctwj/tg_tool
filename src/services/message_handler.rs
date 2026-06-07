@@ -10,6 +10,7 @@ use grammers_client::types::Message;
 pub async fn handle_new_message(
     client_id: &str,
     msg: &Message,
+    outgoing: bool,
     db: &DbPool,
     tg_clients: &TgClientMap,
     peer_cache: &PeerCache,
@@ -19,14 +20,17 @@ pub async fn handle_new_message(
     let text = msg.text();
 
     tracing::debug!(
-        "New message: client={}, chat={}, msg_id={}, text_len={}",
+        "New message: client={}, chat={}, msg_id={}, outgoing={}, text_len={}",
         client_id,
         chat_id,
         message_id,
+        outgoing,
         text.len()
     );
 
-    // 1. Match active forwarding rules
+    // 1. Match active forwarding rules (skip outgoing to avoid loops)
+    if !outgoing {
+    // forwarding rules matching
     let rules = match db {
         crate::state::DbPool::Sqlite(pool) => {
             let rows: Vec<(i64, String, String, Option<String>)> = sqlx::query_as(
@@ -66,8 +70,9 @@ pub async fn handle_new_message(
             tracing::warn!("Forward failed for rule {}: {e}", rule_id);
         }
     }
+    } // end if !outgoing
 
-    // 2. Match active collectors
+    // 2. Match active collectors (collect ALL messages including outgoing)
     let collectors: Vec<(i64, i64)> = match db {
         crate::state::DbPool::Sqlite(pool) => sqlx::query_as(
             "SELECT id, channel_id FROM collectors WHERE channel_id = ? AND is_active = 1",
@@ -114,14 +119,27 @@ pub async fn handle_new_message(
     Ok(())
 }
 
-/// Serialize a grammers Message to JSON manually
+/// Serialize a grammers Message to JSON manually (with media info)
 fn serialize_message(msg: &Message) -> String {
-    serde_json::json!({
+    let mut json = serde_json::json!({
         "id": msg.id(),
         "date": msg.date().timestamp(),
         "text": msg.text(),
         "outgoing": msg.outgoing(),
         "chat_id": msg.chat().id(),
-    })
-    .to_string()
+    });
+    if let Some(media) = msg.media() {
+        match media {
+            grammers_client::types::Media::Photo(photo) => {
+                json["media_type"] = serde_json::json!("photo");
+                json["photo_id"] = serde_json::json!(format!("{}", photo.id()));
+            }
+            grammers_client::types::Media::Document(doc) => {
+                json["media_type"] = serde_json::json!("document");
+                json["document_name"] = serde_json::json!(doc.name());
+            }
+            _ => {}
+        }
+    }
+    json.to_string()
 }

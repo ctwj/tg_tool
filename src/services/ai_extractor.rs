@@ -379,17 +379,36 @@ pub async fn ai_extract(
 }
 
 /// AI 批量提取提示词 — 一次调用提取消息中的所有资源
-const BATCH_PROMPT: &str = r##"逐条提取消息中的网盘资源，每条资源一个JSON对象，返回紧凑JSON数组。一个链接=一个对象，不要合并。
+const BATCH_PROMPT: &str = r##"从消息中提取网盘资源，每个链接一条记录，返回JSON数组。
 
 格式: {"t":"标题","u":"链接","d":"描述","tags":"标签"}
-- t: 链接上方一行的文字，原文照搬不修改
-- u: 完整链接，提取码紧跟链接用|拼接如 https://pan.baidu.com/s/x|提取码：ab
-- d: 描述段落完整内容，没有则填""
-- tags: 3-5个标签逗号分隔，没有则填""
-忽略t.me链接。
-[{"t":"电影[4K]","u":"https://pan.quark.cn/s/a","d":"","tags":"电影,4K"}]
 
-消息：
+提取规则:
+- t(标题): 资源的真实名称。
+  - 必须去掉"名称："、"标题："等前缀关键词，只取后面的内容
+  - 必须去掉"通过百度网盘分享的文件："等分享模板前缀，只取实际资源名
+  - 优先从"名称："、"标题："后面提取；若没有，取消息第一行(去掉emoji和#标签)
+  - 绝不要把"资源介绍"、"描述"、"亮点"等关键词或其后面的内容当标题
+- u(链接): 完整网盘链接，如果有提取码，拼接到URL的pwd参数中，如 https://pan.baidu.com/s/x?pwd=ab
+  - 同一资源的多个网盘链接，每条链接一条记录(相同标题)
+  - 没有提取码的链接保持原样
+- d(描述): "描述："、"资源介绍："、"简介："、"亮点："等关键词后面的完整段落，无则填""
+  - 不要把"来自百度网盘超级会员V4的分享"等系统消息当描述
+- tags: 3-5个标签逗号分隔(去#前缀)，无则填""
+- 忽略t.me链接、广告群、推广链接、hi.keba.host等非网盘链接
+- 网盘链接域名包括: pan.quark.cn, pan.baidu.com, pan.xunlei.com, drive.uc.cn, pan.aliyun.com, 115cdn.com, cloud.189.cn, yun.139.com 等
+
+示例:
+消息: "名称：电影A [4K]\n描述：精彩动作片\n链接：\n夸克：https://pan.quark.cn/s/abc\n百度：https://pan.baidu.com/s/def?pwd=1234"
+结果: [{"t":"电影A [4K]","u":"https://pan.quark.cn/s/abc","d":"精彩动作片","tags":"电影,4K"},{"t":"电影A [4K]","u":"https://pan.baidu.com/s/def?pwd=1234","d":"精彩动作片","tags":"电影,4K"}]
+
+消息: "用Gemini生成写真教程\n📝 资源介绍：详细教程\n🔗 下载：https://pan.quark.cn/s/xyz"
+结果: [{"t":"用Gemini生成写真教程","u":"https://pan.quark.cn/s/xyz","d":"详细教程","tags":"AI,教程"}]
+
+消息: "通过百度网盘分享的文件：大新哥《教你玩转本地生活》\n链接：https://pan.baidu.com/s/xxx?pwd=ab12\n提取码：ab12"
+结果: [{"t":"大新哥《教你玩转本地生活》","u":"https://pan.baidu.com/s/xxx?pwd=ab12","d":"","tags":"教程,本地生活"}]
+
+消息:
 "##;
 
 /// AI 批量提取主入口 — 一次 API 调用提取消息中的所有资源
@@ -405,14 +424,15 @@ pub async fn ai_extract_batch(
         return rule_results.to_vec();
     }
 
-    let (_, proxy_enabled, proxy_url) = {
+    let (custom_prompt, proxy_enabled, proxy_url) = {
         let cache = option_cache.read().await;
+        let prompt = cache.get("push_ai_prompt").cloned().filter(|p| !p.is_empty());
         let enabled = cache
             .get("push_ai_use_proxy")
             .map(|v| v == "1" || v == "true")
             .unwrap_or(false);
         let proxy = cache.get("http_proxy_url").cloned().unwrap_or_default();
-        ((), enabled, proxy)
+        (prompt, enabled, proxy)
     };
 
     // 尝试轮询选择端点
@@ -429,7 +449,7 @@ pub async fn ai_extract_batch(
             None
         };
 
-        match call_ai_batch_api(&endpoint, raw_data, proxy_arg).await {
+        match call_ai_batch_api(&endpoint, raw_data, custom_prompt.as_deref(), proxy_arg).await {
             Ok(results) => {
                 tracing::info!(
                     "AI 批量提取成功: endpoint={}, ai_count={}, rule_count={}",
@@ -517,10 +537,53 @@ fn merge_same_title_resources(resources: Vec<ResourceDraft>) -> Vec<ResourceDraf
     merged
 }
 
+/// 清理 URL：去掉 |提取码 后缀，将提取码合并到 URL 的 ?pwd= 参数
+fn normalize_url(url: &str) -> String {
+    let url = url.trim();
+    if let Some(pos) = url.find('|') {
+        let (link, code) = (&url[..pos], &url[pos + 1..]);
+        let link = link.trim();
+        let code = code
+            .trim()
+            .trim_start_matches("提取码：")
+            .trim_start_matches("提取码:")
+            .trim();
+        if !code.is_empty() && !link.contains("pwd=") {
+            let sep = if link.contains('?') { "&" } else { "?" };
+            format!("{}{}pwd={}", link, sep, code)
+        } else {
+            link.to_string()
+        }
+    } else {
+        url.to_string()
+    }
+}
+
+/// 清理标题：去掉常见前缀
+fn clean_title(title: &str) -> String {
+    let prefixes = [
+        "名称：",
+        "名称:",
+        "标题：",
+        "标题:",
+        "通过百度网盘分享的文件：",
+        "通过百度网盘分享的文件:",
+    ];
+    let mut result = title.trim().to_string();
+    for prefix in &prefixes {
+        if result.starts_with(prefix) {
+            result = result[prefix.len()..].trim().to_string();
+            break;
+        }
+    }
+    result
+}
+
 /// 调用 AI API 进行批量提取
 async fn call_ai_batch_api(
     endpoint: &AiEndpoint,
     message: &str,
+    custom_prompt: Option<&str>,
     proxy_url: Option<&str>,
 ) -> Result<Vec<ResourceDraft>, String> {
     let mut builder = reqwest::Client::builder()
@@ -544,10 +607,14 @@ async fn call_ai_batch_api(
         tokio::time::sleep(std::time::Duration::from_millis(endpoint.request_delay)).await;
     }
 
+    let system_prompt = custom_prompt
+        .filter(|p| !p.is_empty())
+        .unwrap_or(BATCH_PROMPT);
+
     let body = serde_json::json!({
         "model": endpoint.model,
         "messages": [
-            {"role": "system", "content": BATCH_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": message}
         ],
         "temperature": 0.3,
@@ -613,12 +680,14 @@ async fn call_ai_batch_api(
                 .filter(|s| !s.is_empty())
                 .collect()
         };
+        // 清理 URL：去掉 |提取码 后缀，提取码合并到 ?pwd= 参数
+        let urls: Vec<String> = urls.into_iter().map(|u| normalize_url(&u)).collect();
         let category = urls
             .first()
             .map(|u| crate::services::extractor::identify_netdisk(u).1)
             .unwrap_or_default();
         results.push(ResourceDraft {
-            title,
+            title: clean_title(&title),
             url: urls,
             description: extract_string(item, "d").unwrap_or_default(),
             category,
