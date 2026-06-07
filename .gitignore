@@ -52,3 +52,5 @@ demo/
 .playwright-mcp/
 specs/
 .claude/
+*.db-shm
+*.db-wal
