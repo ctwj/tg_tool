@@ -52,6 +52,7 @@ pub async fn trigger_extraction(
     let option_cache = &state.option_cache;
 
     // 1. 查找未提取的 collector_histories（通过 is_extracted 标记）
+    #[allow(clippy::type_complexity)]
     let histories: Vec<(
         i64,
         Option<String>,
@@ -181,6 +182,7 @@ struct RecordResult {
 }
 
 /// 并发处理单条记录（错误隔离：单条失败不影响其他记录）
+#[allow(clippy::too_many_arguments)]
 async fn process_single_record_for_batch(
     db: &DbPool,
     option_cache: &OptionCache,
@@ -291,31 +293,31 @@ async fn process_single_record_for_batch(
     }
 
     // 含图片资源入队转发
-    if let Some(rid) = &remote_id {
-        if !rid.is_empty() {
-            let has_photo = raw_data.as_ref().is_some_and(|rd| {
-                rd.contains("\"media_type\":\"photo\"") || rd.contains("\"photo_id\"")
-            });
-            if has_photo {
-                let first = final_drafts.first();
-                let title = first.map(|d| d.title.as_str());
-                let description = first.map(|d| d.description.as_str());
-                let link = first
-                    .map(|d| d.url.join(",").to_string())
-                    .filter(|s| !s.is_empty());
-                if let Err(e) = crate::services::forward_queue::enqueue(
-                    state,
-                    rid,
-                    ch_id,
-                    msg_id,
-                    title,
-                    description,
-                    link.as_deref(),
-                )
-                .await
-                {
-                    tracing::warn!("[record-{}] 图片转发入队失败: {e}", history_id);
-                }
+    if let Some(rid) = &remote_id
+        && !rid.is_empty()
+    {
+        let has_photo = raw_data.as_ref().is_some_and(|rd| {
+            rd.contains("\"media_type\":\"photo\"") || rd.contains("\"photo_id\"")
+        });
+        if has_photo {
+            let first = final_drafts.first();
+            let title = first.map(|d| d.title.as_str());
+            let description = first.map(|d| d.description.as_str());
+            let link = first
+                .map(|d| d.url.join(",").to_string())
+                .filter(|s| !s.is_empty());
+            if let Err(e) = crate::services::forward_queue::enqueue(
+                state,
+                rid,
+                ch_id,
+                msg_id,
+                title,
+                description,
+                link.as_deref(),
+            )
+            .await
+            {
+                tracing::warn!("[record-{}] 图片转发入队失败: {e}", history_id);
             }
         }
     }

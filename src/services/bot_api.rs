@@ -63,21 +63,21 @@ fn build_client(proxy_url: Option<&str>) -> Result<reqwest::Client, AppError> {
         .timeout(Duration::from_secs(30))
         .connect_timeout(Duration::from_secs(10));
 
-    if let Some(proxy) = proxy_url {
-        if !proxy.is_empty() {
-            // Bot API 使用 HTTPS，需要 HTTP/HTTPS 代理
-            if proxy.starts_with("socks5://") || proxy.starts_with("socks5h://") {
-                // reqwest 原生支持 socks5
-                builder = builder.proxy(
-                    reqwest::Proxy::all(proxy)
-                        .map_err(|e| AppError::Internal(format!("代理配置失败: {e}")))?,
-                );
-            } else {
-                builder = builder.proxy(
-                    reqwest::Proxy::all(proxy)
-                        .map_err(|e| AppError::Internal(format!("代理配置失败: {e}")))?,
-                );
-            }
+    if let Some(proxy) = proxy_url
+        && !proxy.is_empty()
+    {
+        // Bot API 使用 HTTPS，需要 HTTP/HTTPS 代理
+        if proxy.starts_with("socks5://") || proxy.starts_with("socks5h://") {
+            // reqwest 原生支持 socks5
+            builder = builder.proxy(
+                reqwest::Proxy::all(proxy)
+                    .map_err(|e| AppError::Internal(format!("代理配置失败: {e}")))?,
+            );
+        } else {
+            builder = builder.proxy(
+                reqwest::Proxy::all(proxy)
+                    .map_err(|e| AppError::Internal(format!("代理配置失败: {e}")))?,
+            );
         }
     }
 
@@ -352,46 +352,44 @@ pub async fn get_bot_chats(token: &str, proxy_url: Option<&str>) -> Result<Vec<B
         if let Some(msg) = update.message {
             let chat = msg.chat;
             // 只保留 group、supergroup、channel
-            if chat.chat_type == "group"
+            if (chat.chat_type == "group"
                 || chat.chat_type == "supergroup"
-                || chat.chat_type == "channel"
+                || chat.chat_type == "channel")
+                && seen.insert(chat.id)
             {
-                if seen.insert(chat.id) {
-                    let title = chat
-                        .title
-                        .or(chat.username)
-                        .or(chat.first_name)
-                        .unwrap_or_else(|| format!("Chat {}", chat.id));
-                    chats.push(BotChat {
-                        id: chat.id,
-                        title,
-                        chat_type: chat.chat_type,
-                    });
-                }
+                let title = chat
+                    .title
+                    .or(chat.username)
+                    .or(chat.first_name)
+                    .unwrap_or_else(|| format!("Chat {}", chat.id));
+                chats.push(BotChat {
+                    id: chat.id,
+                    title,
+                    chat_type: chat.chat_type,
+                });
             }
         }
 
         // 从 my_chat_member 中提取（Bot 被添加到群组时的事件）
-        if let Some(member_update) = update.my_chat_member {
-            if let Some(chat_obj) = member_update.get("chat") {
-                let chat_id = chat_obj.get("id").and_then(|v| v.as_i64());
-                let chat_type = chat_obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                let chat_title = chat_obj
-                    .get("title")
-                    .or(chat_obj.get("username"))
-                    .and_then(|v| v.as_str());
+        if let Some(member_update) = update.my_chat_member
+            && let Some(chat_obj) = member_update.get("chat")
+        {
+            let chat_id = chat_obj.get("id").and_then(|v| v.as_i64());
+            let chat_type = chat_obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            let chat_title = chat_obj
+                .get("title")
+                .or(chat_obj.get("username"))
+                .and_then(|v| v.as_str());
 
-                if let Some(id) = chat_id {
-                    if (chat_type == "group" || chat_type == "supergroup" || chat_type == "channel")
-                        && seen.insert(id)
-                    {
-                        chats.push(BotChat {
-                            id,
-                            title: chat_title.unwrap_or(&format!("Chat {}", id)).to_string(),
-                            chat_type: chat_type.to_string(),
-                        });
-                    }
-                }
+            if let Some(id) = chat_id
+                && (chat_type == "group" || chat_type == "supergroup" || chat_type == "channel")
+                && seen.insert(id)
+            {
+                chats.push(BotChat {
+                    id,
+                    title: chat_title.unwrap_or(&format!("Chat {}", id)).to_string(),
+                    chat_type: chat_type.to_string(),
+                });
             }
         }
     }
@@ -409,7 +407,7 @@ async fn handle_bot_response_raw<T: serde::de::DeserializeOwned>(
 
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
         let _body = resp.text().await.unwrap_or_default();
-        return Err(AppError::Internal(format!("FLOOD_WAIT: 请求频率过高")));
+        return Err(AppError::Internal("FLOOD_WAIT: 请求频率过高".to_string()));
     }
 
     let body = resp

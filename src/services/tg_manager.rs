@@ -225,20 +225,17 @@ impl TgManager {
                 match update_result {
                     Ok(Ok(update)) => {
                         consecutive_errors = 0;
-                        match &update {
-                            grammers_client::Update::NewMessage(msg) => {
-                                let outgoing = msg.outgoing();
-                                let _ = crate::services::message_handler::handle_new_message(
-                                    &client_id_for_listener,
-                                    msg,
-                                    outgoing,
-                                    &db,
-                                    &clients,
-                                    &peer_cache,
-                                )
-                                .await;
-                            }
-                            _ => {}
+                        if let grammers_client::Update::NewMessage(msg) = &update {
+                            let outgoing = msg.outgoing();
+                            let _ = crate::services::message_handler::handle_new_message(
+                                &client_id_for_listener,
+                                msg,
+                                outgoing,
+                                &db,
+                                &clients,
+                                &peer_cache,
+                            )
+                            .await;
                         }
                     }
                     Ok(Err(e)) => {

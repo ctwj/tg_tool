@@ -56,21 +56,21 @@ pub async fn extract_single(
     .await?;
 
     // 非 dry_run 时，尝试将含图片的资源入队转发
-    if !dry_run {
-        if let Some(resources) = result
+    if !dry_run
+        && let Some(resources) = result
             .get("data")
             .and_then(|d| d.get("resources"))
             .and_then(|r| r.as_array())
-        {
-            for res in resources {
-                // 从提取结果中获取标题和链接，从采集记录中已有 remote_id
-                let title = res.get("title").and_then(|v| v.as_str());
-                let link = res.get("url").and_then(|v| v.as_str());
-                // 获取 remote_id 和 channel_id/message_id
-                let (remote_id, ch_id, msg_id) = {
-                    match &state.db {
-                        crate::state::DbPool::Sqlite(pool) => {
-                            let row: Option<(Option<String>, Option<i64>, Option<i64>)> = sqlx::query_as(
+    {
+        for res in resources {
+            // 从提取结果中获取标题和链接，从采集记录中已有 remote_id
+            let title = res.get("title").and_then(|v| v.as_str());
+            let link = res.get("url").and_then(|v| v.as_str());
+            // 获取 remote_id 和 channel_id/message_id
+            let (remote_id, ch_id, msg_id) = {
+                match &state.db {
+                    crate::state::DbPool::Sqlite(pool) => {
+                        let row: Option<(Option<String>, Option<i64>, Option<i64>)> = sqlx::query_as(
                                 "SELECT remote_id, channel_id, message_id FROM collector_histories WHERE id = ?",
                             )
                             .bind(history_id)
@@ -78,13 +78,13 @@ pub async fn extract_single(
                             .await
                             .ok()
                             .flatten();
-                            match row {
-                                Some((rid, cid, mid)) => (rid, cid, mid),
-                                None => continue,
-                            }
+                        match row {
+                            Some((rid, cid, mid)) => (rid, cid, mid),
+                            None => continue,
                         }
-                        crate::state::DbPool::Postgres(pool) => {
-                            let row: Option<(Option<String>, Option<i64>, Option<i64>)> = sqlx::query_as(
+                    }
+                    crate::state::DbPool::Postgres(pool) => {
+                        let row: Option<(Option<String>, Option<i64>, Option<i64>)> = sqlx::query_as(
                                 "SELECT remote_id, channel_id, message_id FROM collector_histories WHERE id = $1",
                             )
                             .bind(history_id)
@@ -92,28 +92,27 @@ pub async fn extract_single(
                             .await
                             .ok()
                             .flatten();
-                            match row {
-                                Some((rid, cid, mid)) => (rid, cid, mid),
-                                None => continue,
-                            }
+                        match row {
+                            Some((rid, cid, mid)) => (rid, cid, mid),
+                            None => continue,
                         }
-                    }
-                };
-
-                if let Some(ref rid) = remote_id {
-                    if !rid.is_empty() {
-                        let desc = res.get("description").and_then(|v| v.as_str());
-                        if let Err(e) = crate::services::forward_queue::enqueue(
-                            &state, rid, ch_id, msg_id, title, desc, link,
-                        )
-                        .await
-                        {
-                            tracing::warn!("图片转发入队失败: {e}");
-                        }
-                        // 一个 remote_id 只需入队一次
-                        break;
                     }
                 }
+            };
+
+            if let Some(ref rid) = remote_id
+                && !rid.is_empty()
+            {
+                let desc = res.get("description").and_then(|v| v.as_str());
+                if let Err(e) = crate::services::forward_queue::enqueue(
+                    &state, rid, ch_id, msg_id, title, desc, link,
+                )
+                .await
+                {
+                    tracing::warn!("图片转发入队失败: {e}");
+                }
+                // 一个 remote_id 只需入队一次
+                break;
             }
         }
     }

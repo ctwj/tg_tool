@@ -230,9 +230,9 @@ async fn process_next_task(state: &AppState) -> Result<(), AppError> {
 
     // 构建 caption
     let caption = build_caption(
-        task.title.as_ref().map(|s| s.as_str()),
-        task.description.as_ref().map(|s| s.as_str()),
-        task.link.as_ref().map(|s| s.as_str()),
+        task.title.as_deref(),
+        task.description.as_deref(),
+        task.link.as_deref(),
     );
 
     // 发送图片到图床群组
@@ -241,7 +241,7 @@ async fn process_next_task(state: &AppState) -> Result<(), AppError> {
         &chat_id,
         photo_bytes,
         Some(&caption),
-        proxy_url.as_ref().map(|s| s.as_str()).as_deref(),
+        proxy_url.as_deref(),
     )
     .await;
 
@@ -392,24 +392,24 @@ async fn download_photo_from_channel(
 fn build_caption(title: Option<&str>, description: Option<&str>, link: Option<&str>) -> String {
     let mut parts = Vec::new();
 
-    if let Some(t) = title {
-        if !t.is_empty() {
-            parts.push(format!("📌 {t}"));
-        }
+    if let Some(t) = title
+        && !t.is_empty()
+    {
+        parts.push(format!("📌 {t}"));
     }
-    if let Some(d) = description {
-        if !d.is_empty() {
-            parts.push(format!("📝 {d}"));
-        }
+    if let Some(d) = description
+        && !d.is_empty()
+    {
+        parts.push(format!("📝 {d}"));
     }
-    if let Some(l) = link {
-        if !l.is_empty() {
-            // 多个 URL 逗号分隔，每个单独一行显示
-            for url in l.split(',') {
-                let url = url.trim();
-                if !url.is_empty() {
-                    parts.push(format!("🔗 {url}"));
-                }
+    if let Some(l) = link
+        && !l.is_empty()
+    {
+        // 多个 URL 逗号分隔，每个单独一行显示
+        for url in l.split(',') {
+            let url = url.trim();
+            if !url.is_empty() {
+                parts.push(format!("🔗 {url}"));
             }
         }
     }
