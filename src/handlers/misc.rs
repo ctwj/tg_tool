@@ -4,12 +4,18 @@ use serde_json::json;
 
 pub async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
     // 从数据库查询客户端状态（包含 Bot 类型，tg_clients 内存不含 Bot）
+    // 同时用首次查询结果判断 DB 健康状态
+    let mut db_ok = true;
     let (client_total, client_active): (i64, i64) = match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
             let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM clients")
                 .fetch_one(pool)
                 .await
-                .unwrap_or(0);
+                .unwrap_or_else(|e| {
+                    db_ok = false;
+                    tracing::warn!("DB health check failed: {e}");
+                    0
+                });
             let active: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM clients WHERE status = 'active'")
                     .fetch_one(pool)
@@ -21,7 +27,11 @@ pub async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
             let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM clients")
                 .fetch_one(pool)
                 .await
-                .unwrap_or(0);
+                .unwrap_or_else(|e| {
+                    db_ok = false;
+                    tracing::warn!("DB health check failed: {e}");
+                    0
+                });
             let active: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM clients WHERE status = 'active'")
                     .fetch_one(pool)
@@ -76,8 +86,6 @@ pub async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
             }
         };
 
-    // Database health check
-    let db_ok = check_db_health(&state.db).await;
     let db_status = if db_ok { "ok" } else { "error" };
 
     // 调度器状态
@@ -145,19 +153,5 @@ pub async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
         (StatusCode::OK, body)
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, body)
-    }
-}
-
-/// Ping database with SELECT 1
-async fn check_db_health(db: &crate::state::DbPool) -> bool {
-    match db {
-        crate::state::DbPool::Sqlite(pool) => sqlx::query_scalar::<_, i64>("SELECT 1")
-            .fetch_one(pool)
-            .await
-            .is_ok(),
-        crate::state::DbPool::Postgres(pool) => sqlx::query_scalar::<_, i64>("SELECT 1")
-            .fetch_one(pool)
-            .await
-            .is_ok(),
     }
 }
