@@ -3,19 +3,31 @@ use tgTool::services::crypto;
 use tgTool::services::tg_manager::TgManager;
 use tgTool::state::{AppState, DbPool};
 use tower_http::trace::TraceLayer;
+use tracing_subscriber::prelude::*;
 
 #[tokio::main]
 async fn main() {
     // Load configuration
     let config = Config::load();
 
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    // Initialize tracing (file + stdout if LOG_DIR is set, stdout only otherwise)
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    if let Some(ref log_dir) = config.log_dir {
+        std::fs::create_dir_all(log_dir).expect("Failed to create log directory");
+        let file_appender = tracing_appender::rolling::daily(log_dir, "tg_tool.log");
+        let (stdout_writer, _stdout_guard) = tracing_appender::non_blocking(std::io::stdout());
+        let (file_writer, _file_guard) = tracing_appender::non_blocking(file_appender);
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .with_writer(stdout_writer)
+            .finish()
+            .with(tracing_subscriber::fmt::layer().with_writer(file_writer))
+            .init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    }
 
     tracing::info!(
         "TG Forwarding Tool v{} starting...",
