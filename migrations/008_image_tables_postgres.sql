@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS forward_tasks (
     link TEXT,
     file_id VARCHAR(512),
     status VARCHAR(20) NOT NULL DEFAULT 'pending',
-    retry_count INTEGER NOT NULL DEFAULT 0,
+    retry_count BIGINT NOT NULL DEFAULT 0,
     error TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
