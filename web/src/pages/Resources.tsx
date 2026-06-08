@@ -1,12 +1,27 @@
 import React, { useEffect, useState } from 'react'
 import { Table, Button, Modal, Form, Input, Select, Space, message, Tag, Popconfirm, Typography, Pagination, Tooltip, Statistic, Row, Col, Card, Switch, InputNumber, Divider, Alert, Spin } from 'antd'
-import { ThunderboltOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, BarChartOutlined, SettingOutlined, EyeOutlined } from '@ant-design/icons'
+import { ThunderboltOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, BarChartOutlined, SettingOutlined, EyeOutlined, SendOutlined } from '@ant-design/icons'
 import apiClient from '../api/client'
 import type { ExtractedResource, ResourceStats, ExtractionResult, ResourceDetailResponse } from '../types'
 import PageHeader from '../components/PageHeader'
 import { useTableScrollY } from '../hooks/useTableScroll'
 
 const { Text } = Typography
+
+// HTTP 方法颜色（与推送配置页保持一致）
+const METHOD_COLORS: Record<string, string> = {
+  POST: 'blue',
+  PUT: 'orange',
+  PATCH: 'purple',
+}
+
+// JSON 语法高亮（直接复用自 Push.tsx）
+const renderJsonHighlight = (json: string) => {
+  return json.replace(/("(?:\\.|[^"\\])*")\s*:/g, '<span style="color:#7dd3fc">$1</span>:')
+    .replace(/:\s*("(?:\\.|[^"\\])*")/g, ': <span style="color:#86efac">$1</span>')
+    .replace(/:\s*(\d+)/g, ': <span style="color:#fbbf24">$1</span>')
+    .replace(/:\s*(true|false|null)/g, ': <span style="color:#c084fc">$1</span>')
+}
 
 const DEFAULT_AI_PROMPT = `从消息中提取网盘资源，每个链接一条记录，返回JSON数组。
 
@@ -78,6 +93,23 @@ const Resources: React.FC = () => {
   const [viewModalOpen, setViewModalOpen] = useState(false)
   const [viewDetail, setViewDetail] = useState<ResourceDetailResponse | null>(null)
   const [viewLoading, setViewLoading] = useState(false)
+
+  // 推送
+  const [pushingIds, setPushingIds] = useState<Set<number>>(new Set())
+  const [pushResultOpen, setPushResultOpen] = useState(false)
+  const [pushResultData, setPushResultData] = useState<{
+    success: boolean
+    request?: {
+      method: string
+      url: string
+      headers: Array<{ key: string; value: string; is_auth?: boolean; location?: string }>
+      body: string
+    }
+    http_status?: number
+    response_body?: string
+    batch_id?: string
+    message?: string
+  } | null>(null)
 
   // 网盘类型选项
   const categoryOptions = [
@@ -254,6 +286,60 @@ const Resources: React.FC = () => {
     }
   }
 
+  // 推送 — 复用与"推送管理→触发推送"同一套配置，实际推送并标记 is_pushed=true
+  const handlePush = async (record: ExtractedResource) => {
+    setPushingIds(prev => new Set(prev).add(record.id))
+    try {
+      const resp = await apiClient.post(`/resources/${record.id}/push`, {}, { timeout: 60000 })
+      const data = resp.data?.data
+      if (resp.data?.success) {
+        message.success(`推送成功 (HTTP ${data?.http_status ?? ''})`)
+        setPushResultData({
+          success: true,
+          request: data?.request,
+          http_status: data?.http_status,
+          response_body: data?.response_body,
+          batch_id: data?.batch_id,
+        })
+        setPushResultOpen(true)
+        // 推送成功后刷新列表，让 is_pushed 状态更新
+        fetchResources()
+      } else if (data?.missing && Array.isArray(data.missing) && data.missing.length > 0) {
+        // 配置缺失
+        Modal.warning({
+          title: '推送配置不完整',
+          content: (
+            <div>
+              <p>请先在"推送管理"页面配置以下项：</p>
+              <ul>{data.missing.map((k: string) => <li key={k}>{k}</li>)}</ul>
+            </div>
+          ),
+        })
+      } else if (data?.request || data?.response_body) {
+        // 推送发出但 API 报错 — 同样展示左右分栏让用户排查
+        setPushResultData({
+          success: false,
+          request: data?.request,
+          http_status: data?.http_status,
+          response_body: data?.response_body,
+          batch_id: data?.batch_id,
+          message: resp.data?.message,
+        })
+        setPushResultOpen(true)
+      } else {
+        message.error(resp.data?.message || '推送失败')
+      }
+    } catch (e: any) {
+      message.error(e?.response?.data?.message || e?.message || '推送请求失败')
+    } finally {
+      setPushingIds(prev => {
+        const s = new Set(prev)
+        s.delete(record.id)
+        return s
+      })
+    }
+  }
+
   const columns = [
     {
       title: '标题',
@@ -367,7 +453,7 @@ const Resources: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 150,
+      width: 185,
       fixed: 'right' as const,
       render: (_: unknown, record: ExtractedResource) => (
         <Space size={4}>
@@ -376,6 +462,15 @@ const Resources: React.FC = () => {
           </Tooltip>
           <Tooltip title="编辑">
             <Button size="small" type="text" icon={<EditOutlined />} onClick={() => handleEdit(record)} />
+          </Tooltip>
+          <Tooltip title="推送">
+            <Button
+              size="small"
+              type="text"
+              icon={<SendOutlined />}
+              loading={pushingIds.has(record.id)}
+              onClick={() => handlePush(record)}
+            />
           </Tooltip>
           <Popconfirm title="确定删除此资源？" onConfirm={() => handleDelete(record.id)}>
             <Tooltip title="删除">
@@ -768,6 +863,213 @@ const Resources: React.FC = () => {
                 </div>
               </div>
             </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      {/* ====== 推送结果弹窗 — 左右分栏（请求 / 响应）终端风格 ====== */}
+      <Modal
+        title="推送结果"
+        width={960}
+        open={pushResultOpen}
+        footer={null}
+        onCancel={() => setPushResultOpen(false)}
+        destroyOnClose
+      >
+        {pushResultData ? (
+          <div>
+            <Row gutter={16}>
+              {/* ===== 左侧：Request Preview ===== */}
+              <Col span={12}>
+                <div style={{
+                  background: '#0f172a',
+                  borderRadius: 8,
+                  overflow: 'hidden',
+                  border: '1px solid #334155',
+                }}>
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: 6,
+                    padding: '10px 16px',
+                    background: '#1e293b',
+                    borderBottom: '1px solid #334155',
+                  }}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#ef4444' }} />
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#fbbf24' }} />
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#22c55e' }} />
+                    <Text style={{ color: '#94a3b8', fontSize: 12, marginLeft: 8, fontFamily: 'monospace' }}>
+                      Request Preview
+                    </Text>
+                  </div>
+
+                  <div style={{ padding: 16 }}>
+                    {/* 请求行 */}
+                    <div style={{
+                      display: 'flex', alignItems: 'center', gap: 8,
+                      marginBottom: 16, padding: '8px 12px',
+                      background: '#1e293b', borderRadius: 6,
+                    }}>
+                      <Tag color={METHOD_COLORS[pushResultData.request?.method || 'POST'] || 'blue'} style={{
+                        fontWeight: 700, fontSize: 12, minWidth: 52, textAlign: 'center',
+                        margin: 0, borderRadius: 4,
+                      }}>
+                        {pushResultData.request?.method || 'POST'}
+                      </Tag>
+                      <span style={{
+                        color: '#e2e8f0', fontSize: 12, fontFamily: 'monospace',
+                        wordBreak: 'break-all', lineHeight: '18px',
+                      }}>
+                        {pushResultData.request?.url || '(未配置 API 地址)'}
+                      </span>
+                    </div>
+
+                    {/* 请求头 */}
+                    {pushResultData.request?.headers && pushResultData.request.headers.length > 0 ? (
+                      <div style={{ marginBottom: 16 }}>
+                        <div style={{ color: '#94a3b8', fontSize: 11, fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                          Request Headers
+                        </div>
+                        <div style={{
+                          background: '#1e293b', borderRadius: 6, padding: '8px 12px',
+                          borderLeft: '2px solid #3b82f6',
+                        }}>
+                          {pushResultData.request.headers.map((h, i) => (
+                            <div key={i} style={{
+                              fontSize: 12, fontFamily: "'SFMono-Regular', Consolas, monospace",
+                              lineHeight: '22px', display: 'flex', gap: 4,
+                            }}>
+                              <span style={{ color: h.is_auth ? '#fbbf24' : '#7dd3fc', flexShrink: 0 }}>
+                                {h.key}:
+                              </span>
+                              <span style={{
+                                color: h.is_auth ? '#fde68a' : '#86efac',
+                                wordBreak: 'break-all',
+                              }}>
+                                {h.value}
+                              </span>
+                              {h.is_auth && (
+                                <Tag color="gold" style={{ fontSize: 9, lineHeight: '16px', margin: '0 0 0 4px', padding: '0 4px' }}>
+                                  AUTH
+                                </Tag>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {/* 请求体 */}
+                    <div>
+                      <div style={{ color: '#94a3b8', fontSize: 11, fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                        Request Body
+                      </div>
+                      {pushResultData.request?.body ? (
+                        <div style={{
+                          background: '#1e293b', borderRadius: 6, padding: '10px 12px',
+                          borderLeft: '2px solid #a855f7',
+                          maxHeight: 280, overflow: 'auto',
+                        }}>
+                          <pre
+                            style={{
+                              fontSize: 11.5, lineHeight: '17px', margin: 0,
+                              fontFamily: "'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace",
+                              color: '#e2e8f0', whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                            }}
+                            dangerouslySetInnerHTML={{
+                              __html: renderJsonHighlight(pushResultData.request.body),
+                            }}
+                          />
+                        </div>
+                      ) : (
+                        <div style={{ background: '#1e293b', borderRadius: 6, padding: 12, color: '#64748b', fontSize: 12, fontStyle: 'italic' }}>
+                          无请求体
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </Col>
+
+              {/* ===== 右侧：Response Preview ===== */}
+              <Col span={12}>
+                <div style={{
+                  background: '#0f172a',
+                  borderRadius: 8,
+                  overflow: 'hidden',
+                  border: '1px solid #334155',
+                }}>
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: 6,
+                    padding: '10px 16px',
+                    background: '#1e293b',
+                    borderBottom: '1px solid #334155',
+                  }}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#ef4444' }} />
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#fbbf24' }} />
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#22c55e' }} />
+                    <Text style={{ color: '#94a3b8', fontSize: 12, marginLeft: 8, fontFamily: 'monospace' }}>
+                      Response Preview
+                    </Text>
+                  </div>
+
+                  <div style={{ padding: 16 }}>
+                    {/* 状态行 */}
+                    <div style={{
+                      display: 'flex', alignItems: 'center', gap: 8,
+                      marginBottom: 16, padding: '8px 12px',
+                      background: '#1e293b', borderRadius: 6,
+                    }}>
+                      <Tag color={pushResultData.success ? 'green' : 'red'} style={{
+                        fontWeight: 700, fontSize: 12, minWidth: 52, textAlign: 'center',
+                        margin: 0, borderRadius: 4,
+                      }}>
+                        {pushResultData.http_status ?? '---'}
+                      </Tag>
+                      <span style={{
+                        color: pushResultData.success ? '#86efac' : '#fca5a5',
+                        fontSize: 12, fontFamily: 'monospace',
+                      }}>
+                        {pushResultData.success ? 'OK' : 'Error'}
+                      </span>
+                    </div>
+
+                    {/* 响应体 */}
+                    <div>
+                      <div style={{ color: '#94a3b8', fontSize: 11, fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                        Response Body
+                      </div>
+                      {pushResultData.response_body ? (
+                        <div style={{
+                          background: '#1e293b', borderRadius: 6, padding: '10px 12px',
+                          borderLeft: `2px solid ${pushResultData.success ? '#22c55e' : '#ef4444'}`,
+                          maxHeight: 320, overflow: 'auto',
+                        }}>
+                          <pre
+                            style={{
+                              fontSize: 11.5, lineHeight: '17px', margin: 0,
+                              fontFamily: "'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace",
+                              color: '#e2e8f0', whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                            }}
+                            dangerouslySetInnerHTML={{
+                              __html: renderJsonHighlight(pushResultData.response_body),
+                            }}
+                          />
+                        </div>
+                      ) : (
+                        <div style={{ background: '#1e293b', borderRadius: 6, padding: 12, color: '#64748b', fontSize: 12, fontStyle: 'italic' }}>
+                          无响应内容
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </Col>
+            </Row>
+
+            {pushResultData.batch_id ? (
+              <div style={{ marginTop: 12, color: '#64748b', fontSize: 12, fontFamily: 'monospace' }}>
+                Batch ID: {pushResultData.batch_id}
+              </div>
+            ) : null}
           </div>
         ) : null}
       </Modal>
