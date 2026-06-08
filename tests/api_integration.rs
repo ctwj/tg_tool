@@ -2291,7 +2291,10 @@ async fn test_get_resource_detail_success() {
     let token = get_root_token(&mut app).await;
 
     // 插入一条采集历史（需要先有 collector）
-    let pool = match &db { DbPool::Sqlite(p) => p.clone(), _ => panic!("expected sqlite") };
+    let pool = match &db {
+        DbPool::Sqlite(p) => p.clone(),
+        _ => panic!("expected sqlite"),
+    };
     sqlx::query(
         "INSERT INTO collectors (user_id, channel_id, collector_type, is_active) VALUES (1, 100, 'channel', 1)"
     )
@@ -2331,8 +2334,14 @@ async fn test_get_resource_detail_success() {
 
     // 验证原始消息文本已解析
     let raw_text = body["data"]["raw_text"].as_str().unwrap();
-    assert!(raw_text.contains("测试电影"), "raw_text should contain title");
-    assert!(raw_text.contains("pan.quark.cn"), "raw_text should contain URL");
+    assert!(
+        raw_text.contains("测试电影"),
+        "raw_text should contain title"
+    );
+    assert!(
+        raw_text.contains("pan.quark.cn"),
+        "raw_text should contain URL"
+    );
 
     // 验证 media_type
     assert_eq!(body["data"]["media_type"], "photo");
@@ -2346,7 +2355,10 @@ async fn test_get_resource_detail_no_history() {
     let token = get_root_token(&mut app).await;
 
     // 插入 collector + history，然后删除 history 模拟"历史已删除"
-    let pool = match &db { DbPool::Sqlite(p) => p.clone(), _ => panic!("expected sqlite") };
+    let pool = match &db {
+        DbPool::Sqlite(p) => p.clone(),
+        _ => panic!("expected sqlite"),
+    };
     sqlx::query(
         "INSERT INTO collectors (user_id, channel_id, collector_type, is_active) VALUES (1, 100, 'channel', 1)"
     )
@@ -2410,6 +2422,9 @@ async fn test_get_resource_detail_not_found() {
     let req = build_auth_request("GET", "/api/resources/99999/detail", &token, None);
     let resp = app.clone().oneshot(req).await.unwrap();
     // 应返回 404
-    assert!(resp.status().is_client_error() || resp.status().as_u16() == 404,
-        "Expected 404, got {}", resp.status());
+    assert!(
+        resp.status().is_client_error() || resp.status().as_u16() == 404,
+        "Expected 404, got {}",
+        resp.status()
+    );
 }

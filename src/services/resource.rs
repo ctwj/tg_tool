@@ -748,31 +748,26 @@ pub async fn get_resource(db: &DbPool, id: i64) -> Result<ExtractedResource, App
 
 /// 资源详情（含原始消息）— 用于查看提取对比
 /// 通过 collector_history_id 查询采集历史的 raw_data，解析出文本和媒体类型
-pub async fn get_resource_with_raw(
-    db: &DbPool,
-    id: i64,
-) -> Result<serde_json::Value, AppError> {
+pub async fn get_resource_with_raw(db: &DbPool, id: i64) -> Result<serde_json::Value, AppError> {
     // 1. 获取资源
     let resource = get_resource(db, id).await?;
 
     // 2. 查询关联的采集历史 raw_data
     let raw_data: Option<String> = match db {
         DbPool::Sqlite(pool) => {
-            let row: Option<(Option<String>,)> = sqlx::query_as(
-                "SELECT raw_data FROM collector_histories WHERE id = ?",
-            )
-            .bind(resource.collector_history_id)
-            .fetch_optional(pool)
-            .await?;
+            let row: Option<(Option<String>,)> =
+                sqlx::query_as("SELECT raw_data FROM collector_histories WHERE id = ?")
+                    .bind(resource.collector_history_id)
+                    .fetch_optional(pool)
+                    .await?;
             row.and_then(|r| r.0)
         }
         DbPool::Postgres(pool) => {
-            let row: Option<(Option<String>,)> = sqlx::query_as(
-                "SELECT raw_data FROM collector_histories WHERE id = $1",
-            )
-            .bind(resource.collector_history_id)
-            .fetch_optional(pool)
-            .await?;
+            let row: Option<(Option<String>,)> =
+                sqlx::query_as("SELECT raw_data FROM collector_histories WHERE id = $1")
+                    .bind(resource.collector_history_id)
+                    .fetch_optional(pool)
+                    .await?;
             row.and_then(|r| r.0)
         }
     };
