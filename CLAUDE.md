@@ -140,4 +140,5 @@ shell commands, and other important information, read the current plan:
 - [采集记录资源提取弹窗 Plan](specs/012-collector-resource-extraction/plan.md) — 采集记录单条资源提取、测试/正式模式弹窗、提取方法选择
 - [分离 Telegram 代理与 HTTP API 代理](specs/013-http-proxy-split/plan.md) — 新增 http_proxy_url 配置，AI 提取等 HTTP 请求独立代理，移除 socks5→http 协议替换 hack
 - [并发 AI 提取加速](specs/015-parallel-ai-extraction/plan.md) — AI 资源提取并发化，可配置并发数（默认 5），20 条记录提取从 3 分钟缩短到 40 秒
+- [资源管理查看提取对比](specs/016-resource-extraction-view/plan.md) — 资源列表查看按钮、左右分栏对比弹窗（原始消息 vs 提取结果）、只读验证
 <!-- SPECKIT END -->

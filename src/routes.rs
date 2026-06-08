@@ -187,6 +187,10 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers::resource::get_resource_stats),
         )
         .route(
+            "/resources/{id}/detail",
+            get(handlers::resource::get_resource_detail),
+        )
+        .route(
             "/resources/{id}",
             get(handlers::resource::get_resource)
                 .put(handlers::resource::update_resource)

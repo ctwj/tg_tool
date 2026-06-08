@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react'
-import { Table, Button, Modal, Form, Input, Select, Space, message, Tag, Popconfirm, Typography, Pagination, Tooltip, Statistic, Row, Col, Card, Switch, InputNumber, Divider } from 'antd'
-import { ThunderboltOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, BarChartOutlined, SettingOutlined } from '@ant-design/icons'
+import { Table, Button, Modal, Form, Input, Select, Space, message, Tag, Popconfirm, Typography, Pagination, Tooltip, Statistic, Row, Col, Card, Switch, InputNumber, Divider, Alert, Spin } from 'antd'
+import { ThunderboltOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, BarChartOutlined, SettingOutlined, EyeOutlined } from '@ant-design/icons'
 import apiClient from '../api/client'
-import type { ExtractedResource, ResourceStats, ExtractionResult } from '../types'
+import type { ExtractedResource, ResourceStats, ExtractionResult, ResourceDetailResponse } from '../types'
 import PageHeader from '../components/PageHeader'
 import { useTableScrollY } from '../hooks/useTableScroll'
 
@@ -73,6 +73,11 @@ const Resources: React.FC = () => {
   const [extractSaving, setExtractSaving] = useState(false)
   const [configVisible, setConfigVisible] = useState(false)
   const [imageDomain, setImageDomain] = useState('')
+
+  // 查看弹窗（提取对比）
+  const [viewModalOpen, setViewModalOpen] = useState(false)
+  const [viewDetail, setViewDetail] = useState<ResourceDetailResponse | null>(null)
+  const [viewLoading, setViewLoading] = useState(false)
 
   // 网盘类型选项
   const categoryOptions = [
@@ -230,6 +235,25 @@ const Resources: React.FC = () => {
     }
   }
 
+  // 查看提取对比
+  const openViewModal = async (record: ExtractedResource) => {
+    setViewModalOpen(true)
+    setViewLoading(true)
+    setViewDetail(null)
+    try {
+      const resp = await apiClient.get(`/resources/${record.id}/detail`)
+      if (resp.data?.success) {
+        setViewDetail(resp.data.data)
+      } else {
+        message.error(resp.data?.error || '获取详情失败')
+      }
+    } catch {
+      message.error('获取详情失败')
+    } finally {
+      setViewLoading(false)
+    }
+  }
+
   const columns = [
     {
       title: '标题',
@@ -343,10 +367,13 @@ const Resources: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 120,
+      width: 150,
       fixed: 'right' as const,
       render: (_: unknown, record: ExtractedResource) => (
         <Space size={4}>
+          <Tooltip title="查看">
+            <Button size="small" type="text" icon={<EyeOutlined />} onClick={() => openViewModal(record)} />
+          </Tooltip>
           <Tooltip title="编辑">
             <Button size="small" type="text" icon={<EditOutlined />} onClick={() => handleEdit(record)} />
           </Tooltip>
@@ -584,6 +611,160 @@ const Resources: React.FC = () => {
             </Button>
           </div>
         </div>
+      </Modal>
+
+      {/* 查看提取对比弹窗 — 左右分栏：原始消息 vs 提取结果 */}
+      <Modal
+        title={null}
+        open={viewModalOpen}
+        onCancel={() => setViewModalOpen(false)}
+        footer={null}
+        width={960}
+        destroyOnClose
+      >
+        {viewLoading ? (
+          <div style={{ textAlign: 'center', padding: '60px 0' }}>
+            <Spin size="large" tip="加载中..." />
+          </div>
+        ) : viewDetail ? (
+          <div>
+            {/* 标题栏 */}
+            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16 }}>
+              <div style={{
+                width: 36, height: 36, borderRadius: 8,
+                background: 'linear-gradient(135deg, #7c3aed, #6366f1)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: '#fff', fontSize: 18, marginRight: 12, flexShrink: 0,
+              }}>
+                <EyeOutlined />
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 16, color: '#1f2937' }}>
+                  资源查看
+                </div>
+                <div style={{ fontSize: 12, color: '#9ca3af' }}>
+                  ID: {viewDetail.resource.id} · {viewDetail.resource.created_at?.replace('T', ' ').substring(0, 19)}
+                  {viewDetail.resource.extract_mode && (
+                    <Tag color={viewDetail.resource.extract_mode === 'ai' ? 'purple' : 'blue'} style={{ marginLeft: 8, marginRight: 0 }}>
+                      {viewDetail.resource.extract_mode === 'ai' ? 'AI 提取' : '规则提取'}
+                    </Tag>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* 左右分栏 */}
+            <div style={{ display: 'flex', gap: 16, minHeight: 300 }}>
+              {/* 左侧 — 原始消息 */}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 13, color: '#6b7280', marginBottom: 8 }}>
+                  📄 原始消息
+                </div>
+                {!viewDetail.has_history ? (
+                  <Alert
+                    message="原始消息不可用"
+                    description="关联的采集历史记录已被删除"
+                    type="warning"
+                    showIcon
+                    style={{ margin: 0 }}
+                  />
+                ) : viewDetail.raw_text ? (
+                  <div style={{
+                    background: '#f9fafb',
+                    borderRadius: 8,
+                    padding: 16,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-all',
+                    fontSize: 13,
+                    lineHeight: 1.8,
+                    color: '#374151',
+                    maxHeight: 500,
+                    overflowY: 'auto',
+                    border: '1px solid #e5e7eb',
+                  }}>
+                    {viewDetail.raw_text}
+                  </div>
+                ) : (
+                  <div style={{
+                    background: '#f9fafb',
+                    borderRadius: 8,
+                    padding: 40,
+                    textAlign: 'center',
+                    color: '#9ca3af',
+                    border: '1px solid #e5e7eb',
+                  }}>
+                    消息内容为空
+                  </div>
+                )}
+              </div>
+
+              {/* 分隔线 */}
+              <div style={{ width: 1, background: '#e5e7eb', flexShrink: 0 }} />
+
+              {/* 右侧 — 提取结果 */}
+              <div style={{ width: 400, flexShrink: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 13, color: '#6b7280', marginBottom: 8 }}>
+                  ✅ 提取结果
+                </div>
+                <div style={{ background: '#f9fafb', borderRadius: 8, padding: 16, border: '1px solid #e5e7eb' }}>
+                  {/* 标题 */}
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 2 }}>标题</div>
+                    <div style={{ fontWeight: 600, color: '#1f2937', fontSize: 14 }}>{viewDetail.resource.title || '-'}</div>
+                  </div>
+
+                  {/* 链接 */}
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 2 }}>链接</div>
+                    {viewDetail.resource.url ? (
+                      <div>
+                        {viewDetail.resource.url.split(',').map((u, i) => (
+                          <div key={i} style={{ marginBottom: i < viewDetail.resource.url!.split(',').length - 1 ? 4 : 0 }}>
+                            <a href={u.trim()} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, wordBreak: 'break-all' }}>
+                              {u.trim()}
+                            </a>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <span style={{ color: '#9ca3af', fontSize: 13 }}>无链接</span>
+                    )}
+                  </div>
+
+                  {/* 描述 */}
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 2 }}>描述</div>
+                    <div style={{ color: '#374151', fontSize: 13, whiteSpace: 'pre-wrap' }}>
+                      {viewDetail.resource.description || <span style={{ color: '#9ca3af' }}>无</span>}
+                    </div>
+                  </div>
+
+                  {/* 分类 */}
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 2 }}>网盘类型</div>
+                    {viewDetail.resource.category ? (
+                      <Tag color="#6366f1">{viewDetail.resource.category}</Tag>
+                    ) : (
+                      <span style={{ color: '#9ca3af', fontSize: 13 }}>无</span>
+                    )}
+                  </div>
+
+                  {/* 标签 */}
+                  {viewDetail.resource.tags && (
+                    <div>
+                      <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 2 }}>标签</div>
+                      <div>
+                        {viewDetail.resource.tags.split(',').filter(Boolean).map((tag, i) => (
+                          <Tag key={i} style={{ marginBottom: 4 }}>{tag.trim()}</Tag>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </Modal>
     </div>
   )

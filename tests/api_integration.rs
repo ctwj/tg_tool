@@ -2278,3 +2278,138 @@ async fn test_captcha_single_use() {
     assert!(!body["success"].as_bool().unwrap());
     assert_eq!(body["data"]["captcha_required"], true);
 }
+
+// ============================================================
+// T002-T004: 资源详情查看（提取对比）
+// ============================================================
+
+#[tokio::test]
+async fn test_get_resource_detail_success() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db.clone());
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 插入一条采集历史（需要先有 collector）
+    let pool = match &db { DbPool::Sqlite(p) => p.clone(), _ => panic!("expected sqlite") };
+    sqlx::query(
+        "INSERT INTO collectors (user_id, channel_id, collector_type, is_active) VALUES (1, 100, 'channel', 1)"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO collector_histories (collector_id, channel_id, message_id, raw_data, is_auto_push, is_extracted) \
+         VALUES (1, 100, 200, ?, 0, 1)"
+    )
+    .bind(r#"{"text":"名称：测试电影\n链接：https://pan.quark.cn/s/abc123","media_type":"photo","photo_id":"12345"}"#)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 插入一条已提取资源
+    sqlx::query(
+        "INSERT INTO extracted_resources (collector_history_id, title, url, description, category, tags, source, extract_mode, is_pushed, is_edited) \
+         VALUES (1, '测试电影', 'https://pan.quark.cn/s/abc123', '测试描述', 'quark', '电影,测试', 'tg', 'ai', 0, 0)"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // GET /api/resources/1/detail
+    let req = build_auth_request("GET", "/api/resources/1/detail", &token, None);
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+
+    // 验证资源信息
+    assert_eq!(body["data"]["resource"]["title"], "测试电影");
+    assert_eq!(body["data"]["resource"]["category"], "quark");
+    assert_eq!(body["data"]["has_history"], true);
+
+    // 验证原始消息文本已解析
+    let raw_text = body["data"]["raw_text"].as_str().unwrap();
+    assert!(raw_text.contains("测试电影"), "raw_text should contain title");
+    assert!(raw_text.contains("pan.quark.cn"), "raw_text should contain URL");
+
+    // 验证 media_type
+    assert_eq!(body["data"]["media_type"], "photo");
+}
+
+#[tokio::test]
+async fn test_get_resource_detail_no_history() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db.clone());
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 插入 collector + history，然后删除 history 模拟"历史已删除"
+    let pool = match &db { DbPool::Sqlite(p) => p.clone(), _ => panic!("expected sqlite") };
+    sqlx::query(
+        "INSERT INTO collectors (user_id, channel_id, collector_type, is_active) VALUES (1, 100, 'channel', 1)"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 先插入采集历史（满足 FK 约束）
+    sqlx::query(
+        "INSERT INTO collector_histories (collector_id, channel_id, message_id, raw_data, is_auto_push, is_extracted) \
+         VALUES (1, 100, 200, '{\"text\":\"旧消息\"}', 0, 1)"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 插入资源（FK 指向 history_id=1）
+    sqlx::query(
+        "INSERT INTO extracted_resources (collector_history_id, title, url, description, category, tags, source, extract_mode, is_pushed, is_edited) \
+         VALUES (1, '孤立资源', 'https://pan.quark.cn/s/orphan', NULL, 'quark', '', 'tg', 'rule', 0, 0)"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 删除采集历史，模拟历史已被清理（暂时禁用 FK 检查）
+    sqlx::query("PRAGMA foreign_keys = OFF")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM collector_histories WHERE id = 1")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let req = build_auth_request("GET", "/api/resources/1/detail", &token, None);
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+
+    // 资源信息仍存在
+    assert_eq!(body["data"]["resource"]["title"], "孤立资源");
+    // 历史不存在
+    assert_eq!(body["data"]["has_history"], false);
+    assert_eq!(body["data"]["raw_text"], serde_json::Value::Null);
+    assert_eq!(body["data"]["media_type"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn test_get_resource_detail_not_found() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    let req = build_auth_request("GET", "/api/resources/99999/detail", &token, None);
+    let resp = app.clone().oneshot(req).await.unwrap();
+    // 应返回 404
+    assert!(resp.status().is_client_error() || resp.status().as_u16() == 404,
+        "Expected 404, got {}", resp.status());
+}

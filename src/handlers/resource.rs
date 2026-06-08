@@ -170,6 +170,15 @@ pub async fn get_resource(
     Ok(Json(json!({ "success": true, "data": resource })))
 }
 
+/// GET /api/resources/{id}/detail — 获取资源详情（含原始消息，用于提取对比）
+pub async fn get_resource_detail(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    let detail = crate::services::resource::get_resource_with_raw(&state.db, id).await?;
+    Ok(Json(json!({ "success": true, "data": detail })))
+}
+
 /// PUT /api/resources/{id} — 编辑资源
 pub async fn update_resource(
     State(state): State<AppState>,
