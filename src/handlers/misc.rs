@@ -123,6 +123,51 @@ pub async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
     };
     drop(push_sched);
 
+    let forward_sched = state.forward_scheduler.read().await;
+    let forward_running = forward_sched.running;
+    let forward_interval = forward_sched.interval_secs;
+    drop(forward_sched);
+
+    // Forward queue stats
+    let (fwd_pending, fwd_forwarded, fwd_failed): (i64, i64, i64) = match &state.db {
+        crate::state::DbPool::Sqlite(pool) => {
+            let p: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM forward_tasks WHERE status = 'pending'")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0);
+            let f: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM forward_tasks WHERE status = 'forwarded'")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0);
+            let e: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM forward_tasks WHERE status = 'failed'")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0);
+            (p, f, e)
+        }
+        crate::state::DbPool::Postgres(pool) => {
+            let p: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM forward_tasks WHERE status = 'pending'")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0);
+            let f: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM forward_tasks WHERE status = 'forwarded'")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0);
+            let e: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM forward_tasks WHERE status = 'failed'")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0);
+            (p, f, e)
+        }
+    };
+
     let body = Json(json!({
         "success": db_ok,
         "data": {
@@ -145,6 +190,13 @@ pub async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
                 "extract_next_run": extract_next_run,
                 "push_running": push_next_run.is_some(),
                 "push_next_run": push_next_run,
+                "forward_running": forward_running,
+                "forward_interval_secs": forward_interval,
+            },
+            "forward_queue": {
+                "pending": fwd_pending,
+                "forwarded": fwd_forwarded,
+                "failed": fwd_failed,
             }
         }
     }));

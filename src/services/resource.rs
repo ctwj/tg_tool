@@ -520,37 +520,39 @@ async fn insert_resource(db: &DbPool, r: &NewExtractedResource) -> Result<bool, 
         })
         .collect();
 
-    // 去重检查：完整 URL 列表相同才判定为重复（不同资源可能共享部分链接）
+    // 去重检查：任一 share_id 已存在即判定为重复
     if !share_ids.is_empty() {
-        // 所有 share_id 排序后拼接，与已有记录的 share_ids 做完整匹配
-        let mut sorted = share_ids.clone();
-        sorted.sort();
-        let my_fingerprint = sorted.join(",");
-        let exists = match db {
-            DbPool::Sqlite(pool) => {
-                // 按 share_ids 数量过滤，避免误匹配
-                let count: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM extracted_resources WHERE share_ids = ?",
-                )
-                .bind(&my_fingerprint)
-                .fetch_one(pool)
-                .await
-                .unwrap_or(0);
-                count > 0
+        let mut found_dup = false;
+        for sid in &share_ids {
+            let exists = match db {
+                DbPool::Sqlite(pool) => {
+                    let count: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM extracted_resources WHERE ',' || share_ids || ',' LIKE '%,' || ? || ',%'",
+                    )
+                    .bind(sid)
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0);
+                    count > 0
+                }
+                DbPool::Postgres(pool) => {
+                    let count: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM extracted_resources WHERE ',' || share_ids || ',' LIKE '%,' || $1 || ',%'",
+                    )
+                    .bind(sid)
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0);
+                    count > 0
+                }
+            };
+            if exists {
+                tracing::debug!("资源去重跳过: share_id={} 已存在", sid);
+                found_dup = true;
+                break;
             }
-            DbPool::Postgres(pool) => {
-                let count: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM extracted_resources WHERE share_ids = $1",
-                )
-                .bind(&my_fingerprint)
-                .fetch_one(pool)
-                .await
-                .unwrap_or(0);
-                count > 0
-            }
-        };
-        if exists {
-            tracing::debug!("资源去重跳过: share_ids={}", my_fingerprint);
+        }
+        if found_dup {
             return Ok(false);
         }
     } else if let Some(ref url) = r.url {

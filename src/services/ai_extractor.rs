@@ -397,6 +397,7 @@ const BATCH_PROMPT: &str = r##"从消息中提取网盘资源，每个链接一�
 - tags: 3-5个标签逗号分隔(去#前缀)，无则填""
 - 忽略t.me链接、广告群、推广链接、hi.keba.host等非网盘链接
 - 网盘链接域名包括: pan.quark.cn, pan.baidu.com, pan.xunlei.com, drive.uc.cn, pan.aliyun.com, 115cdn.com, cloud.189.cn, yun.139.com 等
+- 目录/列表类消息：如果消息标题含"更新目录"、"更新列表"、"合集"、"大全"等汇总型关键词，只提取1条记录，标题用原标题，描述中列出目录内容概要(前200字)，链接取消息中出现的网盘链接。不要将目录中的每一项拆成独立记录。
 
 示例:
 消息: "名称：电影A [4K]\n描述：精彩动作片\n链接：\n夸克：https://pan.quark.cn/s/abc\n百度：https://pan.baidu.com/s/def?pwd=1234"

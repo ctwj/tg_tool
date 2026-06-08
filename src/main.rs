@@ -17,14 +17,17 @@ async fn main() {
     if let Some(ref log_dir) = config.log_dir {
         std::fs::create_dir_all(log_dir).expect("Failed to create log directory");
         let file_appender = tracing_appender::rolling::daily(log_dir, "tg_tool.log");
-        let (stdout_writer, _stdout_guard) = tracing_appender::non_blocking(std::io::stdout());
-        let (file_writer, _file_guard) = tracing_appender::non_blocking(file_appender);
+        let (stdout_writer, stdout_guard) = tracing_appender::non_blocking(std::io::stdout());
+        let (file_writer, file_guard) = tracing_appender::non_blocking(file_appender);
         tracing_subscriber::fmt()
             .with_env_filter(env_filter)
             .with_writer(stdout_writer)
             .finish()
             .with(tracing_subscriber::fmt::layer().with_writer(file_writer))
             .init();
+        // Guards must outlive the subscriber — leak to keep them alive for the process lifetime
+        std::mem::forget(stdout_guard);
+        std::mem::forget(file_guard);
     } else {
         tracing_subscriber::fmt().with_env_filter(env_filter).init();
     }
