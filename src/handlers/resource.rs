@@ -198,6 +198,35 @@ pub async fn delete_resource(
     Ok(Json(json!({ "success": true, "message": "资源已删除" })))
 }
 
+/// POST /api/resources/{id}/push — 单条资源推送
+///
+/// 复用与 `/push/trigger` 完全相同的推送配置（push_api_url + push_auth_type + 模板等），
+/// 对指定 id 的资源发起一次推送请求，**修改 is_pushed = true**，
+/// 在 push_histories 留痕（batch_id 以 `single_` 前缀，便于区分）。
+pub async fn push_resource(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    let result =
+        crate::services::resource::push_single_resource(&state.db, &state.option_cache, id).await?;
+
+    let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    match status {
+        "success" => Ok(Json(json!({ "success": true, "data": result }))),
+        "config_error" => Ok(Json(json!({
+            "success": false,
+            "message": result.get("message").cloned().unwrap_or_default(),
+            "data": { "missing": result.get("missing").cloned().unwrap_or_default() }
+        }))),
+        // status == "failed" 或其他：推送发出但 API 返回错误，仍返回详情供排查
+        _ => Ok(Json(json!({
+            "success": false,
+            "message": result.get("message").cloned().unwrap_or_default(),
+            "data": result,
+        }))),
+    }
+}
+
 /// GET /api/resources/stats — 资源统计
 pub async fn get_resource_stats(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     let stats = crate::services::resource::get_resource_stats(&state.db).await?;

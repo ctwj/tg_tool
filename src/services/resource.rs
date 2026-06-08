@@ -1093,6 +1093,85 @@ pub async fn push_resources(
         }));
     }
 
+    let batch_id = format!(
+        "batch_{}_{}",
+        if target.is_empty() { "default" } else { target },
+        chrono::Utc::now().timestamp()
+    );
+
+    let resource_count = resources.len();
+    let result =
+        build_and_send_push_request(&resources, api_url, api_token, target, option_cache).await;
+
+    match result {
+        Ok((status_code, body, is_success, _request_info)) => {
+            if is_success {
+                // 标记为已推送
+                for r in &resources {
+                    mark_resource_pushed(db, r.id).await?;
+                }
+
+                // 记录推送历史
+                record_push_history(
+                    &batch_id,
+                    target,
+                    "success",
+                    resource_count as i64,
+                    "推送成功",
+                    None,
+                    db,
+                )
+                .await?;
+
+                Ok(json!({
+                    "status": "success",
+                    "processed_count": resource_count,
+                    "batch_id": batch_id
+                }))
+            } else {
+                record_push_history(
+                    &batch_id,
+                    target,
+                    "failed",
+                    resource_count as i64,
+                    &format!("API返回错误: {}", status_code),
+                    Some(&body),
+                    db,
+                )
+                .await?;
+                Err(AppError::Internal(format!(
+                    "推送API返回错误: status={}, body={}",
+                    status_code, body
+                )))
+            }
+        }
+        Err(e) => {
+            record_push_history(
+                &batch_id,
+                target,
+                "failed",
+                0,
+                "推送请求失败",
+                Some(&e.to_string()),
+                db,
+            )
+            .await?;
+            Err(AppError::Internal(format!("推送请求失败: {e}")))
+        }
+    }
+}
+
+/// 构建并发送推送请求 — 被 push_resources（批量）和 push_single_resource（单条）共用
+/// 返回 (http_status, response_body, is_success, request_info)
+///   - request_info: 描述本次发出的请求（method/url/headers/body），认证字段值脱敏为 "***"，供前端展示
+///   - 调用方负责 mark_resource_pushed + record_push_history
+async fn build_and_send_push_request(
+    resources: &[ExtractedResource],
+    api_url: &str,
+    api_token: &str,
+    target: &str,
+    option_cache: &OptionCache,
+) -> Result<(u16, String, bool, serde_json::Value), AppError> {
     // 转换为推送格式
     let push_data: Vec<serde_json::Value> = resources
         .iter()
@@ -1114,12 +1193,6 @@ pub async fn push_resources(
             })
         })
         .collect();
-
-    let batch_id = format!(
-        "batch_{}_{}",
-        if target.is_empty() { "default" } else { target },
-        chrono::Utc::now().timestamp()
-    );
 
     // 读取通用推送配置
     let cache = option_cache.read().await;
@@ -1169,7 +1242,8 @@ pub async fn push_resources(
         .build()
         .map_err(|e| AppError::Internal(format!("创建 HTTP 客户端失败: {e}")))?;
 
-    let mut request = match http_method.to_uppercase().as_str() {
+    let method_upper = http_method.to_uppercase();
+    let mut request = match method_upper.as_str() {
         "PUT" => client.put(api_url),
         "PATCH" => client.patch(api_url),
         _ => client.post(api_url),
@@ -1177,16 +1251,39 @@ pub async fn push_resources(
 
     request = request.header("Content-Type", "application/json");
 
+    // 收集 request_info 中的 headers（含脱敏标记）— 同时供前端展示
+    let mut info_headers: Vec<serde_json::Value> = vec![json!({
+        "key": "Content-Type",
+        "value": "application/json",
+        "is_auth": false,
+    })];
+
     // 添加认证
     match auth_type.as_str() {
         "bearer" => {
             request = request.header("Authorization", format!("Bearer {}", api_token));
+            info_headers.push(json!({
+                "key": "Authorization",
+                "value": "***",
+                "is_auth": true,
+            }));
         }
         "custom_header" => {
             request = request.header(&auth_key, api_token);
+            info_headers.push(json!({
+                "key": auth_key,
+                "value": "***",
+                "is_auth": true,
+            }));
         }
         "query" => {
             request = request.query(&[(&auth_key as &str, api_token)]);
+            info_headers.push(json!({
+                "key": auth_key,
+                "value": "***",
+                "is_auth": true,
+                "location": "query",
+            }));
         }
         _ => {} // "none" — 不添加认证
     }
@@ -1208,70 +1305,54 @@ pub async fn push_resources(
                     continue;
                 }
                 request = request.header(key, value);
+                info_headers.push(json!({
+                    "key": key,
+                    "value": value,
+                    "is_auth": false,
+                }));
             }
         }
     }
 
-    let resp = request.json(&body_value).send().await;
+    // 计算 request_info 中的 URL（query 认证时把 token 替换为 *** 展示）
+    let info_url = if auth_type == "query" && !api_token.is_empty() {
+        // 把 token 值替换为 *** — 这里只用于展示，原 URL 不变
+        api_url.replace(api_token, "***")
+        // 注：URL 末尾是否已带 query 由前端展示判断；这里做近似展示
+    } else {
+        api_url.to_string()
+    };
 
-    match resp {
-        Ok(response) => {
-            let status_code = response.status();
-            if status_code.is_success() {
-                // 标记为已推送
-                for r in &resources {
-                    mark_resource_pushed(db, r.id).await?;
-                }
+    // 让 URL 看起来更接近最终发出去的样子（query 认证时附带 key=***）
+    let info_url_display = if auth_type == "query" && !api_token.is_empty() {
+        let sep = if info_url.contains('?') { '&' } else { '?' };
+        format!("{}{}{}=***", api_url, sep, auth_key)
+    } else {
+        info_url
+    };
 
-                // 记录推送历史
-                record_push_history(
-                    &batch_id,
-                    target,
-                    "success",
-                    resources.len() as i64,
-                    "推送成功",
-                    None,
-                    db,
-                )
-                .await?;
+    let response = request
+        .json(&body_value)
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("推送请求发送失败: {e}")))?;
 
-                Ok(json!({
-                    "status": "success",
-                    "processed_count": resources.len(),
-                    "batch_id": batch_id
-                }))
-            } else {
-                let body = response.text().await.unwrap_or_default();
-                record_push_history(
-                    &batch_id,
-                    target,
-                    "failed",
-                    resources.len() as i64,
-                    &format!("API返回错误: {}", status_code),
-                    Some(&body),
-                    db,
-                )
-                .await?;
-                Err(AppError::Internal(format!(
-                    "推送API返回错误: status={}, body={}",
-                    status_code, body
-                )))
-            }
-        }
-        Err(e) => {
-            record_push_history(
-                &batch_id,
-                target,
-                "failed",
-                0,
-                "推送请求失败",
-                Some(&e.to_string()),
-                db,
-            )
-            .await?;
-            Err(AppError::Internal(format!("推送请求失败: {e}")))
-        }
-    }
+    let status_code = response.status();
+    let http_status = status_code.as_u16();
+    let body = response.text().await.unwrap_or_default();
+    let is_success = status_code.is_success();
+
+    // 组装 request_info（method/url/headers/body），body 用 pretty-print 让前端展示更友好
+    let body_pretty =
+        serde_json::to_string_pretty(&body_value).unwrap_or_else(|_| body_str.clone());
+    let request_info = json!({
+        "method": method_upper,
+        "url": info_url_display,
+        "headers": info_headers,
+        "body": body_pretty,
+    });
+
+    Ok((http_status, body, is_success, request_info))
 }
 
 /// 标记资源为已推送
@@ -1324,6 +1405,121 @@ async fn record_push_history(
         }
     }
     Ok(())
+}
+
+/// 单条资源推送 — 复用与 push_resources 完全相同的推送配置发起请求
+/// **行为**：实际推送 + 标记 is_pushed=true + 记录推送历史（batch_id 以 single_ 前缀）
+pub async fn push_single_resource(
+    db: &DbPool,
+    option_cache: &OptionCache,
+    id: i64,
+) -> Result<serde_json::Value, AppError> {
+    // 1. 查询单条资源
+    let resource = get_resource(db, id).await?;
+
+    // 2. 读取推送配置
+    let cache = option_cache.read().await;
+    let api_url = cache.get("push_api_url").cloned().unwrap_or_default();
+    let api_token = cache.get("push_api_token").cloned().unwrap_or_default();
+    let target = cache.get("push_target").cloned().unwrap_or_default();
+    let auth_type = cache
+        .get("push_auth_type")
+        .cloned()
+        .unwrap_or_else(|| "custom_header".to_string());
+    drop(cache);
+
+    // 3. 配置校验
+    let mut missing = Vec::new();
+    if api_url.is_empty() {
+        missing.push("push_api_url");
+    }
+    if auth_type != "none" && api_token.is_empty() {
+        missing.push("push_api_token");
+    }
+    if !missing.is_empty() {
+        return Ok(json!({
+            "status": "config_error",
+            "message": "推送配置不完整",
+            "missing": missing,
+        }));
+    }
+
+    // 4. 生成 batch_id（前缀 single_ + 资源 id，便于在推送历史中区分）
+    let target_label = if target.is_empty() {
+        "default"
+    } else {
+        &target
+    };
+    let batch_id = format!(
+        "single_{}_{}_{}",
+        target_label,
+        id,
+        chrono::Utc::now().timestamp()
+    );
+
+    // 5. 调用通用 helper 发送请求
+    let result =
+        build_and_send_push_request(&[resource], &api_url, &api_token, &target, option_cache).await;
+
+    match result {
+        Ok((status_code, body, is_success, request_info)) => {
+            if is_success {
+                // 标记为已推送（与 push_resources 行 1111 一致）
+                mark_resource_pushed(db, id).await?;
+
+                record_push_history(
+                    &batch_id,
+                    &target,
+                    "success",
+                    1,
+                    &format!("单条推送成功 (HTTP {})", status_code),
+                    None,
+                    db,
+                )
+                .await?;
+                Ok(json!({
+                    "status": "success",
+                    "message": "单条推送成功",
+                    "http_status": status_code,
+                    "response_body": body,
+                    "batch_id": batch_id,
+                    "request": request_info,
+                }))
+            } else {
+                record_push_history(
+                    &batch_id,
+                    &target,
+                    "failed",
+                    1,
+                    &format!("单条推送失败: HTTP {}", status_code),
+                    Some(&body),
+                    db,
+                )
+                .await?;
+                Ok(json!({
+                    "status": "failed",
+                    "message": format!("API返回错误: HTTP {}", status_code),
+                    "http_status": status_code,
+                    "response_body": body,
+                    "batch_id": batch_id,
+                    "request": request_info,
+                }))
+            }
+        }
+        Err(e) => {
+            record_push_history(
+                &batch_id,
+                &target,
+                "failed",
+                0,
+                "单条推送请求失败",
+                Some(&e.to_string()),
+                db,
+            )
+            .await?;
+            Err(e)
+        }
+    }
 }
 
 #[cfg(test)]
