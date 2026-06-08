@@ -643,6 +643,11 @@ const Resources: React.FC = () => {
                   资源查看
                 </div>
                 <div style={{ fontSize: 12, color: '#9ca3af' }}>
+                  {viewDetail.channel_name && (
+                    <span style={{ color: '#6366f1', marginRight: 6 }}>
+                      📡 {viewDetail.channel_name}
+                    </span>
+                  )}
                   ID: {viewDetail.resource.id} · {viewDetail.resource.created_at?.replace('T', ' ').substring(0, 19)}
                   {viewDetail.resource.extract_mode && (
                     <Tag color={viewDetail.resource.extract_mode === 'ai' ? 'purple' : 'blue'} style={{ marginLeft: 8, marginRight: 0 }}>

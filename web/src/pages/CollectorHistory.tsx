@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Table, Button, Tag, Typography, message, Select, Space, Modal, Spin, Alert, Empty } from 'antd'
+import { Table, Button, Tag, Typography, message, Select, Space, Modal, Spin, Alert, Empty, Input } from 'antd'
 import { ArrowLeftOutlined, ExperimentOutlined, ThunderboltOutlined, FileTextOutlined, LinkOutlined, CopyOutlined } from '@ant-design/icons'
 import { useParams, useLocation, useNavigate } from 'react-router-dom'
 import apiClient from '../api/client'
@@ -45,6 +45,7 @@ const CollectorHistory: React.FC = () => {
   const [loading, setLoading] = useState(false)
   const [pagination, setPagination] = useState({ page: 1, pageSize: 20, total: 0 })
   const [extractedFilter, setExtractedFilter] = useState<boolean | undefined>(undefined)
+  const [keyword, setKeyword] = useState('')
 
   // 资源提取弹窗状态
   const [extractModalOpen, setExtractModalOpen] = useState(false)
@@ -67,6 +68,9 @@ const CollectorHistory: React.FC = () => {
       if (extractedFilter !== undefined) {
         params.is_extracted = String(extractedFilter)
       }
+      if (keyword.trim()) {
+        params.keyword = keyword.trim()
+      }
       const res = await apiClient.get('/collectors/histories', { params })
       setData(res.data.data?.list ?? [])
       setPagination(prev => ({ ...prev, page, total: res.data.data?.pagination?.total ?? 0 }))
@@ -74,7 +78,7 @@ const CollectorHistory: React.FC = () => {
     finally { setLoading(false) }
   }
 
-  useEffect(() => { fetch() }, [id, extractedFilter])
+  useEffect(() => { fetch() }, [id, extractedFilter, keyword])
 
   const parseRawData = (raw: string | null): { text: string; mediaType?: string } => {
     if (!raw) return { text: '(无内容)' }
@@ -201,6 +205,13 @@ const CollectorHistory: React.FC = () => {
 
       <div style={{ flexShrink: 0, marginBottom: 12 }}>
         <Space>
+          <Input.Search
+            placeholder="搜索 ID 或内容"
+            allowClear
+            style={{ width: 220 }}
+            onSearch={v => setKeyword(v)}
+            onChange={e => { if (!e.target.value) setKeyword('') }}
+          />
           <span style={{ color: '#6b7280', fontSize: 14 }}>提取状态：</span>
           <Select
             value={extractedFilter}

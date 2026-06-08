@@ -241,6 +241,7 @@ export interface ResourceDetailResponse {
   raw_data?: string
   media_type?: string
   has_history: boolean
+  channel_name?: string
 }
 
 // System status

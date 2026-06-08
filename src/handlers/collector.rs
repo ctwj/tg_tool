@@ -398,19 +398,33 @@ pub async fn list_histories(
         None => String::new(),
     };
 
+    // Build keyword WHERE clause (search by ID or raw_data content)
+    let kw_sql = match &params.keyword {
+        Some(kw) if !kw.trim().is_empty() => {
+            let escaped = kw.trim().replace('\'', "''");
+            // 支持纯数字按 ID 精确搜索，否则按内容模糊搜索
+            if escaped.chars().all(|c| c.is_ascii_digit()) {
+                format!(" AND (id = {} OR raw_data LIKE '%{}%')", escaped, escaped)
+            } else {
+                format!(" AND raw_data LIKE '%{}%'", escaped)
+            }
+        }
+        _ => String::new(),
+    };
+
     let (list, total): (Vec<crate::models::collector_history::CollectorHistory>, i64) = match (
         &state.db,
         &params.collector_id,
     ) {
         (crate::state::DbPool::Sqlite(pool), Some(cid)) => {
             let total: i64 = sqlx::query_scalar(&format!(
-                "SELECT COUNT(*) FROM collector_histories WHERE collector_id = ?{ext_sql}"
+                "SELECT COUNT(*) FROM collector_histories WHERE collector_id = ?{ext_sql}{kw_sql}"
             ))
             .bind(cid)
             .fetch_one(pool)
             .await?;
             let list = sqlx::query_as(
-                &format!("SELECT id, collector_id, channel_id, message_id, post_time, raw_data, is_auto_push, remote_id, created_at, is_extracted FROM collector_histories WHERE collector_id = ?{ext_sql} ORDER BY id DESC LIMIT ? OFFSET ?")
+                &format!("SELECT id, collector_id, channel_id, message_id, post_time, raw_data, is_auto_push, remote_id, created_at, is_extracted FROM collector_histories WHERE collector_id = ?{ext_sql}{kw_sql} ORDER BY id DESC LIMIT ? OFFSET ?")
             ).bind(cid).bind(page_size).bind(offset).fetch_all(pool).await?;
             (list, total)
         }
@@ -420,21 +434,21 @@ pub async fn list_histories(
                 None => String::new(),
             };
             let total: i64 = sqlx::query_scalar(&format!(
-                "SELECT COUNT(*) FROM collector_histories WHERE collector_id = $1{ext_sql_pg}"
+                "SELECT COUNT(*) FROM collector_histories WHERE collector_id = $1{ext_sql_pg}{kw_sql}"
             ))
             .bind(cid)
             .fetch_one(pool)
             .await?;
             let list = sqlx::query_as(
-                &format!("SELECT id, collector_id, channel_id, message_id, post_time, raw_data, is_auto_push, remote_id, created_at, is_extracted FROM collector_histories WHERE collector_id = $1{ext_sql_pg} ORDER BY id DESC LIMIT $2 OFFSET $3")
+                &format!("SELECT id, collector_id, channel_id, message_id, post_time, raw_data, is_auto_push, remote_id, created_at, is_extracted FROM collector_histories WHERE collector_id = $1{ext_sql_pg}{kw_sql} ORDER BY id DESC LIMIT $2 OFFSET $3")
             ).bind(cid).bind(page_size).bind(offset).fetch_all(pool).await?;
             (list, total)
         }
         (crate::state::DbPool::Sqlite(pool), None) => {
-            let where_clause = if ext_sql.is_empty() {
+            let where_clause = if ext_sql.is_empty() && kw_sql.is_empty() {
                 String::new()
             } else {
-                format!(" WHERE 1=1{ext_sql}")
+                format!(" WHERE 1=1{ext_sql}{kw_sql}")
             };
             let total: i64 = sqlx::query_scalar(&format!(
                 "SELECT COUNT(*) FROM collector_histories{where_clause}"
@@ -447,17 +461,35 @@ pub async fn list_histories(
             (list, total)
         }
         (crate::state::DbPool::Postgres(pool), None) => {
-            let ext_sql_pg = match params.is_extracted {
-                Some(v) => format!(" WHERE is_extracted = {}", v),
-                None => String::new(),
+            let mut where_parts = Vec::new();
+            if let Some(v) = params.is_extracted {
+                where_parts.push(format!("is_extracted = {}", v));
+            }
+            if let Some(kw) = &params.keyword
+                && !kw.trim().is_empty()
+            {
+                let escaped = kw.trim().replace('\'', "''");
+                if escaped.chars().all(|c| c.is_ascii_digit()) {
+                    where_parts.push(format!(
+                        "(id = {} OR raw_data LIKE '%{}%')",
+                        escaped, escaped
+                    ));
+                } else {
+                    where_parts.push(format!("raw_data LIKE '%{}%'", escaped));
+                }
+            }
+            let where_sql = if where_parts.is_empty() {
+                String::new()
+            } else {
+                format!(" WHERE {}", where_parts.join(" AND "))
             };
             let total: i64 = sqlx::query_scalar(&format!(
-                "SELECT COUNT(*) FROM collector_histories{ext_sql_pg}"
+                "SELECT COUNT(*) FROM collector_histories{where_sql}"
             ))
             .fetch_one(pool)
             .await?;
             let list = sqlx::query_as(
-                &format!("SELECT id, collector_id, channel_id, message_id, post_time, raw_data, is_auto_push, remote_id, created_at, is_extracted FROM collector_histories{ext_sql_pg} ORDER BY id DESC LIMIT $1 OFFSET $2")
+                &format!("SELECT id, collector_id, channel_id, message_id, post_time, raw_data, is_auto_push, remote_id, created_at, is_extracted FROM collector_histories{where_sql} ORDER BY id DESC LIMIT $1 OFFSET $2")
             ).bind(page_size).bind(offset).fetch_all(pool).await?;
             (list, total)
         }

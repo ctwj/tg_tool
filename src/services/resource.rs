@@ -752,23 +752,31 @@ pub async fn get_resource_with_raw(db: &DbPool, id: i64) -> Result<serde_json::V
     // 1. 获取资源
     let resource = get_resource(db, id).await?;
 
-    // 2. 查询关联的采集历史 raw_data
-    let raw_data: Option<String> = match db {
+    // 2. 查询关联的采集历史 raw_data + 采集器 channel_name
+    let (raw_data, channel_name): (Option<String>, Option<String>) = match db {
         DbPool::Sqlite(pool) => {
-            let row: Option<(Option<String>,)> =
-                sqlx::query_as("SELECT raw_data FROM collector_histories WHERE id = ?")
-                    .bind(resource.collector_history_id)
-                    .fetch_optional(pool)
-                    .await?;
-            row.and_then(|r| r.0)
+            let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+                "SELECT ch.raw_data, c.channel_name \
+                 FROM collector_histories ch \
+                 LEFT JOIN collectors c ON ch.collector_id = c.id \
+                 WHERE ch.id = ?",
+            )
+            .bind(resource.collector_history_id)
+            .fetch_optional(pool)
+            .await?;
+            row.map(|r| (r.0, r.1)).unwrap_or((None, None))
         }
         DbPool::Postgres(pool) => {
-            let row: Option<(Option<String>,)> =
-                sqlx::query_as("SELECT raw_data FROM collector_histories WHERE id = $1")
-                    .bind(resource.collector_history_id)
-                    .fetch_optional(pool)
-                    .await?;
-            row.and_then(|r| r.0)
+            let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+                "SELECT ch.raw_data, c.channel_name \
+                 FROM collector_histories ch \
+                 LEFT JOIN collectors c ON ch.collector_id = c.id \
+                 WHERE ch.id = $1",
+            )
+            .bind(resource.collector_history_id)
+            .fetch_optional(pool)
+            .await?;
+            row.map(|r| (r.0, r.1)).unwrap_or((None, None))
         }
     };
 
@@ -800,6 +808,7 @@ pub async fn get_resource_with_raw(db: &DbPool, id: i64) -> Result<serde_json::V
         "raw_data": raw_data,
         "media_type": media_type,
         "has_history": has_history,
+        "channel_name": channel_name,
     }))
 }
 
