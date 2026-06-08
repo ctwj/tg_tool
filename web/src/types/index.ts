@@ -234,6 +234,15 @@ export interface SingleExtractResponse {
   extract_mode: string
 }
 
+// Resource detail (view extraction comparison)
+export interface ResourceDetailResponse {
+  resource: ExtractedResource
+  raw_text?: string
+  raw_data?: string
+  media_type?: string
+  has_history: boolean
+}
+
 // System status
 export interface SystemStatus {
   version: string

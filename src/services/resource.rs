@@ -746,6 +746,68 @@ pub async fn get_resource(db: &DbPool, id: i64) -> Result<ExtractedResource, App
     .ok_or_else(|| AppError::NotFound("资源不存在".to_string()))
 }
 
+/// 资源详情（含原始消息）— 用于查看提取对比
+/// 通过 collector_history_id 查询采集历史的 raw_data，解析出文本和媒体类型
+pub async fn get_resource_with_raw(
+    db: &DbPool,
+    id: i64,
+) -> Result<serde_json::Value, AppError> {
+    // 1. 获取资源
+    let resource = get_resource(db, id).await?;
+
+    // 2. 查询关联的采集历史 raw_data
+    let raw_data: Option<String> = match db {
+        DbPool::Sqlite(pool) => {
+            let row: Option<(Option<String>,)> = sqlx::query_as(
+                "SELECT raw_data FROM collector_histories WHERE id = ?",
+            )
+            .bind(resource.collector_history_id)
+            .fetch_optional(pool)
+            .await?;
+            row.and_then(|r| r.0)
+        }
+        DbPool::Postgres(pool) => {
+            let row: Option<(Option<String>,)> = sqlx::query_as(
+                "SELECT raw_data FROM collector_histories WHERE id = $1",
+            )
+            .bind(resource.collector_history_id)
+            .fetch_optional(pool)
+            .await?;
+            row.and_then(|r| r.0)
+        }
+    };
+
+    // 3. 解析 raw_data
+    let mut raw_text: Option<String> = None;
+    let mut media_type: Option<String> = None;
+    let has_history = raw_data.is_some();
+
+    if let Some(ref rd) = raw_data {
+        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(rd) {
+            raw_text = msg
+                .get("text")
+                .and_then(|t| t.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| Some(rd.clone()));
+            media_type = msg
+                .get("media_type")
+                .and_then(|t| t.as_str())
+                .map(|s| s.to_string());
+        } else {
+            // 非 JSON，直接作为文本
+            raw_text = Some(rd.clone());
+        }
+    }
+
+    Ok(json!({
+        "resource": resource,
+        "raw_text": raw_text,
+        "raw_data": raw_data,
+        "media_type": media_type,
+        "has_history": has_history,
+    }))
+}
+
 /// 更新资源 — 更新后标记 is_edited = true
 pub async fn update_resource(
     db: &DbPool,
