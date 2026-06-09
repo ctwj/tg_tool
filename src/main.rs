@@ -196,13 +196,34 @@ async fn main() {
 
 async fn init_database(config: &Config) -> DbPool {
     let database_url = config.database_url();
+    tracing::info!(
+        "Connecting to database ({}-mode)...",
+        if config.is_postgres() {
+            "postgres"
+        } else {
+            "sqlite"
+        }
+    );
 
     if config.is_postgres() {
-        let pool = sqlx::postgres::PgPoolOptions::new()
+        // 用 tokio::time::timeout 包装连接，无论卡在 TCP/认证/SSL，15 秒必失败
+        // （PG 未完全启动或共享内存异常时会卡住握手）
+        let connect_fut = sqlx::postgres::PgPoolOptions::new()
             .max_connections(10)
-            .connect(&database_url)
+            .acquire_timeout(std::time::Duration::from_secs(10))
+            .connect(&database_url);
+        let pool = tokio::time::timeout(std::time::Duration::from_secs(15), connect_fut)
             .await
-            .expect("Failed to connect to PostgreSQL");
+            .unwrap_or_else(|_| {
+                panic!(
+                    "连接 PostgreSQL 超时（15秒无响应）\n\
+                     排查：1) 确认 PG 已完全启动（重启后等待几秒）\n\
+                     2) 检查 SQL_DSN 主机/端口/密码\n\
+                     3) PG 共享内存错误(58P01)需重启 PG 服务\n\
+                     4) 查看 PG 日志确认是否在 recovery"
+                )
+            })
+            .unwrap_or_else(|e| panic!("Failed to connect to PostgreSQL: {e}"));
         DbPool::Postgres(pool)
     } else {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
