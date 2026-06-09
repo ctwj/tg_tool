@@ -10,4 +10,5 @@ pub mod push;
 pub mod resource;
 pub mod response;
 pub mod rule;
+pub mod scheduler;
 pub mod user;

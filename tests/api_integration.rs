@@ -44,6 +44,10 @@ async fn setup_test_db() -> DbPool {
     let m5 = include_str!("../migrations/005_add_share_ids_sqlite.sql");
     let _ = sqlx::raw_sql(m5).execute(&pool).await;
 
+    // Migration 009: extract_histories
+    let m9 = include_str!("../migrations/009_extract_histories_sqlite.sql");
+    let _ = sqlx::raw_sql(m9).execute(&pool).await;
+
     // 插入 root 用户（使用当前 bcrypt 版本生成 hash）
     let hash = crypto::hash_password("123456").expect("Failed to hash root password");
     sqlx::query("INSERT INTO users (username, password, role, status) VALUES ('root', ?, 100, 1)")
@@ -2427,4 +2431,119 @@ async fn test_get_resource_detail_not_found() {
         "Expected 404, got {}",
         resp.status()
     );
+}
+
+// ============================================================
+// T005-T008: 调度可视化面板（提取历史 + next_run 修正）
+// ============================================================
+
+#[tokio::test]
+async fn test_extract_histories_empty() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 空表查询
+    let req = build_auth_request(
+        "GET",
+        "/api/extract-histories?page=1&page_size=20",
+        &token,
+        None,
+    );
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    assert_eq!(body["data"]["list"].as_array().unwrap().len(), 0);
+    assert_eq!(body["data"]["pagination"]["total"], 0);
+}
+
+#[tokio::test]
+async fn test_extract_histories_list() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db.clone());
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    let pool = match &db {
+        DbPool::Sqlite(p) => p.clone(),
+        _ => panic!("expected sqlite"),
+    };
+    // 插入 3 条历史（含成功和失败）
+    sqlx::query("INSERT INTO extract_histories (status, total_scanned, extracted, skipped, errors, message) VALUES ('success', 100, 42, 55, 3, NULL)")
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO extract_histories (status, total_scanned, extracted, skipped, errors, message) VALUES ('success', 200, 80, 115, 5, NULL)")
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO extract_histories (status, total_scanned, extracted, skipped, errors, message) VALUES ('failed', 0, 0, 0, 0, 'connection error')")
+        .execute(&pool).await.unwrap();
+
+    let req = build_auth_request(
+        "GET",
+        "/api/extract-histories?page=1&page_size=10",
+        &token,
+        None,
+    );
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    assert_eq!(body["data"]["list"].as_array().unwrap().len(), 3);
+    assert_eq!(body["data"]["pagination"]["total"], 3);
+}
+
+#[tokio::test]
+async fn test_extract_histories_stats() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db.clone());
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    let pool = match &db {
+        DbPool::Sqlite(p) => p.clone(),
+        _ => panic!("expected sqlite"),
+    };
+    // 用显式 executed_at 确保时间顺序，避免毫秒级同时插入导致排序不确定
+    sqlx::query("INSERT INTO extract_histories (status, extracted, executed_at) VALUES ('success', 42, '2026-06-09 10:00:00')")
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO extract_histories (status, extracted, executed_at) VALUES ('success', 80, '2026-06-09 11:00:00')")
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO extract_histories (status, extracted, executed_at) VALUES ('failed', 0, '2026-06-09 09:00:00')")
+        .execute(&pool).await.unwrap();
+
+    let req = build_auth_request("GET", "/api/extract-histories/stats", &token, None);
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    assert_eq!(body["data"]["total"], 3);
+    assert_eq!(body["data"]["success"], 2);
+    assert_eq!(body["data"]["failed"], 1);
+    // last_extracted 取最近一次成功的 extracted（80）
+    assert_eq!(body["data"]["last_extracted"], 80);
+}
+
+#[tokio::test]
+async fn test_status_next_run_after_restart() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 调度未启动时，next_run 为 null，running=false
+    let req = build_auth_request("GET", "/api/status", &token, None);
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_eq!(body["data"]["schedulers"]["push_running"], false);
+    assert_eq!(body["data"]["schedulers"]["extract_running"], false);
+    assert_eq!(
+        body["data"]["schedulers"]["push_next_run"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        body["data"]["schedulers"]["extract_next_run"],
+        serde_json::Value::Null
+    );
+    // interval_minutes 字段存在
+    assert!(body["data"]["schedulers"]["push_interval_minutes"].is_number());
+    assert!(body["data"]["schedulers"]["extract_interval_minutes"].is_number());
 }

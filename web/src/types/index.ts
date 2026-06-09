@@ -253,3 +253,39 @@ export interface SystemStatus {
     active: number
   }
 }
+
+// Extract history (scheduler dashboard)
+export interface ExtractHistory {
+  id: number
+  status: 'success' | 'failed'
+  total_scanned: number
+  extracted: number
+  skipped: number
+  errors: number
+  message?: string
+  executed_at: string
+}
+
+export interface ExtractHistoryListResult {
+  list: ExtractHistory[]
+  pagination: { page: number; page_size: number; total: number }
+}
+
+export interface ExtractHistoryStats {
+  total: number
+  success: number
+  failed: number
+  last_extracted: number
+}
+
+// Scheduler status (from /status schedulers block)
+export interface SchedulersStatus {
+  extract_running: boolean
+  extract_next_run?: string
+  extract_interval_minutes: number
+  push_running: boolean
+  push_next_run?: string
+  push_interval_minutes: number
+  forward_running: boolean
+  forward_interval_secs: number
+}

@@ -11,6 +11,8 @@ pub struct SchedulerState {
     pub running: bool,
     pub interval_minutes: u64,
     pub last_run_at: Option<std::time::Instant>,
+    /// 调度启动时刻 — 用于修正重启后 next_run 计算（last_run_at 重启即丢）
+    pub started_at: Option<std::time::Instant>,
     pub handle: Option<tokio::task::JoinHandle<()>>,
     pub cancel: Option<CancellationToken>,
     pub api_url: String,
@@ -32,6 +34,7 @@ pub fn create_scheduler() -> SchedulerHandle {
         running: false,
         interval_minutes: 30,
         last_run_at: None,
+        started_at: None,
         handle: None,
         cancel: None,
         api_url: String::new(),
@@ -62,6 +65,7 @@ pub async fn start_scheduler(
     state.cancel = Some(cancel.clone());
     state.running = true;
     state.interval_minutes = interval_minutes;
+    state.started_at = Some(std::time::Instant::now());
 
     let api_url = state.api_url.clone();
     let api_token = state.api_token.clone();
@@ -186,6 +190,8 @@ pub struct ExtractSchedulerState {
     pub running: bool,
     pub interval_minutes: u64,
     pub last_run_at: Option<std::time::Instant>,
+    /// 调度启动时刻 — 用于修正重启后 next_run 计算（last_run_at 重启即丢）
+    pub started_at: Option<std::time::Instant>,
     pub handle: Option<tokio::task::JoinHandle<()>>,
     pub cancel: Option<CancellationToken>,
 }
@@ -198,6 +204,7 @@ pub fn create_extract_scheduler() -> ExtractSchedulerHandle {
         running: false,
         interval_minutes: 30,
         last_run_at: None,
+        started_at: None,
         handle: None,
         cancel: None,
     }))
@@ -218,6 +225,7 @@ pub async fn start_extract_scheduler(
     state.cancel = Some(cancel.clone());
     state.running = true;
     state.interval_minutes = interval_minutes;
+    state.started_at = Some(std::time::Instant::now());
 
     let sched = scheduler.clone();
     let handle = tokio::spawn(async move {
@@ -231,6 +239,16 @@ pub async fn start_extract_scheduler(
                         1000,
                     )
                     .await;
+                    // 持久化提取历史（成功/失败均记录），弥补当前仅 warn 的可观测性缺口
+                    let (status, scanned, extracted, skipped, errors, msg) = match &result {
+                        Ok(r) => ("success", r.total_scanned, r.extracted, r.skipped, r.errors, None),
+                        Err(e) => ("failed", 0i64, 0i64, 0i64, 0i64, Some(e.to_string())),
+                    };
+                    if let Err(e) = crate::services::extract_history::insert(
+                        &app_state.db, status, scanned, extracted, skipped, errors, msg.as_deref(),
+                    ).await {
+                        tracing::warn!("写入提取历史失败: {e}");
+                    }
                     // Update last_run_at
                     {
                         let mut s = sched.write().await;
