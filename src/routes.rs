@@ -172,6 +172,15 @@ pub fn build_router(state: AppState) -> Router {
             "/push/extract-config",
             put(handlers::resource::update_extract_config),
         )
+        // Extract histories (scheduler dashboard)
+        .route(
+            "/extract-histories",
+            get(handlers::scheduler::list_extract_histories),
+        )
+        .route(
+            "/extract-histories/stats",
+            get(handlers::scheduler::get_extract_histories_stats),
+        )
         // Resources
         .route("/resources", get(handlers::resource::list_resources))
         .route(

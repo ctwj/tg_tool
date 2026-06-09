@@ -90,12 +90,14 @@ pub async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
 
     // 调度器状态
     let extract_sched = state.extract_scheduler.read().await;
+    let extract_interval = extract_sched.interval_minutes;
     let extract_next_run = if extract_sched.running {
-        let elapsed = extract_sched
-            .last_run_at
-            .map(|t| t.elapsed().as_secs())
-            .unwrap_or(0);
-        let next_secs = (extract_sched.interval_minutes * 60).saturating_sub(elapsed);
+        // 修正：last_run_at 在重启后为 None，回退到 started_at 作为基准
+        let baseline = extract_sched.last_run_at.or(extract_sched.started_at);
+        let interval_secs = extract_sched.interval_minutes * 60;
+        let elapsed = baseline.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+        // 取当前周期内的剩余时间（取模处理多次执行后的场景）
+        let next_secs = interval_secs.saturating_sub(elapsed % interval_secs.max(1));
         Some(
             (chrono::Local::now() + chrono::Duration::seconds(next_secs as i64))
                 .format("%Y-%m-%d %H:%M:%S")
@@ -107,12 +109,13 @@ pub async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
     drop(extract_sched);
 
     let push_sched = state.scheduler.read().await;
+    let push_interval = push_sched.interval_minutes;
     let push_next_run = if push_sched.running {
-        let elapsed = push_sched
-            .last_run_at
-            .map(|t| t.elapsed().as_secs())
-            .unwrap_or(0);
-        let next_secs = (push_sched.interval_minutes * 60).saturating_sub(elapsed);
+        // 修正：last_run_at 在重启后为 None，回退到 started_at 作为基准
+        let baseline = push_sched.last_run_at.or(push_sched.started_at);
+        let interval_secs = push_sched.interval_minutes * 60;
+        let elapsed = baseline.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+        let next_secs = interval_secs.saturating_sub(elapsed % interval_secs.max(1));
         Some(
             (chrono::Local::now() + chrono::Duration::seconds(next_secs as i64))
                 .format("%Y-%m-%d %H:%M:%S")
@@ -188,8 +191,10 @@ pub async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
             "schedulers": {
                 "extract_running": extract_next_run.is_some(),
                 "extract_next_run": extract_next_run,
+                "extract_interval_minutes": extract_interval,
                 "push_running": push_next_run.is_some(),
                 "push_next_run": push_next_run,
+                "push_interval_minutes": push_interval,
                 "forward_running": forward_running,
                 "forward_interval_secs": forward_interval,
             },

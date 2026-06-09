@@ -16,6 +16,7 @@ import Users from './pages/Users'
 import Files from './pages/Files'
 import Settings from './pages/Settings'
 import ApiStatus from './pages/ApiStatus'
+import Scheduler from './pages/Scheduler'
 import './index.css'
 
 function App() {
@@ -48,6 +49,7 @@ function App() {
             <Route path="collectors" element={<Collectors />} />
             <Route path="collectors/:id/history" element={<CollectorHistory />} />
             <Route path="push" element={<Push />} />
+            <Route path="scheduler" element={<Scheduler />} />
             <Route path="resources" element={<Resources />} />
             <Route path="users" element={<Users />} />
             <Route path="files" element={<Files />} />
