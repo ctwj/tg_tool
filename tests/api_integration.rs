@@ -48,6 +48,10 @@ async fn setup_test_db() -> DbPool {
     let m9 = include_str!("../migrations/009_extract_histories_sqlite.sql");
     let _ = sqlx::raw_sql(m9).execute(&pool).await;
 
+    // Migration 008: image forward tables (forward_tasks)
+    let m8 = include_str!("../migrations/008_image_tables_sqlite.sql");
+    let _ = sqlx::raw_sql(m8).execute(&pool).await;
+
     // 插入 root 用户（使用当前 bcrypt 版本生成 hash）
     let hash = crypto::hash_password("123456").expect("Failed to hash root password");
     sqlx::query("INSERT INTO users (username, password, role, status) VALUES ('root', ?, 100, 1)")
@@ -2546,4 +2550,51 @@ async fn test_status_next_run_after_restart() {
     // interval_minutes 字段存在
     assert!(body["data"]["schedulers"]["push_interval_minutes"].is_number());
     assert!(body["data"]["schedulers"]["extract_interval_minutes"].is_number());
+}
+
+// ============================================================
+// T002: 转发队列状态（含 failed_tasks）
+// ============================================================
+
+#[tokio::test]
+async fn test_image_forward_queue_status() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db.clone());
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    let pool = match &db {
+        DbPool::Sqlite(p) => p.clone(),
+        _ => panic!("expected sqlite"),
+    };
+    // 插入三类任务：pending / forwarded / failed
+    sqlx::query("INSERT INTO forward_tasks (remote_id, status, retry_count) VALUES ('photo_pending', 'pending', 0)")
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO forward_tasks (remote_id, status, retry_count) VALUES ('photo_forwarded', 'forwarded', 0)")
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO forward_tasks (remote_id, status, retry_count, error) VALUES ('photo_failed1', 'failed', 2, 'FLOOD_WAIT_300')")
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO forward_tasks (remote_id, status, retry_count, error) VALUES ('photo_failed2', 'failed', 1, 'timeout')")
+        .execute(&pool).await.unwrap();
+
+    let req = build_auth_request("GET", "/api/image-forward/queue", &token, None);
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+
+    // 三类计数
+    assert_eq!(body["data"]["pending"], 1);
+    assert_eq!(body["data"]["forwarded"], 1);
+    assert_eq!(body["data"]["failed"], 2);
+
+    // pending tasks 列表
+    let tasks = body["data"]["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0]["remote_id"], "photo_pending");
+
+    // failed_tasks 列表（新增字段）
+    let failed_tasks = body["data"]["failed_tasks"].as_array().unwrap();
+    assert_eq!(failed_tasks.len(), 2);
+    assert!(failed_tasks.iter().any(|t| t["error"] == "FLOOD_WAIT_300"));
 }

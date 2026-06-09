@@ -45,7 +45,7 @@ const pulseStyle = `
 }
 .sched-card-hover:hover {
   transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(99, 102, 241, 0.12);
+  box-shadow: 0 8px 24px rgba(14, 165, 233, 0.12);
 }
 `
 
@@ -244,7 +244,7 @@ const Scheduler: React.FC = () => {
   const extractRateStr = extractRateNum > 0 ? extractRateNum.toFixed(1) + '%' : '—'
 
   return (
-    <div style={{ height: '100%', overflowY: 'auto' }}>
+    <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
       <style>{pulseStyle}</style>
       <PageHeader
         title="调度监控"
@@ -265,7 +265,7 @@ const Scheduler: React.FC = () => {
             style={{ borderRadius: 12 }}
             title={
               <Space>
-                <ThunderboltOutlined style={{ color: '#7c3aed' }} />
+                <ThunderboltOutlined style={{ color: '#0369a1' }} />
                 <span>推送调度</span>
               </Space>
             }
@@ -285,8 +285,8 @@ const Scheduler: React.FC = () => {
                   type="circle"
                   size={64}
                   percent={schedulers.push_running ? calcProgress(schedulers.push_next_run, schedulers.push_interval_minutes) : 0}
-                  strokeColor="#7c3aed"
-                  format={() => <ClockCircleOutlined style={{ fontSize: 18, color: schedulers.push_running ? '#7c3aed' : '#d1d5db' }} />}
+                  strokeColor="#0369a1"
+                  format={() => <ClockCircleOutlined style={{ fontSize: 18, color: schedulers.push_running ? '#0369a1' : '#d1d5db' }} />}
                 />
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 12, color: '#9ca3af' }}>
@@ -310,7 +310,7 @@ const Scheduler: React.FC = () => {
             style={{ borderRadius: 12 }}
             title={
               <Space>
-                <CloudSyncOutlined style={{ color: '#6366f1' }} />
+                <CloudSyncOutlined style={{ color: '#0ea5e9' }} />
                 <span>提取调度</span>
               </Space>
             }
@@ -330,8 +330,8 @@ const Scheduler: React.FC = () => {
                   type="circle"
                   size={64}
                   percent={schedulers.extract_running ? calcProgress(schedulers.extract_next_run, schedulers.extract_interval_minutes) : 0}
-                  strokeColor="#6366f1"
-                  format={() => <ClockCircleOutlined style={{ fontSize: 18, color: schedulers.extract_running ? '#6366f1' : '#d1d5db' }} />}
+                  strokeColor="#0ea5e9"
+                  format={() => <ClockCircleOutlined style={{ fontSize: 18, color: schedulers.extract_running ? '#0ea5e9' : '#d1d5db' }} />}
                 />
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 12, color: '#9ca3af' }}>
@@ -473,7 +473,7 @@ const Scheduler: React.FC = () => {
               label: (
                 <span>
                   <ThunderboltOutlined /> 推送历史
-                  {pushTotal > 0 && <Badge count={pushTotal} overflowCount={999} style={{ marginLeft: 6, backgroundColor: '#7c3aed' }} />}
+                  {pushTotal > 0 && <Badge count={pushTotal} overflowCount={999} style={{ marginLeft: 6, backgroundColor: '#0369a1' }} />}
                 </span>
               ),
               children: (
@@ -485,7 +485,6 @@ const Scheduler: React.FC = () => {
                     loading={pushLoading}
                     pagination={false}
                     size="small"
-                    scroll={{ x: 800 }}
                     locale={{ emptyText: <Empty description="暂无推送记录" /> }}
                   />
                   {pushTotal > pushPageSize && (
@@ -511,7 +510,7 @@ const Scheduler: React.FC = () => {
               label: (
                 <span>
                   <CloudSyncOutlined /> 提取历史
-                  {extractTotal > 0 && <Badge count={extractTotal} overflowCount={999} style={{ marginLeft: 6, backgroundColor: '#6366f1' }} />}
+                  {extractTotal > 0 && <Badge count={extractTotal} overflowCount={999} style={{ marginLeft: 6, backgroundColor: '#0ea5e9' }} />}
                 </span>
               ),
               children: (
@@ -523,7 +522,6 @@ const Scheduler: React.FC = () => {
                     loading={extractLoading}
                     pagination={false}
                     size="small"
-                    scroll={{ x: 800 }}
                     locale={{ emptyText: <Empty description="暂无提取记录" /> }}
                   />
                   {extractTotal > extractPageSize && (

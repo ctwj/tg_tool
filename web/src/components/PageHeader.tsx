@@ -20,7 +20,7 @@ const PageHeader: React.FC<PageHeaderProps> = ({ title, description, extra }) =>
           margin: 0,
           fontSize: 22,
           fontWeight: 600,
-          color: '#1e1b4b',
+          color: '#0c4a6e',
           lineHeight: 1.3,
         }}>
           {title}

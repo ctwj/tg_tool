@@ -57,7 +57,7 @@ const Rules: React.FC = () => {
       key: 'forward_method',
       width: 100,
       render: (v: string) => (
-        <Tag color={v === 'Chat' ? '#6366f1' : '#8b5cf6'} style={{ margin: 0 }}>{v}</Tag>
+        <Tag color={v === 'Chat' ? '#0ea5e9' : '#8b5cf6'} style={{ margin: 0 }}>{v}</Tag>
       ),
     },
     { title: '目标', dataIndex: 'forward_target', key: 'forward_target', ellipsis: true },

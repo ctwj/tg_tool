@@ -278,7 +278,7 @@ const Push: React.FC = () => {
   // JSON 语法高亮渲染
   const renderJsonHighlight = (json: string) => {
     return json.replace(/("(?:\\.|[^"\\])*")\s*:/g, '<span style="color:#7dd3fc">$1</span>:')
-      .replace(/:\s*("(?:\\.|[^"\\])*")/g, ': <span style="color:#86efac">$1</span>')
+      .replace(/:\s*("(?:\\.|[^"\\])*")/g, ': <span style="color:#7dd3fc">$1</span>')
       .replace(/:\s*(\d+)/g, ': <span style="color:#fbbf24">$1</span>')
       .replace(/:\s*(true|false|null)/g, ': <span style="color:#c084fc">$1</span>')
   }
@@ -577,7 +577,7 @@ const Push: React.FC = () => {
               }}>
                 <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#ef4444' }} />
                 <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#fbbf24' }} />
-                <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#22c55e' }} />
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#0ea5e9' }} />
                 <Text style={{ color: '#94a3b8', fontSize: 12, marginLeft: 8, fontFamily: 'monospace' }}>
                   Request Preview
                 </Text>
@@ -640,7 +640,7 @@ const Push: React.FC = () => {
                             {h.key}:
                           </span>
                           <span style={{
-                            color: h.isAuth ? '#fde68a' : '#86efac',
+                            color: h.isAuth ? '#fde68a' : '#7dd3fc',
                             wordBreak: 'break-all',
                           }}>
                             {h.value}

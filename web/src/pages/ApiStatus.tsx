@@ -42,7 +42,7 @@ const ApiStatus: React.FC = () => {
       dataIndex: 'path',
       width: 240,
       render: (path: string) => (
-        <code style={{ background: '#f5f3ff', padding: '2px 8px', borderRadius: 4, fontSize: 13, color: '#6366f1' }}>
+        <code style={{ background: '#f5f3ff', padding: '2px 8px', borderRadius: 4, fontSize: 13, color: '#0ea5e9' }}>
           {path}
         </code>
       ),

@@ -548,11 +548,26 @@ pub async fn queue_status(db: &DbPool) -> Result<serde_json::Value, AppError> {
         }
     };
 
+    // 获取失败任务列表（按更新时间倒序，LIMIT 50，便于前端展示与重试）
+    let failed_tasks = match db {
+        DbPool::Sqlite(pool) => sqlx::query_as::<_, ForwardTask>(
+            "SELECT * FROM forward_tasks WHERE status = 'failed' ORDER BY updated_at DESC LIMIT 50",
+        )
+        .fetch_all(pool)
+        .await?,
+        DbPool::Postgres(pool) => sqlx::query_as::<_, ForwardTask>(
+            "SELECT * FROM forward_tasks WHERE status = 'failed' ORDER BY updated_at DESC LIMIT 50",
+        )
+        .fetch_all(pool)
+        .await?,
+    };
+
     Ok(serde_json::json!({
         "pending": pending,
         "forwarded": forwarded,
         "failed": failed,
         "tasks": tasks,
+        "failed_tasks": failed_tasks,
     }))
 }
 
