@@ -11,11 +11,13 @@ use axum::{
 
 /// 内联 auth 中间件 — 检查请求是否携带有效认证信息
 async fn auth_guard(req: Request, next: Next) -> Response {
-    let state = req
-        .extensions()
-        .get::<AppState>()
-        .cloned()
-        .unwrap_or_else(|| panic!("AppState missing"));
+    let state = match req.extensions().get::<AppState>().cloned() {
+        Some(s) => s,
+        None => {
+            return crate::errors::AppError::Internal("服务器配置错误：AppState 缺失".into())
+                .into_response();
+        }
+    };
 
     // 在 await 之前提取所有需要的 headers 数据，避免跨 await 持有 &Request
     let auth_header = req

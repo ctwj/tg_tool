@@ -289,3 +289,28 @@ export interface SchedulersStatus {
   forward_running: boolean
   forward_interval_secs: number
 }
+
+// Forward queue (image forward tasks)
+export interface ForwardTask {
+  id: number
+  remote_id: string
+  channel_id?: number
+  message_id?: number
+  title?: string
+  description?: string
+  link?: string
+  file_id?: string
+  status: 'pending' | 'forwarded' | 'failed'
+  retry_count: number
+  error?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface QueueStatusResponse {
+  pending: number
+  forwarded: number
+  failed: number
+  tasks: ForwardTask[]
+  failed_tasks: ForwardTask[]
+}

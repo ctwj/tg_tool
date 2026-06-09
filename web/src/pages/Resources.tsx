@@ -18,7 +18,7 @@ const METHOD_COLORS: Record<string, string> = {
 // JSON 语法高亮（直接复用自 Push.tsx）
 const renderJsonHighlight = (json: string) => {
   return json.replace(/("(?:\\.|[^"\\])*")\s*:/g, '<span style="color:#7dd3fc">$1</span>:')
-    .replace(/:\s*("(?:\\.|[^"\\])*")/g, ': <span style="color:#86efac">$1</span>')
+    .replace(/:\s*("(?:\\.|[^"\\])*")/g, ': <span style="color:#7dd3fc">$1</span>')
     .replace(/:\s*(\d+)/g, ': <span style="color:#fbbf24">$1</span>')
     .replace(/:\s*(true|false|null)/g, ': <span style="color:#c084fc">$1</span>')
 }
@@ -347,7 +347,7 @@ const Resources: React.FC = () => {
       key: 'title',
       width: 250,
       ellipsis: true,
-      render: (text: string) => <Text strong style={{ color: '#1e1b4b' }}>{text}</Text>,
+      render: (text: string) => <Text strong style={{ color: '#0c4a6e' }}>{text}</Text>,
     },
     {
       title: '封面ID',
@@ -385,7 +385,7 @@ const Resources: React.FC = () => {
             {links.map((link, i) => (
               <Tooltip key={i} title={link}>
                 <a href={link} target="_blank" rel="noreferrer"
-                   style={{ fontSize: 12, color: '#6366f1', display: 'block', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                   style={{ fontSize: 12, color: '#0ea5e9', display: 'block', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {link.replace(/^https?:\/\//, '')}
                 </a>
               </Tooltip>
@@ -408,7 +408,7 @@ const Resources: React.FC = () => {
       key: 'category',
       width: 110,
       render: (cat: string) => (
-        <Tag color="#6366f1" style={{ margin: 0 }}>{categoryLabel(cat)}</Tag>
+        <Tag color="#0ea5e9" style={{ margin: 0 }}>{categoryLabel(cat)}</Tag>
       ),
     },
     {
@@ -727,7 +727,7 @@ const Resources: React.FC = () => {
             <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16 }}>
               <div style={{
                 width: 36, height: 36, borderRadius: 8,
-                background: 'linear-gradient(135deg, #7c3aed, #6366f1)',
+                background: 'linear-gradient(135deg, #0369a1, #0ea5e9)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 color: '#fff', fontSize: 18, marginRight: 12, flexShrink: 0,
               }}>
@@ -739,7 +739,7 @@ const Resources: React.FC = () => {
                 </div>
                 <div style={{ fontSize: 12, color: '#9ca3af' }}>
                   {viewDetail.channel_name && (
-                    <span style={{ color: '#6366f1', marginRight: 6 }}>
+                    <span style={{ color: '#0ea5e9', marginRight: 6 }}>
                       📡 {viewDetail.channel_name}
                     </span>
                   )}
@@ -843,7 +843,7 @@ const Resources: React.FC = () => {
                   <div style={{ marginBottom: 12 }}>
                     <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 2 }}>网盘类型</div>
                     {viewDetail.resource.category ? (
-                      <Tag color="#6366f1">{viewDetail.resource.category}</Tag>
+                      <Tag color="#0ea5e9">{viewDetail.resource.category}</Tag>
                     ) : (
                       <span style={{ color: '#9ca3af', fontSize: 13 }}>无</span>
                     )}
@@ -895,7 +895,7 @@ const Resources: React.FC = () => {
                   }}>
                     <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#ef4444' }} />
                     <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#fbbf24' }} />
-                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#22c55e' }} />
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#0ea5e9' }} />
                     <Text style={{ color: '#94a3b8', fontSize: 12, marginLeft: 8, fontFamily: 'monospace' }}>
                       Request Preview
                     </Text>
@@ -941,7 +941,7 @@ const Resources: React.FC = () => {
                                 {h.key}:
                               </span>
                               <span style={{
-                                color: h.is_auth ? '#fde68a' : '#86efac',
+                                color: h.is_auth ? '#fde68a' : '#7dd3fc',
                                 wordBreak: 'break-all',
                               }}>
                                 {h.value}
@@ -1005,7 +1005,7 @@ const Resources: React.FC = () => {
                   }}>
                     <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#ef4444' }} />
                     <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#fbbf24' }} />
-                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#22c55e' }} />
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#0ea5e9' }} />
                     <Text style={{ color: '#94a3b8', fontSize: 12, marginLeft: 8, fontFamily: 'monospace' }}>
                       Response Preview
                     </Text>
@@ -1025,7 +1025,7 @@ const Resources: React.FC = () => {
                         {pushResultData.http_status ?? '---'}
                       </Tag>
                       <span style={{
-                        color: pushResultData.success ? '#86efac' : '#fca5a5',
+                        color: pushResultData.success ? '#7dd3fc' : '#fca5a5',
                         fontSize: 12, fontFamily: 'monospace',
                       }}>
                         {pushResultData.success ? 'OK' : 'Error'}
@@ -1040,7 +1040,7 @@ const Resources: React.FC = () => {
                       {pushResultData.response_body ? (
                         <div style={{
                           background: '#1e293b', borderRadius: 6, padding: '10px 12px',
-                          borderLeft: `2px solid ${pushResultData.success ? '#22c55e' : '#ef4444'}`,
+                          borderLeft: `2px solid ${pushResultData.success ? '#0ea5e9' : '#ef4444'}`,
                           maxHeight: 320, overflow: 'auto',
                         }}>
                           <pre

@@ -35,8 +35,8 @@ const Dashboard: React.FC = () => {
       title: '客户端总数',
       value: data?.clients.total ?? 0,
       icon: <ApiOutlined />,
-      color: '#6366f1',
-      bg: '#eef2ff',
+      color: '#0ea5e9',
+      bg: '#e0f2fe',
     },
     {
       title: '在线客户端',
@@ -62,33 +62,100 @@ const Dashboard: React.FC = () => {
   ]
 
   const quickActions = [
-    { label: '添加客户端', icon: <ApiOutlined />, path: '/clients' },
-    { label: '创建规则', icon: <SendOutlined />, path: '/rules' },
-    { label: '推送管理', icon: <RocketOutlined />, path: '/push' },
-    { label: '资源管理', icon: <LinkOutlined />, path: '/resources' },
+    { label: '添加客户端', icon: <ApiOutlined />, path: '/clients', color: '#0ea5e9' },
+    { label: '创建规则', icon: <SendOutlined />, path: '/rules', color: '#f59e0b' },
+    { label: '推送管理', icon: <RocketOutlined />, path: '/push', color: '#06b6d4' },
+    { label: '资源管理', icon: <LinkOutlined />, path: '/resources', color: '#10b981' },
   ]
 
   return (
     <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
-      {/* 欢迎区域 */}
+      {/* 欢迎区域 v2 — 左侧品牌问候 + 右侧关键指标 */}
       <div style={{
-        background: 'linear-gradient(135deg, #6366f1 0%, #818cf8 100%)',
+        background: 'linear-gradient(135deg, #0284c7 0%, #0ea5e9 50%, #38bdf8 100%)',
         borderRadius: 16,
-        padding: '32px 36px',
+        padding: '28px 32px',
         marginBottom: 24,
         color: '#fff',
         position: 'relative',
         overflow: 'hidden',
+        // 多层光晕 + 细网格点装饰，提升精致感
+        backgroundImage: `
+          radial-gradient(circle at 88% 20%, rgba(255,255,255,0.18) 0%, transparent 35%),
+          radial-gradient(circle at 95% 90%, rgba(255,255,255,0.1) 0%, transparent 30%),
+          linear-gradient(135deg, #0284c7 0%, #0ea5e9 50%, #38bdf8 100%)
+        `,
       }}>
-        <div style={{ position: 'absolute', right: -30, top: -30, width: 180, height: 180, borderRadius: '50%', background: 'rgba(255,255,255,0.08)' }} />
-        <div style={{ position: 'absolute', right: 60, bottom: -40, width: 120, height: 120, borderRadius: '50%', background: 'rgba(255,255,255,0.05)' }} />
-        <Title level={3} style={{ color: '#fff', margin: 0, fontWeight: 600 }}>
-          {greeting}，欢迎回来
-        </Title>
-        <Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 15, marginTop: 8, display: 'block' }}>
-          TG Forwarding 消息转发管理平台
-          {data?.version && ` · v${data.version}`}
-        </Text>
+        {/* 网格点纹理覆盖层 */}
+        <div style={{
+          position: 'absolute', inset: 0,
+          backgroundImage: 'radial-gradient(rgba(255,255,255,0.12) 1px, transparent 1px)',
+          backgroundSize: '20px 20px',
+          opacity: 0.4,
+          pointerEvents: 'none',
+        }} />
+        <div style={{ position: 'relative', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 20 }}>
+          {/* 左侧：品牌问候 */}
+          <div style={{ flex: 1, minWidth: 260 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+              <div style={{
+                width: 44, height: 44, borderRadius: 12,
+                background: 'rgba(255,255,255,0.2)',
+                backdropFilter: 'blur(8px)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 20, fontWeight: 700, color: '#fff',
+                border: '1px solid rgba(255,255,255,0.3)',
+              }}>
+                TG
+              </div>
+              <div>
+                <Title level={3} style={{ color: '#fff', margin: 0, fontWeight: 600, lineHeight: 1.2 }}>
+                  {greeting}，欢迎回来 👋
+                </Title>
+                <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.85)', marginTop: 2 }}>
+                  TG tools · TG工具箱
+                  {data?.version && (
+                    <span style={{
+                      marginLeft: 8, padding: '1px 8px', borderRadius: 10,
+                      background: 'rgba(255,255,255,0.2)', fontSize: 12,
+                    }}>
+                      v{data.version}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+          {/* 右侧：关键指标玻璃卡片 */}
+          <div style={{ display: 'flex', gap: 12 }}>
+            <div style={{
+              padding: '12px 18px', borderRadius: 12,
+              background: 'rgba(255,255,255,0.15)', backdropFilter: 'blur(8px)',
+              border: '1px solid rgba(255,255,255,0.25)', minWidth: 120,
+            }}>
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.85)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <ApiOutlined /> 在线客户端
+              </div>
+              <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4, lineHeight: 1 }}>
+                {data?.clients.active ?? 0}
+                <span style={{ fontSize: 14, fontWeight: 400, opacity: 0.8 }}> / {data?.clients.total ?? 0}</span>
+              </div>
+            </div>
+            <div style={{
+              padding: '12px 18px', borderRadius: 12,
+              background: 'rgba(255,255,255,0.15)', backdropFilter: 'blur(8px)',
+              border: '1px solid rgba(255,255,255,0.25)', minWidth: 120,
+            }}>
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.85)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <RocketOutlined /> 运行调度
+              </div>
+              <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4, lineHeight: 1 }}>
+                {(data?.schedulers?.extract_running ? 1 : 0) + (data?.schedulers?.push_running ? 1 : 0)}
+                <span style={{ fontSize: 14, fontWeight: 400, opacity: 0.8 }}> / 2</span>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* 统计卡片 */}
@@ -106,7 +173,7 @@ const Dashboard: React.FC = () => {
                 </div>
                 <div>
                   <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 4 }}>{item.title}</div>
-                  <div style={{ fontSize: 28, fontWeight: 700, color: '#1e1b4b', lineHeight: 1 }}>
+                  <div style={{ fontSize: 28, fontWeight: 700, color: '#0c4a6e', lineHeight: 1 }}>
                     {item.value}
                   </div>
                 </div>
@@ -120,7 +187,7 @@ const Dashboard: React.FC = () => {
       <Row gutter={16}>
         <Col span={12}>
           <Card
-            title={<span style={{ fontWeight: 600, color: '#1e1b4b' }}>快速操作</span>}
+            title={<span style={{ fontWeight: 600, color: '#0c4a6e' }}>快速操作</span>}
             style={{ borderRadius: 12 }}
             styles={{ body: { padding: '16px 24px' } }}
           >
@@ -128,7 +195,7 @@ const Dashboard: React.FC = () => {
               {quickActions.map((action) => (
                 <Button
                   key={action.label}
-                  icon={action.icon}
+                  icon={<span style={{ color: action.color }}>{action.icon}</span>}
                   size="large"
                   block
                   onClick={() => navigate(action.path)}
@@ -151,7 +218,7 @@ const Dashboard: React.FC = () => {
         </Col>
         <Col span={12}>
           <Card
-            title={<span style={{ fontWeight: 600, color: '#1e1b4b' }}>调度任务</span>}
+            title={<span style={{ fontWeight: 600, color: '#0c4a6e' }}>调度任务</span>}
             style={{ borderRadius: 12 }}
             styles={{ body: { padding: '16px 24px' } }}
           >

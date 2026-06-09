@@ -157,7 +157,7 @@ const CollectorHistory: React.FC = () => {
     {
       title: '来源', key: 'source', width: 80,
       render: (_: any, r: CollectorHistory) => (
-        <Tag color={r.is_auto_push ? 'green' : '#6366f1'} style={{ margin: 0 }}>
+        <Tag color={r.is_auto_push ? 'green' : '#0ea5e9'} style={{ margin: 0 }}>
           {r.is_auto_push ? '实时' : '手动'}
         </Tag>
       ),
@@ -165,7 +165,7 @@ const CollectorHistory: React.FC = () => {
     {
       title: '已提取', key: 'is_extracted', width: 80,
       render: (_: any, r: CollectorHistory) => (
-        <Tag color={r.is_extracted ? '#6366f1' : 'default'} style={{ margin: 0 }}>
+        <Tag color={r.is_extracted ? '#0ea5e9' : 'default'} style={{ margin: 0 }}>
           {r.is_extracted ? '是' : '否'}
         </Tag>
       ),
@@ -269,7 +269,7 @@ const CollectorHistory: React.FC = () => {
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div style={{
               width: 36, height: 36, borderRadius: 10,
-              background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+              background: 'linear-gradient(135deg, #0ea5e9, #8b5cf6)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
             }}>
               <FileTextOutlined style={{ color: '#fff', fontSize: 18 }} />
@@ -406,7 +406,7 @@ const CollectorHistory: React.FC = () => {
               {extractResults.length > 0 && (
                 <span style={{
                   marginLeft: 8, fontSize: 11, color: '#fff',
-                  background: '#6366f1', borderRadius: 10,
+                  background: '#0ea5e9', borderRadius: 10,
                   padding: '1px 8px', fontWeight: 500,
                 }}>
                   {extractResults.length}
@@ -481,7 +481,7 @@ const CollectorHistory: React.FC = () => {
                           {item.url.map((u, i) => (
                             <div key={i} style={{
                               display: 'flex', alignItems: 'flex-start', gap: 6,
-                              fontSize: 12, color: '#6366f1',
+                              fontSize: 12, color: '#0ea5e9',
                               wordBreak: 'break-all', lineHeight: 1.6,
                               background: '#f5f3ff', padding: '4px 8px',
                               borderRadius: 6, marginBottom: 4,
@@ -588,7 +588,7 @@ const CollectorHistory: React.FC = () => {
             onClick={() => doExtract(false)}
             style={{
               borderRadius: 8, minWidth: 100,
-              background: isExtracted ? undefined : '#6366f1',
+              background: isExtracted ? undefined : '#0ea5e9',
               boxShadow: isExtracted ? undefined : '0 2px 4px rgba(99,102,241,0.3)',
             }}
           >

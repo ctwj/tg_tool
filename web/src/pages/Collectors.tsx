@@ -138,7 +138,7 @@ const Collectors: React.FC = () => {
     { title: '频道', dataIndex: 'channel_name', key: 'channel_name' },
     {
       title: '频道ID', dataIndex: 'channel_id', key: 'channel_id', width: 140,
-      render: (v: number) => <code style={{ fontSize: 12, color: '#6366f1', background: '#eef2ff', padding: '2px 8px', borderRadius: 4 }}>{v}</code>,
+      render: (v: number) => <code style={{ fontSize: 12, color: '#0ea5e9', background: '#eef2ff', padding: '2px 8px', borderRadius: 4 }}>{v}</code>,
     },
     {
       title: '累计消息', dataIndex: 'total_messages', key: 'total_messages', width: 100, align: 'center' as const,
@@ -167,7 +167,7 @@ const Collectors: React.FC = () => {
           <Button size="small" type="text" icon={<FileSearchOutlined />} onClick={() => navigate(`/collectors/${r.id}/history`, { state: { channel_name: r.channel_name, channel_id: r.channel_id } })}>
             记录
           </Button>
-          <Button size="small" type="text" icon={<CloudDownloadOutlined />} onClick={() => openFetchDialog(r)} style={{ color: '#6366f1' }}>采集</Button>
+          <Button size="small" type="text" icon={<CloudDownloadOutlined />} onClick={() => openFetchDialog(r)} style={{ color: '#0ea5e9' }}>采集</Button>
           <Popconfirm title="确定删除？" onConfirm={() => deleteCollector(r.id)}>
             <Button size="small" type="text" danger icon={<DeleteOutlined />} />
           </Popconfirm>

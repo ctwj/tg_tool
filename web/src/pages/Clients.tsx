@@ -61,7 +61,7 @@ const Clients: React.FC = () => {
 
   const statusConfig: Record<string, { color: string; text: string }> = {
     active: { color: '#10b981', text: '在线' },
-    new: { color: '#6366f1', text: '新建' },
+    new: { color: '#0ea5e9', text: '新建' },
     wait_code: { color: '#f59e0b', text: '等待验证码' },
     wait_password: { color: '#f59e0b', text: '等待密码' },
     offline: { color: '#ef4444', text: '离线' },
@@ -74,7 +74,7 @@ const Clients: React.FC = () => {
       key: 'id',
       width: 120,
       render: (id: string) => (
-        <code style={{ fontSize: 12, color: '#6366f1', background: '#eef2ff', padding: '2px 8px', borderRadius: 4 }}>
+        <code style={{ fontSize: 12, color: '#0ea5e9', background: '#eef2ff', padding: '2px 8px', borderRadius: 4 }}>
           {id.substring(0, 8)}...
         </code>
       ),
@@ -85,7 +85,7 @@ const Clients: React.FC = () => {
       key: 'client_type',
       width: 80,
       render: (v: string) => (
-        <Tag color={v === 'Bot' ? '#6366f1' : '#06b6d4'} style={{ margin: 0 }}>
+        <Tag color={v === 'Bot' ? '#0ea5e9' : '#06b6d4'} style={{ margin: 0 }}>
           {v === 'Bot' ? 'Bot' : '用户'}
         </Tag>
       ),

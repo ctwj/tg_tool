@@ -655,7 +655,7 @@ const Settings: React.FC = () => {
                           {imgUrl ? (
                             <div>
                               <Text type="secondary" style={{ fontSize: 12 }}>图床域名：</Text>
-                              <a href={imgUrl} target="_blank" rel="noreferrer" style={{ fontSize: 13, color: '#6366f1', wordBreak: 'break-all' }}>{imgUrl}</a>
+                              <a href={imgUrl} target="_blank" rel="noreferrer" style={{ fontSize: 13, color: '#0ea5e9', wordBreak: 'break-all' }}>{imgUrl}</a>
                             </div>
                           ) : (
                             <Alert message="请先配置图床域名" type="warning" showIcon style={{ borderRadius: 8 }} />

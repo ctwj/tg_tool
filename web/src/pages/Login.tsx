@@ -146,17 +146,17 @@ const Login: React.FC = () => {
             width: 56,
             height: 56,
             borderRadius: 16,
-            background: 'linear-gradient(135deg, #6366f1, #818cf8)',
+            background: 'linear-gradient(135deg, #0ea5e9, #7dd3fc)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             margin: '0 auto 16px',
-            boxShadow: '0 8px 24px rgba(99, 102, 241, 0.3)',
+            boxShadow: '0 8px 24px rgba(14, 165, 233, 0.3)',
           }}>
             <SendOutlined style={{ fontSize: 26, color: '#fff' }} />
           </div>
-          <h1 style={{ fontSize: 24, fontWeight: 700, color: '#1e1b4b', margin: 0 }}>
-            TG Forwarding
+          <h1 style={{ fontSize: 24, fontWeight: 700, color: '#0c4a6e', margin: 0 }}>
+            TG tools
           </h1>
           <p style={{ fontSize: 14, color: '#6b7280', marginTop: 4 }}>
             Telegram 消息转发管理平台
@@ -167,7 +167,7 @@ const Login: React.FC = () => {
           <Form style={{ marginTop: 8 }}>
             <Form.Item name="username">
               <Input
-                prefix={<UserOutlined style={{ color: '#a5b4fc' }} />}
+                prefix={<UserOutlined style={{ color: '#7dd3fc' }} />}
                 placeholder="用户名"
                 size="large"
                 style={{ borderRadius: 10, height: 46 }}
@@ -175,7 +175,7 @@ const Login: React.FC = () => {
             </Form.Item>
             <Form.Item name="password">
               <Input.Password
-                prefix={<LockOutlined style={{ color: '#a5b4fc' }} />}
+                prefix={<LockOutlined style={{ color: '#7dd3fc' }} />}
                 placeholder="密码"
                 size="large"
                 style={{ borderRadius: 10, height: 46 }}
@@ -193,7 +193,7 @@ const Login: React.FC = () => {
                   <Form onFinish={onLogin} style={{ marginTop: 8 }}>
                     <Form.Item name="username" rules={[{ required: true, message: '请输入用户名' }]}>
                       <Input
-                        prefix={<UserOutlined style={{ color: '#a5b4fc' }} />}
+                        prefix={<UserOutlined style={{ color: '#7dd3fc' }} />}
                         placeholder="用户名"
                         size="large"
                         style={{ borderRadius: 10, height: 46 }}
@@ -201,7 +201,7 @@ const Login: React.FC = () => {
                     </Form.Item>
                     <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }]}>
                       <Input.Password
-                        prefix={<LockOutlined style={{ color: '#a5b4fc' }} />}
+                        prefix={<LockOutlined style={{ color: '#7dd3fc' }} />}
                         placeholder="密码"
                         size="large"
                         style={{ borderRadius: 10, height: 46 }}
@@ -220,7 +220,7 @@ const Login: React.FC = () => {
                           height: 46,
                           fontSize: 15,
                           fontWeight: 500,
-                          background: 'linear-gradient(135deg, #6366f1, #818cf8)',
+                          background: 'linear-gradient(135deg, #0ea5e9, #7dd3fc)',
                           border: 'none',
                         }}
                       >
@@ -237,7 +237,7 @@ const Login: React.FC = () => {
                   <Form onFinish={onRegister} style={{ marginTop: 8 }}>
                     <Form.Item name="username" rules={[{ required: true, message: '请输入用户名' }]}>
                       <Input
-                        prefix={<UserOutlined style={{ color: '#a5b4fc' }} />}
+                        prefix={<UserOutlined style={{ color: '#7dd3fc' }} />}
                         placeholder="用户名"
                         size="large"
                         style={{ borderRadius: 10, height: 46 }}
@@ -245,7 +245,7 @@ const Login: React.FC = () => {
                     </Form.Item>
                     <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }]}>
                       <Input.Password
-                        prefix={<LockOutlined style={{ color: '#a5b4fc' }} />}
+                        prefix={<LockOutlined style={{ color: '#7dd3fc' }} />}
                         placeholder="密码"
                         size="large"
                         style={{ borderRadius: 10, height: 46 }}
@@ -253,7 +253,7 @@ const Login: React.FC = () => {
                     </Form.Item>
                     <Form.Item name="email">
                       <Input
-                        prefix={<MailOutlined style={{ color: '#a5b4fc' }} />}
+                        prefix={<MailOutlined style={{ color: '#7dd3fc' }} />}
                         placeholder="邮箱（可选）"
                         size="large"
                         style={{ borderRadius: 10, height: 46 }}
@@ -271,7 +271,7 @@ const Login: React.FC = () => {
                           height: 46,
                           fontSize: 15,
                           fontWeight: 500,
-                          background: 'linear-gradient(135deg, #6366f1, #818cf8)',
+                          background: 'linear-gradient(135deg, #0ea5e9, #7dd3fc)',
                           border: 'none',
                         }}
                       >
@@ -287,7 +287,7 @@ const Login: React.FC = () => {
           <Form onFinish={onLogin} style={{ marginTop: 8 }}>
             <Form.Item name="username" rules={[{ required: true, message: '请输入用户名' }]}>
               <Input
-                prefix={<UserOutlined style={{ color: '#a5b4fc' }} />}
+                prefix={<UserOutlined style={{ color: '#7dd3fc' }} />}
                 placeholder="用户名"
                 size="large"
                 style={{ borderRadius: 10, height: 46 }}
@@ -295,7 +295,7 @@ const Login: React.FC = () => {
             </Form.Item>
             <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }]}>
               <Input.Password
-                prefix={<LockOutlined style={{ color: '#a5b4fc' }} />}
+                prefix={<LockOutlined style={{ color: '#7dd3fc' }} />}
                 placeholder="密码"
                 size="large"
                 style={{ borderRadius: 10, height: 46 }}
@@ -314,7 +314,7 @@ const Login: React.FC = () => {
                   height: 46,
                   fontSize: 15,
                   fontWeight: 500,
-                  background: 'linear-gradient(135deg, #6366f1, #818cf8)',
+                  background: 'linear-gradient(135deg, #0ea5e9, #7dd3fc)',
                   border: 'none',
                 }}
               >

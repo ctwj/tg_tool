@@ -17,6 +17,7 @@ import Files from './pages/Files'
 import Settings from './pages/Settings'
 import ApiStatus from './pages/ApiStatus'
 import Scheduler from './pages/Scheduler'
+import ForwardQueue from './pages/ForwardQueue'
 import './index.css'
 
 function App() {
@@ -25,10 +26,23 @@ function App() {
       locale={zhCN}
       theme={{
         token: {
-          colorPrimary: '#6366F1',
+          // 品牌主色 + 圆角 + 背景（与 index.css :root 变量同步）
+          colorPrimary: '#0ea5e9',
           borderRadius: 8,
-          colorBgLayout: '#f5f3ff',
+          colorBgLayout: '#f0f9ff',
           fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif',
+          // 语义状态色（全站 Tag/Badge/Statistic/Alert 自动统一）
+          colorSuccess: '#10b981',
+          colorError: '#ef4444',
+          colorWarning: '#f59e0b',
+          colorInfo: '#0ea5e9',
+          // 文字层级（WCAG AA 对比度，与页面内联样式一致）
+          colorText: '#1f2937',
+          colorTextSecondary: '#6b7280',
+          colorTextTertiary: '#9ca3af',
+          // 边框
+          colorBorder: '#e5e7eb',
+          colorBorderSecondary: '#bae6fd',
         },
         components: {
           Button: { borderRadius: 6 },
@@ -50,6 +64,7 @@ function App() {
             <Route path="collectors/:id/history" element={<CollectorHistory />} />
             <Route path="push" element={<Push />} />
             <Route path="scheduler" element={<Scheduler />} />
+            <Route path="forward-queue" element={<ForwardQueue />} />
             <Route path="resources" element={<Resources />} />
             <Route path="users" element={<Users />} />
             <Route path="files" element={<Files />} />

@@ -141,11 +141,12 @@ async fn validate_token(state: &AppState, token: &str) -> Result<User, AppError>
 /// User auth middleware (role >= 1)
 /// Gets AppState via request extensions (injected by Extension layer in routes.rs)
 pub async fn user_auth_middleware(req: Request, next: Next) -> Response {
-    let state = req
-        .extensions()
-        .get::<AppState>()
-        .cloned()
-        .expect("AppState not found in extensions");
+    let state = match req.extensions().get::<AppState>().cloned() {
+        Some(s) => s,
+        None => {
+            return AppError::Internal("服务器配置错误：AppState 缺失".into()).into_response();
+        }
+    };
 
     match extract_current_user(&state, &req).await {
         Ok(user) => {

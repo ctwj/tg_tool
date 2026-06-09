@@ -122,7 +122,7 @@ const ClientAuth: React.FC = () => {
       }}>
         <CheckCircleFilled style={{ fontSize: 32, color: '#10b981' }} />
       </div>
-      <Text style={{ fontSize: 18, fontWeight: 500, color: '#1e1b4b', display: 'block', marginBottom: 16 }}>
+      <Text style={{ fontSize: 18, fontWeight: 500, color: '#0c4a6e', display: 'block', marginBottom: 16 }}>
         认证完成
       </Text>
       <Button type="primary" onClick={() => navigate('/clients')}>
@@ -141,7 +141,7 @@ const ClientAuth: React.FC = () => {
           styles={{ header: { borderBottom: '1px solid #f0f0f0' } }}
           title={
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <SendOutlined style={{ color: '#6366f1' }} />
+              <SendOutlined style={{ color: '#0ea5e9' }} />
               Bot 认证 {clientId.substring(0, 8)}...
             </div>
           }
@@ -192,7 +192,7 @@ const ClientAuth: React.FC = () => {
         styles={{ header: { borderBottom: '1px solid #f0f0f0' } }}
         title={
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <SendOutlined style={{ color: '#6366f1' }} />
+            <SendOutlined style={{ color: '#0ea5e9' }} />
             认证客户端 {clientId.substring(0, 8)}...
           </div>
         }
