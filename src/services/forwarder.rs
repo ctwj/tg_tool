@@ -3,8 +3,8 @@
 
 use crate::errors::AppError;
 use crate::state::{DbPool, PeerCache, TgClientMap};
-use grammers_client::types::Message;
 use grammers_client::InputMedia;
+use grammers_client::types::Message;
 
 /// Forward a message to the target
 #[allow(clippy::too_many_arguments)]
@@ -21,9 +21,7 @@ pub async fn forward_message(
 ) -> Result<(), AppError> {
     let result = match method {
         "WebHook" | "Webhook" => forward_webhook(target, config, msg.text()).await,
-        "Chat" => {
-            forward_chat(target, source_client_id, msg, tg_clients, peer_cache).await
-        }
+        "Chat" => forward_chat(target, source_client_id, msg, tg_clients, peer_cache).await,
         _ => Err(AppError::BadRequest(format!("未知的转发方式: {method}"))),
     };
 
@@ -133,9 +131,7 @@ async fn forward_chat(
         .filter(|e| e.status == "active" && e.client.is_some())
         .and_then(|e| e.client.clone())
         .ok_or_else(|| {
-            AppError::Internal(format!(
-                "客户端 {source_client_id} 不可用（离线或未登录）"
-            ))
+            AppError::Internal(format!("客户端 {source_client_id} 不可用（离线或未登录）"))
         })?;
     drop(clients);
 

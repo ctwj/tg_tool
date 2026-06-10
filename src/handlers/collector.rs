@@ -376,7 +376,9 @@ pub async fn fetch_history(
     let channel_id = collector.channel_id;
     let cid = client_id.clone();
     tokio::spawn(async move {
-        tracing::info!("Background fetch started: collector={collector_id}, channel={channel_id}, limit={limit}, client={cid}");
+        tracing::info!(
+            "Background fetch started: collector={collector_id}, channel={channel_id}, limit={limit}, client={cid}"
+        );
         match crate::services::collector::full_collect(
             collector_id,
             &cid,

@@ -45,7 +45,8 @@ pub async fn full_collect(
 
     let mut messages = client.iter_messages(packed).limit(limit as usize);
     let mut collected = 0usize;
-    let mut batch: Vec<(i64, NaiveDateTime, String, Option<String>)> = Vec::with_capacity(BATCH_SIZE);
+    let mut batch: Vec<(i64, NaiveDateTime, String, Option<String>)> =
+        Vec::with_capacity(BATCH_SIZE);
     let mut fetched = 0usize;
     let mut since_delay = 0usize; // 距离上次延迟后取了多少条
 

@@ -114,7 +114,9 @@ pub async fn handle_new_message(
             }
         };
 
-        for (rule_id, method, target, config, _fcid, fmode, kws, mfilt, rule_source_client_id) in &rules {
+        for (rule_id, method, target, config, _fcid, fmode, kws, mfilt, rule_source_client_id) in
+            &rules
+        {
             // Keyword filter
             if !keyword_pass(text, fmode.as_deref(), kws.as_deref()) {
                 tracing::debug!("Rule {rule_id}: skipped by keyword filter");
@@ -128,9 +130,7 @@ pub async fn handle_new_message(
 
             // Determine which client to use for forwarding
             // Priority: rule's source_client_id > current client_id
-            let forward_client_id = rule_source_client_id
-                .as_deref()
-                .unwrap_or(client_id);
+            let forward_client_id = rule_source_client_id.as_deref().unwrap_or(client_id);
 
             if let Err(e) = crate::services::forwarder::forward_message(
                 *rule_id,
