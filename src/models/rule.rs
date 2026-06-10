@@ -12,6 +12,10 @@ pub struct Rule {
     pub forward_target: Option<String>,
     pub is_active: bool,
     pub remark: Option<String>,
+    pub forward_client_id: Option<String>,
+    pub filter_mode: Option<String>,
+    pub keywords: Option<String>,
+    pub media_filter: Option<String>,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
@@ -25,6 +29,10 @@ pub struct CreateRuleRequest {
     pub forward_target: Option<String>,
     pub is_active: Option<bool>,
     pub remark: Option<String>,
+    pub forward_client_id: Option<String>,
+    pub filter_mode: Option<String>,
+    pub keywords: Option<String>,
+    pub media_filter: Option<String>,
 }
 
 #[cfg(test)]
@@ -70,6 +78,10 @@ mod tests {
             forward_target: Some("-100999".to_string()),
             is_active: true,
             remark: None,
+            forward_client_id: None,
+            filter_mode: None,
+            keywords: None,
+            media_filter: None,
             created_at: naive_now(),
             updated_at: naive_now(),
         };

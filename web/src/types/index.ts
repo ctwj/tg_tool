@@ -76,6 +76,10 @@ export interface Rule {
   forward_target?: string
   is_active: boolean
   remark?: string
+  forward_client_id?: string
+  filter_mode?: 'none' | 'include' | 'exclude'
+  keywords?: string
+  media_filter?: 'all' | 'photo' | 'document' | 'text'
   created_at: string
   updated_at: string
 }

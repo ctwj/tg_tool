@@ -19,11 +19,11 @@ pub async fn list_rules(
 ) -> Result<Json<Value>, AppError> {
     let rules: Vec<crate::models::rule::Rule> = match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
-            sqlx::query_as("SELECT id, user_id, source_chat_id, source_chat_name, forward_method, forward_config, forward_target, is_active, remark, created_at, updated_at FROM rules ORDER BY id DESC")
+            sqlx::query_as("SELECT id, user_id, source_chat_id, source_chat_name, forward_method, forward_config, forward_target, is_active, remark, forward_client_id, filter_mode, keywords, media_filter, created_at, updated_at FROM rules ORDER BY id DESC")
                 .fetch_all(pool).await?
         }
         crate::state::DbPool::Postgres(pool) => {
-            sqlx::query_as("SELECT id, user_id, source_chat_id, source_chat_name, forward_method, forward_config, forward_target, is_active, remark, created_at, updated_at FROM rules ORDER BY id DESC")
+            sqlx::query_as("SELECT id, user_id, source_chat_id, source_chat_name, forward_method, forward_config, forward_target, is_active, remark, forward_client_id, filter_mode, keywords, media_filter, created_at, updated_at FROM rules ORDER BY id DESC")
                 .fetch_all(pool).await?
         }
     };
@@ -57,18 +57,30 @@ pub async fn create_rule(
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
     let remark = body.get("remark").and_then(|v| v.as_str()).unwrap_or("");
+    let forward_client_id = body.get("forward_client_id").and_then(|v| v.as_str());
+    let filter_mode = body
+        .get("filter_mode")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    let keywords = body.get("keywords").and_then(|v| v.as_str());
+    let media_filter = body
+        .get("media_filter")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
 
     match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
-            sqlx::query("INSERT INTO rules (user_id, source_chat_id, source_chat_name, forward_method, forward_config, forward_target, is_active, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+            sqlx::query("INSERT INTO rules (user_id, source_chat_id, source_chat_name, forward_method, forward_config, forward_target, is_active, remark, forward_client_id, filter_mode, keywords, media_filter) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                 .bind(user.id).bind(source_chat_id).bind(source_chat_name).bind(forward_method)
                 .bind(&forward_config).bind(forward_target).bind(is_active).bind(remark)
+                .bind(forward_client_id).bind(filter_mode).bind(keywords).bind(media_filter)
                 .execute(pool).await?;
         }
         crate::state::DbPool::Postgres(pool) => {
-            sqlx::query("INSERT INTO rules (user_id, source_chat_id, source_chat_name, forward_method, forward_config, forward_target, is_active, remark) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)")
+            sqlx::query("INSERT INTO rules (user_id, source_chat_id, source_chat_name, forward_method, forward_config, forward_target, is_active, remark, forward_client_id, filter_mode, keywords, media_filter) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)")
                 .bind(user.id).bind(source_chat_id).bind(source_chat_name).bind(forward_method)
                 .bind(&forward_config).bind(forward_target).bind(is_active).bind(remark)
+                .bind(forward_client_id).bind(filter_mode).bind(keywords).bind(media_filter)
                 .execute(pool).await?;
         }
     }
@@ -81,11 +93,11 @@ pub async fn get_rule(
 ) -> Result<Json<Value>, AppError> {
     let rule: Option<crate::models::rule::Rule> = match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
-            sqlx::query_as("SELECT id, user_id, source_chat_id, source_chat_name, forward_method, forward_config, forward_target, is_active, remark, created_at, updated_at FROM rules WHERE id = ?")
+            sqlx::query_as("SELECT id, user_id, source_chat_id, source_chat_name, forward_method, forward_config, forward_target, is_active, remark, forward_client_id, filter_mode, keywords, media_filter, created_at, updated_at FROM rules WHERE id = ?")
                 .bind(id).fetch_optional(pool).await?
         }
         crate::state::DbPool::Postgres(pool) => {
-            sqlx::query_as("SELECT id, user_id, source_chat_id, source_chat_name, forward_method, forward_config, forward_target, is_active, remark, created_at, updated_at FROM rules WHERE id = $1")
+            sqlx::query_as("SELECT id, user_id, source_chat_id, source_chat_name, forward_method, forward_config, forward_target, is_active, remark, forward_client_id, filter_mode, keywords, media_filter, created_at, updated_at FROM rules WHERE id = $1")
                 .bind(id).fetch_optional(pool).await?
         }
     };
@@ -107,6 +119,10 @@ pub async fn update_rule(
     let forward_target = body.get("forward_target").and_then(|v| v.as_str());
     let is_active = body.get("is_active").and_then(|v| v.as_bool());
     let remark = body.get("remark").and_then(|v| v.as_str());
+    let forward_client_id = body.get("forward_client_id").and_then(|v| v.as_str());
+    let filter_mode = body.get("filter_mode").and_then(|v| v.as_str());
+    let keywords = body.get("keywords").and_then(|v| v.as_str());
+    let media_filter = body.get("media_filter").and_then(|v| v.as_str());
 
     let has_update = source_chat_id.is_some()
         || source_chat_name.is_some()
@@ -114,7 +130,11 @@ pub async fn update_rule(
         || forward_config.is_some()
         || forward_target.is_some()
         || is_active.is_some()
-        || remark.is_some();
+        || remark.is_some()
+        || forward_client_id.is_some()
+        || filter_mode.is_some()
+        || keywords.is_some()
+        || media_filter.is_some();
     if !has_update {
         return Ok(Json(json!({ "success": true, "message": "规则已更新" })));
     }
@@ -143,6 +163,18 @@ pub async fn update_rule(
             if remark.is_some() {
                 sets.push("remark = ?");
             }
+            if forward_client_id.is_some() {
+                sets.push("forward_client_id = ?");
+            }
+            if filter_mode.is_some() {
+                sets.push("filter_mode = ?");
+            }
+            if keywords.is_some() {
+                sets.push("keywords = ?");
+            }
+            if media_filter.is_some() {
+                sets.push("media_filter = ?");
+            }
             sets.push("updated_at = CURRENT_TIMESTAMP");
             let sql = format!("UPDATE rules SET {} WHERE id = ?", sets.join(", "));
             let mut q = sqlx::query(&sql);
@@ -165,6 +197,18 @@ pub async fn update_rule(
                 q = q.bind(v);
             }
             if let Some(v) = remark {
+                q = q.bind(v);
+            }
+            if let Some(v) = forward_client_id {
+                q = q.bind(v);
+            }
+            if let Some(v) = filter_mode {
+                q = q.bind(v);
+            }
+            if let Some(v) = keywords {
+                q = q.bind(v);
+            }
+            if let Some(v) = media_filter {
                 q = q.bind(v);
             }
             q = q.bind(id);
@@ -204,6 +248,22 @@ pub async fn update_rule(
                 pg_parts.push(format!("remark = ${pg_idx}"));
                 pg_idx += 1;
             }
+            if forward_client_id.is_some() {
+                pg_parts.push(format!("forward_client_id = ${pg_idx}"));
+                pg_idx += 1;
+            }
+            if filter_mode.is_some() {
+                pg_parts.push(format!("filter_mode = ${pg_idx}"));
+                pg_idx += 1;
+            }
+            if keywords.is_some() {
+                pg_parts.push(format!("keywords = ${pg_idx}"));
+                pg_idx += 1;
+            }
+            if media_filter.is_some() {
+                pg_parts.push(format!("media_filter = ${pg_idx}"));
+                pg_idx += 1;
+            }
             pg_parts.push("updated_at = CURRENT_TIMESTAMP".to_string());
             let sql = format!(
                 "UPDATE rules SET {} WHERE id = ${pg_idx}",
@@ -229,6 +289,18 @@ pub async fn update_rule(
                 q = q.bind(v);
             }
             if let Some(v) = remark {
+                q = q.bind(v);
+            }
+            if let Some(v) = forward_client_id {
+                q = q.bind(v);
+            }
+            if let Some(v) = filter_mode {
+                q = q.bind(v);
+            }
+            if let Some(v) = keywords {
+                q = q.bind(v);
+            }
+            if let Some(v) = media_filter {
                 q = q.bind(v);
             }
             q = q.bind(id);

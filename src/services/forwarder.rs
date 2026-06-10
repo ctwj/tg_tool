@@ -15,10 +15,11 @@ pub async fn forward_message(
     tg_clients: &TgClientMap,
     peer_cache: &PeerCache,
     db: &DbPool,
+    forward_client_id: Option<&str>,
 ) -> Result<(), AppError> {
     let result = match method {
         "WebHook" | "Webhook" => forward_webhook(target, config, content).await,
-        "Chat" => forward_chat(target, content, tg_clients, peer_cache).await,
+        "Chat" => forward_chat(target, forward_client_id, content, tg_clients, peer_cache).await,
         _ => Err(AppError::BadRequest(format!("未知的转发方式: {method}"))),
     };
 
@@ -109,6 +110,7 @@ async fn forward_webhook(
 
 async fn forward_chat(
     target: &str,
+    forward_client_id: Option<&str>,
     content: &str,
     tg_clients: &TgClientMap,
     peer_cache: &PeerCache,
@@ -120,13 +122,20 @@ async fn forward_chat(
     // Resolve peer using cache
     let packed = crate::services::tg_api::resolve_peer(chat_id, tg_clients, peer_cache).await?;
 
-    // Send via any active client
+    // Use specified client if forward_client_id is provided, otherwise fall back to any active
     let clients = tg_clients.read().await;
-    let client = clients
-        .values()
-        .find(|e| e.status == "active" && e.client.is_some())
-        .and_then(|e| e.client.clone())
-        .ok_or_else(|| AppError::NotFound("没有可用的在线客户端".into()))?;
+    let client = match forward_client_id {
+        Some(id) => clients
+            .get(id)
+            .filter(|e| e.status == "active" && e.client.is_some())
+            .and_then(|e| e.client.clone())
+            .ok_or_else(|| AppError::Internal(format!("转发客户端 {id} 不可用（离线或未登录）")))?,
+        None => clients
+            .values()
+            .find(|e| e.status == "active" && e.client.is_some())
+            .and_then(|e| e.client.clone())
+            .ok_or_else(|| AppError::NotFound("没有可用的在线客户端".into()))?,
+    };
     drop(clients);
 
     client
