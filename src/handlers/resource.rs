@@ -144,7 +144,10 @@ pub async fn extract_resources(
         ),
         Err(e) => ("failed", 0i64, 0i64, 0i64, 0i64, Some(e.to_string())),
     };
-    if let Err(e) = crate::services::extract_history::insert(
+    tracing::info!(
+        "Manual extract result: status={status}, scanned={scanned}, extracted={extracted}, skipped={skipped}, errors={errors}"
+    );
+    match crate::services::extract_history::insert(
         &state.db,
         status,
         scanned,
@@ -155,7 +158,8 @@ pub async fn extract_resources(
     )
     .await
     {
-        tracing::warn!("写入提取历史失败: {e}");
+        Ok(()) => tracing::info!("Extract history record inserted (manual)"),
+        Err(e) => tracing::error!("写入提取历史失败 (manual): {e}"),
     }
 
     let result = result?;

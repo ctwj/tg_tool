@@ -290,7 +290,10 @@ async fn run_extract_tick(app_state: &crate::state::AppState, sched: &ExtractSch
         ),
         Err(e) => ("failed", 0i64, 0i64, 0i64, 0i64, Some(e.to_string())),
     };
-    if let Err(e) = crate::services::extract_history::insert(
+    tracing::info!(
+        "Extract tick result: status={status}, scanned={scanned}, extracted={extracted}, skipped={skipped}, errors={errors}"
+    );
+    match crate::services::extract_history::insert(
         &app_state.db,
         status,
         scanned,
@@ -301,7 +304,8 @@ async fn run_extract_tick(app_state: &crate::state::AppState, sched: &ExtractSch
     )
     .await
     {
-        tracing::warn!("写入提取历史失败: {e}");
+        Ok(()) => tracing::info!("Extract history record inserted successfully"),
+        Err(e) => tracing::error!("写入提取历史失败: {e}"),
     }
 
     {
