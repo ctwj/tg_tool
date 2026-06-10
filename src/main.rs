@@ -313,6 +313,30 @@ async fn run_migrations(pool: &DbPool) {
                 }
                 tracing::debug!("SQLite migration 008 skipped (already applied)");
             }
+            // Migration 009: Create extract_histories table
+            let m9 = include_str!("../migrations/009_extract_histories_sqlite.sql");
+            if let Err(e) = sqlx::raw_sql(m9).execute(pool).await {
+                if !e.to_string().contains("already exists") {
+                    panic!("Failed to run SQLite migration 009: {e}");
+                }
+                tracing::debug!("SQLite migration 009 skipped (already applied)");
+            }
+            // Migration 010: Add filter + forward_client_id columns to rules
+            let m10 = include_str!("../migrations/010_rule_filter_sqlite.sql");
+            if let Err(e) = sqlx::raw_sql(m10).execute(pool).await {
+                if !e.to_string().contains("duplicate column") {
+                    panic!("Failed to run SQLite migration 010: {e}");
+                }
+                tracing::debug!("SQLite migration 010 skipped (already applied)");
+            }
+            // Migration 011: Add source_client_id to rules
+            let m11 = include_str!("../migrations/011_rule_source_client_sqlite.sql");
+            if let Err(e) = sqlx::raw_sql(m11).execute(pool).await {
+                if !e.to_string().contains("duplicate column") {
+                    panic!("Failed to run SQLite migration 011: {e}");
+                }
+                tracing::debug!("SQLite migration 011 skipped (already applied)");
+            }
         }
         DbPool::Postgres(pool) => {
             let migration_sql = include_str!("../migrations/001_init_postgres.sql");
@@ -383,6 +407,40 @@ async fn run_migrations(pool: &DbPool) {
                         panic!("Failed to run PostgreSQL migration 008: {e}");
                     }
                     tracing::debug!("PostgreSQL migration 008 skipped (already applied)");
+                }
+            }
+            // Migration 009: Create extract_histories table
+            {
+                let m9 = include_str!("../migrations/009_extract_histories_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m9).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run PostgreSQL migration 009: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 009 skipped (already applied)");
+                }
+            }
+            // Migration 010: Add filter + forward_client_id columns to rules
+            {
+                let m10 = include_str!("../migrations/010_rule_filter_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m10).execute(pool).await {
+                    if !e.to_string().contains("already exists")
+                        && !e.to_string().contains("duplicate")
+                    {
+                        panic!("Failed to run PostgreSQL migration 010: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 010 skipped (already applied)");
+                }
+            }
+            // Migration 011: Add source_client_id to rules
+            {
+                let m11 = include_str!("../migrations/011_rule_source_client_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m11).execute(pool).await {
+                    if !e.to_string().contains("already exists")
+                        && !e.to_string().contains("duplicate")
+                    {
+                        panic!("Failed to run PostgreSQL migration 011: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 011 skipped (already applied)");
                 }
             }
         }

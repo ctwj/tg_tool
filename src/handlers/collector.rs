@@ -318,7 +318,7 @@ pub async fn fetch_history(
     let limit: i64 = body
         .and_then(|Json(v)| v.get("limit").and_then(|v| v.as_i64()))
         .unwrap_or(1000)
-        .clamp(1, 10000);
+        .max(1);
     // Look up collector to get channel_id and client info
     let collector: Option<crate::models::collector::Collector> = match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
@@ -369,18 +369,35 @@ pub async fn fetch_history(
         fallback.ok_or_else(|| AppError::BadRequest("没有可用的活跃客户端".into()))?
     };
 
-    // Trigger collection via service
-    let count = crate::services::collector::full_collect(
-        id,
-        &client_id,
-        collector.channel_id,
-        limit,
-        &state.tg_clients,
-        &state.db,
-    )
-    .await?;
+    // Spawn collection as a background task — returns immediately to avoid HTTP timeout
+    let tg_clients = state.tg_clients.clone();
+    let db = state.db.clone();
+    let collector_id = id;
+    let channel_id = collector.channel_id;
+    let cid = client_id.clone();
+    tokio::spawn(async move {
+        tracing::info!("Background fetch started: collector={collector_id}, channel={channel_id}, limit={limit}, client={cid}");
+        match crate::services::collector::full_collect(
+            collector_id,
+            &cid,
+            channel_id,
+            limit,
+            &tg_clients,
+            &db,
+        )
+        .await
+        {
+            Ok(count) => {
+                tracing::info!("Background fetch completed: collector={collector_id}, new={count}");
+            }
+            Err(e) => {
+                tracing::warn!("Background fetch failed: collector={collector_id}, error={e}");
+            }
+        }
+    });
+
     Ok(Json(
-        json!({ "success": true, "data": { "message": format!("采集完成，新增 {} 条", count) } }),
+        json!({ "success": true, "data": { "message": format!("采集任务已启动，正在后台执行（限制 {} 条）", limit) } }),
     ))
 }
 

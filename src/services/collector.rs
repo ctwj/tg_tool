@@ -6,6 +6,9 @@ use crate::state::DbPool;
 use chrono::NaiveDateTime;
 
 /// Trigger full history collection for a collector
+///
+/// Fetches messages in pages (Telegram returns max 100 per API call),
+/// writes to DB in batches of `BATCH_SIZE` to avoid memory spikes.
 pub async fn full_collect(
     collector_id: i64,
     client_id: &str,
@@ -14,6 +17,8 @@ pub async fn full_collect(
     tg_clients: &crate::state::TgClientMap,
     db: &DbPool,
 ) -> Result<usize, AppError> {
+    const BATCH_SIZE: usize = 500;
+
     let clients = tg_clients.read().await;
     let client = clients
         .get(client_id)
@@ -40,38 +45,70 @@ pub async fn full_collect(
 
     let mut messages = client.iter_messages(packed).limit(limit as usize);
     let mut collected = 0usize;
-
-    // 使用事务批量写入，大幅提升 SQLite 性能
-    // 先收集所有消息到内存，然后一次性写入数据库
-    let mut batch: Vec<(i64, NaiveDateTime, String, Option<String>)> = Vec::new();
+    let mut batch: Vec<(i64, NaiveDateTime, String, Option<String>)> = Vec::with_capacity(BATCH_SIZE);
+    let mut fetched = 0usize;
+    let mut since_delay = 0usize; // 距离上次延迟后取了多少条
 
     while let Some(msg) = messages
         .next()
         .await
-        .map_err(|e| AppError::Internal(format!("获取消息失败: {e}")))?
+        .map_err(|e| AppError::Internal(format!("获取消息失败 (已取 {fetched} 条): {e}")))?
     {
+        fetched += 1;
+        since_delay += 1;
+
         let message_id = msg.id() as i64;
         let raw_data = serialize_message_for_collection(&msg);
         let post_time = msg.date().naive_utc();
-
-        // 提取图片 media 的 photo_id（无需转发图床，由图片代理按需下载）
         let remote_id = extract_photo_id(&msg);
 
         batch.push((message_id, post_time, raw_data, remote_id));
+
+        // 每 BATCH_SIZE 条写一次库，释放内存
+        if batch.len() >= BATCH_SIZE {
+            collected += write_batch(collector_id, channel_id, &batch, db).await;
+            tracing::info!("Progress: fetched {fetched}, collected {collected}");
+            batch.clear();
+        }
+
+        // 每 100 条消息（≈ 1 次 Telegram API 调用）后等待 1.5 秒
+        // Telegram 限制约 30 次/分钟，1.5 秒间隔 ≈ 40 次/分钟，留有余量
+        if since_delay >= 100 {
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            since_delay = 0;
+        }
     }
 
-    // 批量写入数据库（使用事务）
+    // 写入剩余数据
     if !batch.is_empty() {
-        match db {
-            crate::state::DbPool::Sqlite(pool) => {
-                // 开启事务
-                let mut tx = pool
-                    .begin()
-                    .await
-                    .map_err(|e| AppError::Internal(format!("开启事务失败: {e}")))?;
+        collected += write_batch(collector_id, channel_id, &batch, db).await;
+    }
 
-                for (message_id, post_time, raw_data, remote_id) in &batch {
-                    let result = sqlx::query(
+    tracing::info!(
+        "Collected {} new messages for collector {} (fetched {} total)",
+        collected,
+        collector_id,
+        fetched
+    );
+    Ok(collected)
+}
+
+/// Write a batch of messages to the database in a single transaction
+async fn write_batch(
+    collector_id: i64,
+    channel_id: i64,
+    batch: &[(i64, NaiveDateTime, String, Option<String>)],
+    db: &DbPool,
+) -> usize {
+    if batch.is_empty() {
+        return 0;
+    }
+    let mut inserted = 0usize;
+    match db {
+        crate::state::DbPool::Sqlite(pool) => {
+            if let Ok(mut tx) = pool.begin().await {
+                for (message_id, post_time, raw_data, remote_id) in batch {
+                    if let Ok(r) = sqlx::query(
                         "INSERT OR IGNORE INTO collector_histories (collector_id, channel_id, message_id, post_time, raw_data, remote_id) VALUES (?, ?, ?, ?, ?, ?)",
                     )
                     .bind(collector_id)
@@ -81,26 +118,20 @@ pub async fn full_collect(
                     .bind(raw_data)
                     .bind(remote_id)
                     .execute(&mut *tx)
-                    .await;
-                    if let Ok(r) = result
-                        && r.rows_affected() > 0
+                    .await
                     {
-                        collected += 1;
+                        if r.rows_affected() > 0 {
+                            inserted += 1;
+                        }
                     }
                 }
-
-                tx.commit()
-                    .await
-                    .map_err(|e| AppError::Internal(format!("提交事务失败: {e}")))?;
+                let _ = tx.commit().await;
             }
-            crate::state::DbPool::Postgres(pool) => {
-                let mut tx = pool
-                    .begin()
-                    .await
-                    .map_err(|e| AppError::Internal(format!("开启事务失败: {e}")))?;
-
-                for (message_id, post_time, raw_data, remote_id) in &batch {
-                    let result = sqlx::query(
+        }
+        crate::state::DbPool::Postgres(pool) => {
+            if let Ok(mut tx) = pool.begin().await {
+                for (message_id, post_time, raw_data, remote_id) in batch {
+                    if let Ok(r) = sqlx::query(
                         "INSERT INTO collector_histories (collector_id, channel_id, message_id, post_time, raw_data, remote_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (channel_id, message_id) DO NOTHING",
                     )
                     .bind(collector_id)
@@ -110,27 +141,18 @@ pub async fn full_collect(
                     .bind(raw_data)
                     .bind(remote_id)
                     .execute(&mut *tx)
-                    .await;
-                    if let Ok(r) = result
-                        && r.rows_affected() > 0
+                    .await
                     {
-                        collected += 1;
+                        if r.rows_affected() > 0 {
+                            inserted += 1;
+                        }
                     }
                 }
-
-                tx.commit()
-                    .await
-                    .map_err(|e| AppError::Internal(format!("提交事务失败: {e}")))?;
+                let _ = tx.commit().await;
             }
         }
     }
-
-    tracing::info!(
-        "Collected {} new messages for collector {}",
-        collected,
-        collector_id
-    );
-    Ok(collected)
+    inserted
 }
 
 /// Save a real-time collected message

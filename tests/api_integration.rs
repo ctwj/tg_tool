@@ -52,6 +52,14 @@ async fn setup_test_db() -> DbPool {
     let m8 = include_str!("../migrations/008_image_tables_sqlite.sql");
     let _ = sqlx::raw_sql(m8).execute(&pool).await;
 
+    // Migration 010: rule filter columns (forward_client_id/filter_mode/keywords/media_filter)
+    let m10 = include_str!("../migrations/010_rule_filter_sqlite.sql");
+    let _ = sqlx::raw_sql(m10).execute(&pool).await;
+
+    // Migration 011: rule source_client_id
+    let m11 = include_str!("../migrations/011_rule_source_client_sqlite.sql");
+    let _ = sqlx::raw_sql(m11).execute(&pool).await;
+
     // 插入 root 用户（使用当前 bcrypt 版本生成 hash）
     let hash = crypto::hash_password("123456").expect("Failed to hash root password");
     sqlx::query("INSERT INTO users (username, password, role, status) VALUES ('root', ?, 100, 1)")
@@ -2597,4 +2605,117 @@ async fn test_image_forward_queue_status() {
     let failed_tasks = body["data"]["failed_tasks"].as_array().unwrap();
     assert_eq!(failed_tasks.len(), 2);
     assert!(failed_tasks.iter().any(|t| t["error"] == "FLOOD_WAIT_300"));
+}
+
+// ============================================================
+// T004-T005: Rule 过滤字段 CRUD
+// ============================================================
+
+#[tokio::test]
+async fn test_rule_create_with_filter() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 创建含 4 个新字段的规则
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/rules",
+            &token,
+            Some(
+                serde_json::json!({
+                    "source_chat_id": -100111,
+                    "source_chat_name": "源频道",
+                    "forward_method": "Chat",
+                    "forward_target": "-100222",
+                    "is_active": true,
+                    "forward_client_id": "client_abc",
+                    "filter_mode": "exclude",
+                    "keywords": "广告,推广,加微信",
+                    "media_filter": "photo"
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+
+    // 查询验证字段持久化
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request("GET", "/api/rules/1", &token, None))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    assert_eq!(body["data"]["forward_client_id"], "client_abc");
+    assert_eq!(body["data"]["filter_mode"], "exclude");
+    assert_eq!(body["data"]["keywords"], "广告,推广,加微信");
+    assert_eq!(body["data"]["media_filter"], "photo");
+}
+
+#[tokio::test]
+async fn test_rule_update_filter() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 先创建无过滤字段的规则
+    let _ = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/rules",
+            &token,
+            Some(
+                serde_json::json!({
+                    "source_chat_id": 222,
+                    "forward_method": "Chat",
+                    "forward_target": "-100"
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+
+    // 更新过滤字段
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "PUT",
+            "/api/rules/1",
+            &token,
+            Some(
+                serde_json::json!({
+                    "filter_mode": "include",
+                    "keywords": "资源,分享",
+                    "media_filter": "document",
+                    "forward_client_id": "client_xyz"
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+
+    // 验证持久化
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request("GET", "/api/rules/1", &token, None))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_eq!(body["data"]["filter_mode"], "include");
+    assert_eq!(body["data"]["keywords"], "资源,分享");
+    assert_eq!(body["data"]["media_filter"], "document");
+    assert_eq!(body["data"]["forward_client_id"], "client_xyz");
 }

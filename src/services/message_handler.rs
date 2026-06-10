@@ -5,6 +5,68 @@ use crate::errors::AppError;
 use crate::state::{DbPool, PeerCache, TgClientMap};
 use grammers_client::types::Message;
 
+/// Matched rule row: (id, method, target, config, forward_client_id, filter_mode, keywords, media_filter, source_client_id)
+type RuleRow = (
+    i64,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+/// Check if a message passes keyword filtering
+/// filter_mode: "none" | "include" (whitelist) | "exclude" (blacklist)
+/// keywords: comma-separated keywords
+fn keyword_pass(text: &str, filter_mode: Option<&str>, keywords: Option<&str>) -> bool {
+    let mode = filter_mode.unwrap_or("none");
+    match mode {
+        "none" | "" => true,
+        "include" => {
+            // Whitelist: message must contain at least one keyword
+            if let Some(kws) = keywords {
+                let text_lower = text.to_lowercase();
+                kws.split(',').any(|kw| {
+                    !kw.trim().is_empty() && text_lower.contains(&kw.trim().to_lowercase())
+                })
+            } else {
+                false
+            }
+        }
+        "exclude" => {
+            // Blacklist: message must NOT contain any keyword
+            if let Some(kws) = keywords {
+                let text_lower = text.to_lowercase();
+                !kws.split(',').any(|kw| {
+                    !kw.trim().is_empty() && text_lower.contains(&kw.trim().to_lowercase())
+                })
+            } else {
+                true
+            }
+        }
+        _ => true,
+    }
+}
+
+/// Check if a message passes media type filtering
+/// media_filter: "all" | "photo" | "document" | "text"
+fn media_pass(msg: &Message, media_filter: Option<&str>) -> bool {
+    let filter = media_filter.unwrap_or("all");
+    match filter {
+        "all" | "" => true,
+        "photo" => matches!(msg.media(), Some(grammers_client::types::Media::Photo(_))),
+        "document" => matches!(
+            msg.media(),
+            Some(grammers_client::types::Media::Document(_))
+        ),
+        "text" => msg.media().is_none(),
+        _ => true,
+    }
+}
+
 /// Handle a new incoming message from Telegram
 /// Called by tg_manager update listener when a new message is received
 pub async fn handle_new_message(
@@ -30,40 +92,56 @@ pub async fn handle_new_message(
 
     // 1. Match active forwarding rules (skip outgoing to avoid loops)
     if !outgoing {
-        // forwarding rules matching
-        let rules = match db {
+        // forwarding rules matching — includes filter fields + source_client_id
+        let rules: Vec<RuleRow> = match db {
             crate::state::DbPool::Sqlite(pool) => {
-                let rows: Vec<(i64, String, String, Option<String>)> = sqlx::query_as(
-                "SELECT id, forward_method, forward_target, forward_config FROM rules WHERE source_chat_id = ? AND is_active = 1",
+                sqlx::query_as(
+                "SELECT id, forward_method, forward_target, forward_config, forward_client_id, filter_mode, keywords, media_filter, source_client_id FROM rules WHERE source_chat_id = ? AND is_active = 1",
             )
             .bind(chat_id)
             .fetch_all(pool)
             .await
-            .unwrap_or_default();
-                rows
+            .unwrap_or_default()
             }
             crate::state::DbPool::Postgres(pool) => {
-                let rows: Vec<(i64, String, String, Option<String>)> = sqlx::query_as(
-                "SELECT id, forward_method, forward_target, forward_config FROM rules WHERE source_chat_id = $1 AND is_active = true",
+                sqlx::query_as(
+                "SELECT id, forward_method, forward_target, forward_config, forward_client_id, filter_mode, keywords, media_filter, source_client_id FROM rules WHERE source_chat_id = $1 AND is_active = true",
             )
             .bind(chat_id)
             .fetch_all(pool)
             .await
-            .unwrap_or_default();
-                rows
+            .unwrap_or_default()
             }
         };
 
-        for (rule_id, method, target, config) in &rules {
+        for (rule_id, method, target, config, _fcid, fmode, kws, mfilt, rule_source_client_id) in &rules {
+            // Keyword filter
+            if !keyword_pass(text, fmode.as_deref(), kws.as_deref()) {
+                tracing::debug!("Rule {rule_id}: skipped by keyword filter");
+                continue;
+            }
+            // Media type filter
+            if !media_pass(msg, mfilt.as_deref()) {
+                tracing::debug!("Rule {rule_id}: skipped by media filter");
+                continue;
+            }
+
+            // Determine which client to use for forwarding
+            // Priority: rule's source_client_id > current client_id
+            let forward_client_id = rule_source_client_id
+                .as_deref()
+                .unwrap_or(client_id);
+
             if let Err(e) = crate::services::forwarder::forward_message(
                 *rule_id,
                 method,
                 target,
                 config.as_deref(),
-                text,
+                msg,
                 tg_clients,
                 peer_cache,
                 db,
+                forward_client_id,
             )
             .await
             {
@@ -142,4 +220,57 @@ fn serialize_message(msg: &Message) -> String {
         }
     }
     json.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_keyword_pass_none_mode() {
+        assert!(keyword_pass("任意文本", Some("none"), Some("广告")));
+        assert!(keyword_pass("任意文本", None, None));
+        assert!(keyword_pass("任意文本", Some(""), None));
+    }
+
+    #[test]
+    fn test_keyword_pass_exclude() {
+        // Blacklist: contains keyword → blocked
+        assert!(!keyword_pass(
+            "这是一条广告消息",
+            Some("exclude"),
+            Some("广告,推广")
+        ));
+        assert!(!keyword_pass(
+            "推广活动",
+            Some("exclude"),
+            Some("广告,推广")
+        ));
+        // Does not contain → pass
+        assert!(keyword_pass("正常消息", Some("exclude"), Some("广告,推广")));
+        // Empty keywords → pass
+        assert!(keyword_pass("广告", Some("exclude"), Some("")));
+        assert!(keyword_pass("广告", Some("exclude"), None));
+    }
+
+    #[test]
+    fn test_keyword_pass_include() {
+        // Whitelist: contains keyword → pass
+        assert!(keyword_pass("资源分享", Some("include"), Some("资源,分享")));
+        assert!(keyword_pass("分享链接", Some("include"), Some("资源,分享")));
+        // Does not contain → blocked
+        assert!(!keyword_pass(
+            "普通消息",
+            Some("include"),
+            Some("资源,分享")
+        ));
+        // Empty keywords → blocked (nothing to match)
+        assert!(!keyword_pass("资源", Some("include"), None));
+    }
+
+    #[test]
+    fn test_keyword_pass_case_insensitive() {
+        assert!(!keyword_pass("SALE SALE", Some("exclude"), Some("sale")));
+        assert!(keyword_pass("SALE SALE", Some("include"), Some("sale")));
+    }
 }

@@ -19,6 +19,9 @@ pub struct ExtractedResource {
     pub is_edited: bool,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
+    /// 封面图转发状态，由 SQL 子查询填充：None/Some("pending")/Some("forwarded")/Some("failed")
+    #[sqlx(default)]
+    pub img_forward_status: Option<String>,
 }
 
 /// 用于创建新资源记录的参数
