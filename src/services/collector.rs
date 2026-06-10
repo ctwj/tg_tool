@@ -120,10 +120,9 @@ async fn write_batch(
                     .bind(remote_id)
                     .execute(&mut *tx)
                     .await
+                        && r.rows_affected() > 0
                     {
-                        if r.rows_affected() > 0 {
                             inserted += 1;
-                        }
                     }
                 }
                 let _ = tx.commit().await;
@@ -143,10 +142,9 @@ async fn write_batch(
                     .bind(remote_id)
                     .execute(&mut *tx)
                     .await
+                        && r.rows_affected() > 0
                     {
-                        if r.rows_affected() > 0 {
                             inserted += 1;
-                        }
                     }
                 }
                 let _ = tx.commit().await;
