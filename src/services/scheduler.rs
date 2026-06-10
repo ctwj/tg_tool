@@ -233,34 +233,7 @@ pub async fn start_extract_scheduler(
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(duration) => {
-                    tracing::info!("Extract scheduler tick: triggering extraction");
-                    let result = crate::services::resource::trigger_extraction(
-                        &app_state,
-                        1000,
-                    )
-                    .await;
-                    // 持久化提取历史（成功/失败均记录），弥补当前仅 warn 的可观测性缺口
-                    let (status, scanned, extracted, skipped, errors, msg) = match &result {
-                        Ok(r) => ("success", r.total_scanned, r.extracted, r.skipped, r.errors, None),
-                        Err(e) => ("failed", 0i64, 0i64, 0i64, 0i64, Some(e.to_string())),
-                    };
-                    if let Err(e) = crate::services::extract_history::insert(
-                        &app_state.db, status, scanned, extracted, skipped, errors, msg.as_deref(),
-                    ).await {
-                        tracing::warn!("写入提取历史失败: {e}");
-                    }
-                    // Update last_run_at
-                    {
-                        let mut s = sched.write().await;
-                        s.last_run_at = Some(std::time::Instant::now());
-                    }
-                    match result {
-                        Ok(r) => tracing::info!(
-                            "Scheduled extraction result: scanned={}, extracted={}, skipped={}",
-                            r.total_scanned, r.extracted, r.skipped
-                        ),
-                        Err(e) => tracing::warn!("Scheduled extraction failed: {e}"),
-                    }
+                    run_extract_tick(&app_state, &sched).await;
                 }
                 _ = cancel.cancelled() => {
                     tracing::info!("Extract scheduler cancelled");
@@ -298,6 +271,52 @@ pub async fn update_extract_scheduler(
     stop_extract_scheduler(scheduler.clone()).await;
     if minutes > 0 {
         start_extract_scheduler(scheduler, minutes, app_state).await;
+    }
+}
+
+/// 提取调度器单次 tick：执行提取 + 写入历史 + 更新 last_run_at
+async fn run_extract_tick(app_state: &crate::state::AppState, sched: &ExtractSchedulerHandle) {
+    tracing::info!("Extract scheduler tick: triggering extraction");
+    let result = crate::services::resource::trigger_extraction(app_state, 1000).await;
+
+    let (status, scanned, extracted, skipped, errors, msg) = match &result {
+        Ok(r) => (
+            "success",
+            r.total_scanned,
+            r.extracted,
+            r.skipped,
+            r.errors,
+            None,
+        ),
+        Err(e) => ("failed", 0i64, 0i64, 0i64, 0i64, Some(e.to_string())),
+    };
+    if let Err(e) = crate::services::extract_history::insert(
+        &app_state.db,
+        status,
+        scanned,
+        extracted,
+        skipped,
+        errors,
+        msg.as_deref(),
+    )
+    .await
+    {
+        tracing::warn!("写入提取历史失败: {e}");
+    }
+
+    {
+        let mut s = sched.write().await;
+        s.last_run_at = Some(std::time::Instant::now());
+    }
+
+    match result {
+        Ok(r) => tracing::info!(
+            "Scheduled extraction result: scanned={}, extracted={}, skipped={}",
+            r.total_scanned,
+            r.extracted,
+            r.skipped
+        ),
+        Err(e) => tracing::warn!("Scheduled extraction failed: {e}"),
     }
 }
 

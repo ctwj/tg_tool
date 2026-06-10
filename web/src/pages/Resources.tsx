@@ -365,8 +365,8 @@ const Resources: React.FC = () => {
           return <Tooltip title="封面转发失败"><Text style={{ fontSize: 12, color: '#ef4444' }}>{img}</Text></Tooltip>
         }
 
-        // 推送成功 + 封面已转发 → 绿色可点击
-        if (record.is_pushed && imageDomain) {
+        // 封面已转发 + 有图床域名 → 绿色可点击
+        if (fwdStatus === 'forwarded' && imageDomain) {
           const fullUrl = `${imageDomain.replace(/\/+$/, '')}/${img}`
           return (
             <Tooltip title={fullUrl}>
@@ -379,9 +379,9 @@ const Resources: React.FC = () => {
           )
         }
 
-        // 推送成功但无图床域名 → 绿色不可点击
-        if (record.is_pushed) {
-          return <Tooltip title="推送成功（请配置图床域名以预览封面）"><Text style={{ fontSize: 12, color: '#10b981' }}>{img}</Text></Tooltip>
+        // 封面已转发但无图床域名 → 绿色不可点击
+        if (fwdStatus === 'forwarded') {
+          return <Tooltip title="封面已转发（请配置图床域名以预览）"><Text style={{ fontSize: 12, color: '#10b981' }}>{img}</Text></Tooltip>
         }
 
         // 封面待转发 → 蓝色不可点击
@@ -389,8 +389,8 @@ const Resources: React.FC = () => {
           return <Tooltip title="封面待转发"><Text style={{ fontSize: 12, color: '#0ea5e9' }}>{img}</Text></Tooltip>
         }
 
-        // 未推送 → 黄色不可点击
-        return <Tooltip title="未推送"><Text style={{ fontSize: 12, color: '#f59e0b' }}>{img}</Text></Tooltip>
+        // 未转发 → 黄色不可点击
+        return <Tooltip title="封面未转发"><Text style={{ fontSize: 12, color: '#f59e0b' }}>{img}</Text></Tooltip>
       },
     },
     {

@@ -137,7 +137,14 @@ const Collectors: React.FC = () => {
       title: '客户端', dataIndex: 'client_id', key: 'client_id', width: 140,
       render: (v: string) => <Tag color="purple" style={{ margin: 0 }}>{getClientName(v)}</Tag>,
     },
-    { title: '频道', dataIndex: 'channel_name', key: 'channel_name' },
+    {
+      title: '频道', dataIndex: 'channel_name', key: 'channel_name',
+      render: (v: string) => (
+        <div style={{ display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden', lineHeight: '20px', maxHeight: 60 }}>
+          {v || '-'}
+        </div>
+      ),
+    },
     {
       title: '频道ID', dataIndex: 'channel_id', key: 'channel_id', width: 140,
       render: (v: number) => <code style={{ fontSize: 12, color: '#0ea5e9', background: '#eef2ff', padding: '2px 8px', borderRadius: 4 }}>{v}</code>,

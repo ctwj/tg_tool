@@ -91,6 +91,12 @@ const ForwardQueue: React.FC = () => {
       render: (t: string, r: ForwardTask) => t || r.remote_id || '-',
     },
     {
+      title: '频道',
+      dataIndex: 'channel_id',
+      width: 110,
+      render: (v?: number) => v ? <code style={{ fontSize: 12, color: '#0ea5e9' }}>{v}</code> : '-',
+    },
+    {
       title: '错误原因',
       dataIndex: 'error',
       width: 200,

@@ -1065,12 +1065,15 @@ pub async fn push_resources(
     db: &DbPool,
     option_cache: &OptionCache,
 ) -> Result<serde_json::Value, AppError> {
-    // 读取 is_pushed=false 的资源
+    // 读取 is_pushed=false 的资源（跳过有封面但封面尚未转发成功的）
     let resources: Vec<ExtractedResource> = match db {
         DbPool::Sqlite(pool) => {
             sqlx::query_as(
-                "SELECT id, collector_history_id, title, url, description, category, tags, img, source, extra, extract_mode, is_pushed, is_edited, created_at, updated_at \
-                 FROM extracted_resources WHERE is_pushed = 0 LIMIT ?"
+                "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at \
+                 FROM extracted_resources er \
+                 WHERE er.is_pushed = 0 \
+                 AND (er.img IS NULL OR er.img = '' OR er.img IN (SELECT ft.remote_id FROM forward_tasks ft WHERE ft.status = 'forwarded')) \
+                 LIMIT ?"
             )
             .bind(batch_size)
             .fetch_all(pool)
@@ -1078,8 +1081,11 @@ pub async fn push_resources(
         }
         DbPool::Postgres(pool) => {
             sqlx::query_as(
-                "SELECT id, collector_history_id, title, url, description, category, tags, img, source, extra, extract_mode, is_pushed, is_edited, created_at, updated_at \
-                 FROM extracted_resources WHERE is_pushed = FALSE LIMIT $1"
+                "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at \
+                 FROM extracted_resources er \
+                 WHERE er.is_pushed = FALSE \
+                 AND (er.img IS NULL OR er.img = '' OR er.img IN (SELECT ft.remote_id FROM forward_tasks ft WHERE ft.status = 'forwarded')) \
+                 LIMIT $1"
             )
             .bind(batch_size)
             .fetch_all(pool)

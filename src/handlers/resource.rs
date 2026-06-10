@@ -130,7 +130,35 @@ pub async fn extract_resources(
         .and_then(|v| v.as_i64())
         .unwrap_or(1000);
 
-    let result = crate::services::resource::trigger_extraction(&state, batch_size).await?;
+    let result = crate::services::resource::trigger_extraction(&state, batch_size).await;
+
+    // 持久化提取历史（成功/失败均记录）
+    let (status, scanned, extracted, skipped, errors, msg) = match &result {
+        Ok(r) => (
+            "success",
+            r.total_scanned,
+            r.extracted,
+            r.skipped,
+            r.errors,
+            None,
+        ),
+        Err(e) => ("failed", 0i64, 0i64, 0i64, 0i64, Some(e.to_string())),
+    };
+    if let Err(e) = crate::services::extract_history::insert(
+        &state.db,
+        status,
+        scanned,
+        extracted,
+        skipped,
+        errors,
+        msg.as_deref(),
+    )
+    .await
+    {
+        tracing::warn!("写入提取历史失败: {e}");
+    }
+
+    let result = result?;
 
     Ok(Json(json!({
         "success": true,
