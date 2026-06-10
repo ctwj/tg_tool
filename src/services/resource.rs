@@ -659,13 +659,15 @@ pub async fn list_resources(
         where_clause
     );
     let query_sql = format!(
-        "SELECT id, collector_history_id, title, url, description, category, tags, img, source, extra, extract_mode, is_pushed, is_edited, created_at, updated_at \
-         FROM extracted_resources WHERE {} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
+         (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status \
+         FROM extracted_resources er WHERE {} ORDER BY er.created_at DESC LIMIT ? OFFSET ?",
         where_clause
     );
     let query_sql_pg = format!(
-        "SELECT id, collector_history_id, title, url, description, category, tags, img, source, extra, extract_mode, is_pushed, is_edited, created_at, updated_at \
-         FROM extracted_resources WHERE {} ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+        "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
+         (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status \
+         FROM extracted_resources er WHERE {} ORDER BY er.created_at DESC LIMIT $1 OFFSET $2",
         where_clause
     );
 

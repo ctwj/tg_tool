@@ -16,6 +16,7 @@ pub struct Rule {
     pub filter_mode: Option<String>,
     pub keywords: Option<String>,
     pub media_filter: Option<String>,
+    pub source_client_id: Option<String>,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
@@ -33,6 +34,7 @@ pub struct CreateRuleRequest {
     pub filter_mode: Option<String>,
     pub keywords: Option<String>,
     pub media_filter: Option<String>,
+    pub source_client_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -82,6 +84,7 @@ mod tests {
             filter_mode: None,
             keywords: None,
             media_filter: None,
+            source_client_id: None,
             created_at: naive_now(),
             updated_at: naive_now(),
         };

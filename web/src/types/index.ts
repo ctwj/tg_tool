@@ -80,6 +80,7 @@ export interface Rule {
   filter_mode?: 'none' | 'include' | 'exclude'
   keywords?: string
   media_filter?: 'all' | 'photo' | 'document' | 'text'
+  source_client_id?: string
   created_at: string
   updated_at: string
 }
@@ -196,6 +197,7 @@ export interface ExtractedResource {
   extract_mode: 'rule' | 'ai'
   is_pushed: boolean
   is_edited: boolean
+  img_forward_status?: string | null  // 'pending' | 'forwarded' | 'failed' | null
   created_at: string
   updated_at: string
 }

@@ -5,11 +5,12 @@ use crate::errors::AppError;
 use crate::state::{DbPool, PeerCache, TgClientMap};
 use grammers_client::types::Message;
 
-/// Matched rule row: (id, method, target, config, forward_client_id, filter_mode, keywords, media_filter)
+/// Matched rule row: (id, method, target, config, forward_client_id, filter_mode, keywords, media_filter, source_client_id)
 type RuleRow = (
     i64,
     String,
     String,
+    Option<String>,
     Option<String>,
     Option<String>,
     Option<String>,
@@ -91,11 +92,11 @@ pub async fn handle_new_message(
 
     // 1. Match active forwarding rules (skip outgoing to avoid loops)
     if !outgoing {
-        // forwarding rules matching — includes filter fields
+        // forwarding rules matching — includes filter fields + source_client_id
         let rules: Vec<RuleRow> = match db {
             crate::state::DbPool::Sqlite(pool) => {
                 sqlx::query_as(
-                "SELECT id, forward_method, forward_target, forward_config, forward_client_id, filter_mode, keywords, media_filter FROM rules WHERE source_chat_id = ? AND is_active = 1",
+                "SELECT id, forward_method, forward_target, forward_config, forward_client_id, filter_mode, keywords, media_filter, source_client_id FROM rules WHERE source_chat_id = ? AND is_active = 1",
             )
             .bind(chat_id)
             .fetch_all(pool)
@@ -104,7 +105,7 @@ pub async fn handle_new_message(
             }
             crate::state::DbPool::Postgres(pool) => {
                 sqlx::query_as(
-                "SELECT id, forward_method, forward_target, forward_config, forward_client_id, filter_mode, keywords, media_filter FROM rules WHERE source_chat_id = $1 AND is_active = true",
+                "SELECT id, forward_method, forward_target, forward_config, forward_client_id, filter_mode, keywords, media_filter, source_client_id FROM rules WHERE source_chat_id = $1 AND is_active = true",
             )
             .bind(chat_id)
             .fetch_all(pool)
@@ -113,7 +114,7 @@ pub async fn handle_new_message(
             }
         };
 
-        for (rule_id, method, target, config, fcid, fmode, kws, mfilt) in &rules {
+        for (rule_id, method, target, config, _fcid, fmode, kws, mfilt, rule_source_client_id) in &rules {
             // Keyword filter
             if !keyword_pass(text, fmode.as_deref(), kws.as_deref()) {
                 tracing::debug!("Rule {rule_id}: skipped by keyword filter");
@@ -125,16 +126,22 @@ pub async fn handle_new_message(
                 continue;
             }
 
+            // Determine which client to use for forwarding
+            // Priority: rule's source_client_id > current client_id
+            let forward_client_id = rule_source_client_id
+                .as_deref()
+                .unwrap_or(client_id);
+
             if let Err(e) = crate::services::forwarder::forward_message(
                 *rule_id,
                 method,
                 target,
                 config.as_deref(),
-                text,
+                msg,
                 tg_clients,
                 peer_cache,
                 db,
-                fcid.as_deref(),
+                forward_client_id,
             )
             .await
             {

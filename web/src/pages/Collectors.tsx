@@ -113,8 +113,10 @@ const Collectors: React.FC = () => {
     setFetching(true)
     try {
       const res = await apiClient.post(`/collectors/${fetchCollectorId}/fetch`, { limit: fetchLimit })
-      message.success(res.data?.data?.message || '采集完成')
+      message.success(res.data?.data?.message || '采集任务已启动')
       setFetchOpen(false)
+      // 延迟刷新列表，给后台任务一些时间执行
+      setTimeout(() => fetchCollectors(), 3000)
     } catch (e: any) {
       message.error(e.response?.data?.error || e.message || '采集失败')
     } finally {
@@ -272,20 +274,24 @@ const Collectors: React.FC = () => {
       >
         <div style={{ marginBottom: 16 }}>
           选择要采集的消息数量。已采集过的消息不会重复写入。
+          <br />
+          <span style={{ fontSize: 12, color: '#9ca3af' }}>采集任务在后台异步执行，提交后可立即关闭弹窗。</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <span>采集数量：</span>
           <Select
             value={fetchLimit}
             onChange={setFetchLimit}
-            style={{ width: 180 }}
+            style={{ width: 200 }}
             options={[
               { value: 100, label: '最近 100 条' },
               { value: 500, label: '最近 500 条' },
               { value: 1000, label: '最近 1,000 条（默认）' },
               { value: 3000, label: '最近 3,000 条' },
               { value: 5000, label: '最近 5,000 条' },
-              { value: 10000, label: '最近 10,000 条（上限）' },
+              { value: 10000, label: '最近 10,000 条' },
+              { value: 50000, label: '最近 50,000 条' },
+              { value: 100000, label: '全部消息（无上限）' },
             ]}
           />
         </div>

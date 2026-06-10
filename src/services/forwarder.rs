@@ -1,8 +1,10 @@
 // Message forwarding service
-// Supports Chat (grammers send_message) and Webhook (reqwest POST) modes
+// Supports Chat (copy_media + send_album for media, send_message for text) and Webhook modes
 
 use crate::errors::AppError;
 use crate::state::{DbPool, PeerCache, TgClientMap};
+use grammers_client::types::Message;
+use grammers_client::InputMedia;
 
 /// Forward a message to the target
 #[allow(clippy::too_many_arguments)]
@@ -11,15 +13,17 @@ pub async fn forward_message(
     method: &str,
     target: &str,
     config: Option<&str>,
-    content: &str,
+    msg: &Message,
     tg_clients: &TgClientMap,
     peer_cache: &PeerCache,
     db: &DbPool,
-    forward_client_id: Option<&str>,
+    source_client_id: &str,
 ) -> Result<(), AppError> {
     let result = match method {
-        "WebHook" | "Webhook" => forward_webhook(target, config, content).await,
-        "Chat" => forward_chat(target, forward_client_id, content, tg_clients, peer_cache).await,
+        "WebHook" | "Webhook" => forward_webhook(target, config, msg.text()).await,
+        "Chat" => {
+            forward_chat(target, source_client_id, msg, tg_clients, peer_cache).await
+        }
         _ => Err(AppError::BadRequest(format!("未知的转发方式: {method}"))),
     };
 
@@ -35,7 +39,7 @@ pub async fn forward_message(
                 "INSERT INTO messages (rule_id, content, status, error_reason) VALUES (?, ?, ?, ?)",
             )
             .bind(rule_id)
-            .bind(content)
+            .bind(msg.text())
             .bind(status)
             .bind(&error_reason)
             .execute(pool)
@@ -46,7 +50,7 @@ pub async fn forward_message(
                 "INSERT INTO messages (rule_id, content, status, error_reason) VALUES ($1, $2, $3, $4)",
             )
             .bind(rule_id)
-            .bind(content)
+            .bind(msg.text())
             .bind(status)
             .bind(&error_reason)
             .execute(pool)
@@ -108,40 +112,53 @@ async fn forward_webhook(
     Ok(())
 }
 
+/// Forward a message using the same client that received it.
+/// Uses `InputMedia::copy_media` to re-send media by remote ID (no download needed).
+/// Falls back to `send_message` for text-only messages.
 async fn forward_chat(
     target: &str,
-    forward_client_id: Option<&str>,
-    content: &str,
+    source_client_id: &str,
+    msg: &Message,
     tg_clients: &TgClientMap,
     peer_cache: &PeerCache,
 ) -> Result<(), AppError> {
-    let chat_id: i64 = target
+    let target_chat_id: i64 = target
         .parse()
         .map_err(|e| AppError::BadRequest(format!("无效的转发目标: {e}")))?;
 
-    // Resolve peer using cache
-    let packed = crate::services::tg_api::resolve_peer(chat_id, tg_clients, peer_cache).await?;
-
-    // Use specified client if forward_client_id is provided, otherwise fall back to any active
+    // Get the source client instance
     let clients = tg_clients.read().await;
-    let client = match forward_client_id {
-        Some(id) => clients
-            .get(id)
-            .filter(|e| e.status == "active" && e.client.is_some())
-            .and_then(|e| e.client.clone())
-            .ok_or_else(|| AppError::Internal(format!("转发客户端 {id} 不可用（离线或未登录）")))?,
-        None => clients
-            .values()
-            .find(|e| e.status == "active" && e.client.is_some())
-            .and_then(|e| e.client.clone())
-            .ok_or_else(|| AppError::NotFound("没有可用的在线客户端".into()))?,
-    };
+    let client = clients
+        .get(source_client_id)
+        .filter(|e| e.status == "active" && e.client.is_some())
+        .and_then(|e| e.client.clone())
+        .ok_or_else(|| {
+            AppError::Internal(format!(
+                "客户端 {source_client_id} 不可用（离线或未登录）"
+            ))
+        })?;
     drop(clients);
 
-    client
-        .send_message(packed, content)
-        .await
-        .map_err(|e| AppError::Internal(format!("发送消息失败: {e}")))?;
+    // Resolve target peer
+    let packed =
+        crate::services::tg_api::resolve_peer(target_chat_id, tg_clients, peer_cache).await?;
+
+    // Check if message has media
+    if let Some(media) = msg.media() {
+        // Use copy_media to reference the existing media by remote ID
+        // send_album accepts a Vec<InputMedia>, sends as a new message (no "forwarded from")
+        let input_media = InputMedia::caption(msg.text()).copy_media(&media);
+        client
+            .send_album(packed, vec![input_media])
+            .await
+            .map_err(|e| AppError::Internal(format!("转发媒体消息失败: {e}")))?;
+    } else {
+        // Text-only: send as plain message
+        client
+            .send_message(packed, msg.text())
+            .await
+            .map_err(|e| AppError::Internal(format!("发送消息失败: {e}")))?;
+    }
 
     Ok(())
 }
