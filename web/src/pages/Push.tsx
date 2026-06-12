@@ -1,9 +1,10 @@
-import React, { useEffect, useState, useMemo } from 'react'
-import { Button, Table, message, Space, Modal, Form, Input, InputNumber, Switch, Statistic, Card, Row, Col, Tag, Typography, Select, Alert, Tooltip } from 'antd'
-import { RocketOutlined, ReloadOutlined, SettingOutlined, BarChartOutlined, PlusOutlined, DeleteOutlined, ApiOutlined, SafetyCertificateOutlined, CodeOutlined, SendOutlined, ThunderboltOutlined } from '@ant-design/icons'
+import React, { useEffect, useState, useMemo, useCallback } from 'react'
+import { Button, Table, message, Space, Modal, Form, Input, InputNumber, Switch, Statistic, Card, Row, Col, Tag, Typography, Select, Alert, Tooltip, Tabs, Radio, Popconfirm } from 'antd'
+import { RocketOutlined, ReloadOutlined, SettingOutlined, BarChartOutlined, PlusOutlined, DeleteOutlined, ApiOutlined, SafetyCertificateOutlined, CodeOutlined, SendOutlined, ThunderboltOutlined, CopyOutlined, CheckCircleOutlined, CloseCircleOutlined, CloudUploadOutlined } from '@ant-design/icons'
 import apiClient from '../api/client'
 import PageHeader from '../components/PageHeader'
 import { useTableScrollY } from '../hooks/useTableScroll'
+import type { PushConfig, PushHistoryDetail } from '../types'
 
 const { Text } = Typography
 
@@ -29,112 +30,281 @@ const AUTH_OPTIONS = [
 ]
 
 const Push: React.FC = () => {
+  // ─── 配置列表状态 ───
+  const [configs, setConfigs] = useState<PushConfig[]>([])
+  const [configsLoading, setConfigsLoading] = useState(false)
+
+  // ─── 推送历史状态 ───
   const [histories, setHistories] = useState<any[]>([])
-  const [loading, setLoading] = useState(false)
-  const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(1)
+  const [histLoading, setHistLoading] = useState(false)
+  const [histTotal, setHistTotal] = useState(0)
+  const [histPage, setHistPage] = useState(1)
 
+  // ─── 推送历史详情（跳过明细） ───
+  const [histDetailOpen, setHistDetailOpen] = useState(false)
+  const [histDetailLoading, setHistDetailLoading] = useState(false)
+  const [histDetail, setHistDetail] = useState<PushHistoryDetail | null>(null)
+
+  // ─── 统计 ───
   const [statsOpen, setStatsOpen] = useState(false)
-  const [configOpen, setConfigOpen] = useState(false)
-  const [configSaving, setConfigSaving] = useState(false)
-  const [form] = Form.useForm()
-
   const [stats, setStats] = useState({ total: 0, success: 0, failed: 0 })
-  const [formValues, setFormValues] = useState<Record<string, any>>({})
 
+  // ─── 配置编辑弹窗 ───
+  const [editOpen, setEditOpen] = useState(false)
+  const [editSaving, setEditSaving] = useState(false)
+  const [editingId, setEditingId] = useState<number | null>(null)
+  const [form] = Form.useForm()
+  const [formValues, setFormValues] = useState<Record<string, any>>({})
   const [authState, setAuthState] = useState<Record<string, { token: string; key: string }>>({
     bearer: { token: '', key: '' },
     custom_header: { token: '', key: 'X-API-Token' },
     query: { token: '', key: 'token' },
   })
 
-  const fetchHistories = async (p: number = 1) => {
-    setLoading(true)
+  // ─── 采集器列表（数据源选择用） ───
+  const [collectors, setCollectors] = useState<any[]>([])
+
+  // ─── 推送中状态 ───
+  const [pushingIds, setPushingIds] = useState<Set<number>>(new Set())
+
+  // ─── Tab 控制 ───
+  const [activeTab, setActiveTab] = useState('configs')
+
+  const { containerRef, scrollY } = useTableScrollY()
+
+  // ─── 数据加载 ───
+
+  const fetchConfigs = useCallback(async () => {
+    setConfigsLoading(true)
+    try {
+      const res = await apiClient.get('/push/configs')
+      setConfigs(res.data?.data?.list ?? [])
+    } catch { message.error('获取推送配置失败') }
+    finally { setConfigsLoading(false) }
+  }, [])
+
+  const fetchHistories = useCallback(async (p: number = 1) => {
+    setHistLoading(true)
     try {
       const res = await apiClient.get(`/push/histories?page=${p}&page_size=20`)
       const data = res.data.data
       setHistories(data?.list ?? [])
-      setTotal(data?.pagination?.total ?? 0)
-      setPage(p)
+      setHistTotal(data?.pagination?.total ?? 0)
+      setHistPage(p)
     } catch { message.error('获取推送历史失败') }
-    finally { setLoading(false) }
-  }
+    finally { setHistLoading(false) }
+  }, [])
 
-  const fetchStats = async () => {
+  const openHistDetail = useCallback(async (id: number) => {
+    setHistDetailOpen(true)
+    setHistDetailLoading(true)
+    setHistDetail(null)
+    try {
+      const res = await apiClient.get(`/push/histories/${id}`)
+      if (res.data?.success) {
+        setHistDetail(res.data.data)
+      } else {
+        message.error(res.data?.message || '获取详情失败')
+      }
+    } catch {
+      message.error('获取详情失败')
+    } finally {
+      setHistDetailLoading(false)
+    }
+  }, [])
+
+  const fetchStats = useCallback(async () => {
     try {
       const res = await apiClient.get('/push/stats')
       setStats(res.data.data ?? { total: 0, success: 0, failed: 0 })
     } catch { /* ignore */ }
-  }
+  }, [])
 
-  const fetchConfig = async () => {
+  const fetchCollectors = useCallback(async () => {
     try {
-      const res = await apiClient.get('/options')
-      const data = res.data.data ?? {}
-      const fv = {
-        api_url: data.push_api_url || '',
-        api_token: data.push_api_token || '',
-        target: data.push_target || '',
-        batch_size: parseInt(data.push_batch_size) || 1000,
-        auto_push: data.push_auto_push === '1' || data.push_auto_push === 'true',
-        interval: parseInt(data.push_interval) || 30,
-        auth_type: data.push_auth_type || 'custom_header',
-        auth_key: data.push_auth_key || 'X-API-Token',
-        http_method: data.push_http_method || 'POST',
-        body_template: data.push_body_template || '',
-        custom_headers: parseCustomHeaders(data.push_custom_headers),
-      }
-      form.setFieldsValue(fv)
-      setFormValues(fv)
-      if (data.push_api_token) {
-        setAuthState(prev => ({
-          ...prev,
-          [(data.push_auth_type || 'custom_header')]: {
-            token: data.push_api_token,
-            key: data.push_auth_key || prev[data.push_auth_type || 'custom_header']?.key || '',
-          },
-        }))
-      }
+      const res = await apiClient.get('/collectors')
+      setCollectors(res.data?.data?.list ?? [])
     } catch { /* ignore */ }
+  }, [])
+
+  useEffect(() => {
+    fetchConfigs()
+    fetchStats()
+    fetchCollectors()
+  }, [])
+
+  // ─── 配置操作 ───
+
+  const openCreateConfig = () => {
+    setEditingId(null)
+    form.resetFields()
+    form.setFieldsValue({
+      name: '',
+      api_url: '',
+      api_token: '',
+      auth_type: 'custom_header',
+      auth_key: 'X-API-Token',
+      http_method: 'POST',
+      body_template: '',
+      custom_headers: [],
+      batch_size: 1000,
+      data_source_type: 'all',
+      collector_ids: [],
+      auto_push: false,
+      push_interval: 30,
+    })
+    setFormValues({
+      name: '', api_url: '', api_token: '',
+      auth_type: 'custom_header', auth_key: 'X-API-Token',
+      http_method: 'POST', body_template: '', custom_headers: [],
+      batch_size: 1000, data_source_type: 'all', collector_ids: [],
+      auto_push: false, push_interval: 30,
+    })
+    setEditOpen(true)
   }
 
-  useEffect(() => { fetchHistories(1); fetchStats() }, [])
+  const openEditConfig = (record: PushConfig) => {
+    setEditingId(record.id)
+    const parsedHeaders = parseCustomHeaders(record.custom_headers)
+    const fv = {
+      name: record.name,
+      api_url: record.api_url,
+      api_token: record.api_token || '',
+      auth_type: record.auth_type,
+      auth_key: record.auth_key,
+      http_method: record.http_method,
+      body_template: record.body_template || '',
+      custom_headers: parsedHeaders,
+      batch_size: record.batch_size,
+      data_source_type: record.data_source_type,
+      collector_ids: record.data_source_type === 'selected' ? (record.collector_ids || []) : [],
+      auto_push: record.auto_push,
+      push_interval: record.push_interval,
+    }
+    form.setFieldsValue(fv)
+    setFormValues({ ...fv })
+    if (record.api_token) {
+      setAuthState(prev => ({
+        ...prev,
+        [record.auth_type]: { token: record.api_token || '', key: record.auth_key },
+      }))
+    }
+    setEditOpen(true)
+  }
 
-  const triggerPush = async () => {
+  const saveConfig = async (values: any) => {
+    setEditSaving(true)
     try {
-      const checkRes = await apiClient.get('/push/config-check')
-      if (checkRes.data?.success) {
-        const { is_valid, missing } = checkRes.data.data || {}
-        if (!is_valid) {
-          const missingLabels: Record<string, string> = {
-            push_api_url: '推送 API 地址',
-            push_api_token: '认证凭证',
-            push_target: '推送目标',
-            push_auth_key: '认证字段 Key',
-          }
-          const items = (missing || []).map((k: string) => missingLabels[k] || k)
-          Modal.warning({
-            title: '推送配置不完整',
-            content: (
-              <div>
-                <p>请先在推送配置中补充以下项：</p>
-                <ul>{items.map((item: string) => <li key={item}>{item}</li>)}</ul>
-              </div>
-            ),
-          })
-          return
-        }
+      const headersJson = JSON.stringify((values.custom_headers || []).filter((h: any) => h?.key?.trim()))
+      const body: any = {
+        name: values.name,
+        api_url: values.api_url || '',
+        api_token: values.api_token || '',
+        auth_type: values.auth_type || 'custom_header',
+        auth_key: values.auth_key || '',
+        http_method: values.http_method || 'POST',
+        body_template: values.body_template || '',
+        custom_headers: headersJson,
+        batch_size: values.batch_size || 1000,
+        data_source_type: values.data_source_type || 'all',
+        collector_ids: values.data_source_type === 'selected' ? (values.collector_ids || []) : [],
+        auto_push: values.auto_push || false,
+        push_interval: values.push_interval || 30,
       }
+      if (editingId) {
+        await apiClient.put(`/push/configs/${editingId}`, body)
+        message.success('配置已更新')
+      } else {
+        await apiClient.post('/push/configs', body)
+        message.success('配置已创建')
+      }
+      setEditOpen(false)
+      fetchConfigs()
+    } catch (e: any) {
+      message.error(e.response?.data?.message || e.message || '保存失败')
+    } finally {
+      setEditSaving(false)
+    }
+  }
 
-      const res = await apiClient.post('/push/trigger', {})
+  const deleteConfig = async (id: number) => {
+    try {
+      await apiClient.delete(`/push/configs/${id}`)
+      message.success('配置已删除')
+      fetchConfigs()
+    } catch (e: any) {
+      message.error(e.response?.data?.message || '删除失败')
+    }
+  }
+
+  const toggleConfig = async (id: number) => {
+    try {
+      await apiClient.put(`/push/configs/${id}/toggle`)
+      fetchConfigs()
+    } catch (e: any) {
+      message.error(e.response?.data?.message || '操作失败')
+    }
+  }
+
+  const duplicateConfig = async (record: PushConfig) => {
+    // 从 API 获取详情（含 collector_ids）
+    let collectorIds: number[] = []
+    try {
+      const res = await apiClient.get(`/push/configs/${record.id}`)
+      const detail = res.data?.data
+      if (detail?.collector_ids) {
+        collectorIds = detail.collector_ids
+      }
+    } catch { /* fallback to empty */ }
+
+    setEditingId(null) // 新建模式
+    const parsedHeaders = parseCustomHeaders(record.custom_headers)
+    const fv = {
+      name: '', // 名称留空，让用户自己填
+      api_url: record.api_url,
+      api_token: record.api_token || '',
+      auth_type: record.auth_type,
+      auth_key: record.auth_key,
+      http_method: record.http_method,
+      body_template: record.body_template || '',
+      custom_headers: parsedHeaders,
+      batch_size: record.batch_size,
+      data_source_type: record.data_source_type,
+      collector_ids: record.data_source_type === 'selected' ? collectorIds : [],
+      auto_push: record.auto_push,
+      push_interval: record.push_interval,
+    }
+    form.resetFields()
+    form.setFieldsValue(fv)
+    setFormValues({ ...fv })
+    if (record.api_token) {
+      setAuthState(prev => ({
+        ...prev,
+        [record.auth_type]: { token: record.api_token || '', key: record.auth_key },
+      }))
+    }
+    setEditOpen(true)
+  }
+
+  const triggerPushForConfig = async (id: number, name: string) => {
+    setPushingIds(prev => new Set(prev).add(id))
+    try {
+      const res = await apiClient.post(`/push/configs/${id}/trigger`, {})
       if (res.data?.success) {
-        message.success(res.data?.data?.message || `推送完成，处理 ${res.data?.data?.processed_count ?? 0} 条`)
+        message.success(`「${name}」推送完成，处理 ${res.data?.data?.processed_count ?? 0} 条`)
       } else {
         message.warning(res.data?.message || '推送未成功')
       }
-      fetchHistories(page); fetchStats()
+      fetchHistories(histPage)
+      fetchStats()
     } catch (e: any) {
-      message.error(e.response?.data?.error || e.message || '推送失败')
+      message.error(e.response?.data?.message || e.message || '推送失败')
+    } finally {
+      setPushingIds(prev => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
     }
   }
 
@@ -142,45 +312,10 @@ const Push: React.FC = () => {
     try {
       const res = await apiClient.post('/push/retry')
       message.success(res.data?.message || '重试已触发')
-      fetchHistories(page); fetchStats()
+      fetchHistories(histPage); fetchStats()
     } catch (e: any) {
       message.error(e.message || '重试失败')
     }
-  }
-
-  const openConfig = () => {
-    fetchConfig()
-    setConfigOpen(true)
-  }
-
-  const saveConfig = async (values: any) => {
-    setConfigSaving(true)
-    try {
-      const headersJson = JSON.stringify((values.custom_headers || []).filter((h: any) => h?.key?.trim()))
-      await apiClient.put('/push/scheduler', {
-        api_url: values.api_url || '',
-        api_token: values.api_token || '',
-        batch_size: values.batch_size || 1000,
-        auto_push: values.auto_push ? '1' : '0',
-        interval: values.interval || 30,
-        auth_type: values.auth_type || 'custom_header',
-        auth_key: values.auth_key || '',
-        http_method: values.http_method || 'POST',
-        body_template: values.body_template || '',
-        custom_headers: headersJson,
-      })
-      message.success('配置已保存')
-      setConfigOpen(false)
-    } catch (e: any) {
-      message.error(e.response?.data?.error || e.message || '保存失败')
-    } finally {
-      setConfigSaving(false)
-    }
-  }
-
-  const openStats = async () => {
-    await fetchStats()
-    setStatsOpen(true)
   }
 
   const parseCustomHeaders = (str: string): Array<{ key: string; value: string }> => {
@@ -283,7 +418,63 @@ const Push: React.FC = () => {
       .replace(/:\s*(true|false|null)/g, ': <span style="color:#c084fc">$1</span>')
   }
 
-  const columns = [
+  // ─── 配置列表列定义 ───
+  const configColumns = [
+    {
+      title: '名称', dataIndex: 'name', key: 'name', width: 140,
+      render: (v: string) => <Text strong>{v}</Text>,
+    },
+    {
+      title: 'API 地址', dataIndex: 'api_url', key: 'api_url', width: 220, ellipsis: true,
+      render: (v: string) => v ? <Text copyable={{ text: v }} style={{ fontSize: 12 }}>{v.replace(/^https?:\/\//, '').split('/')[0]}</Text> : <Text type="secondary">未配置</Text>,
+    },
+    {
+      title: '数据源', key: 'data_source', width: 130,
+      render: (_: any, r: PushConfig) => r.data_source_type === 'all'
+        ? <Tag color="blue">全部采集器</Tag>
+        : <Tooltip title={`已选 ${r.collector_count} 个采集器`}><Tag color="green">指定采集器 ({r.collector_count})</Tag></Tooltip>,
+    },
+    {
+      title: '状态', dataIndex: 'is_active', key: 'is_active', width: 80,
+      render: (v: boolean) => v
+        ? <Tag icon={<CheckCircleOutlined />} color="success" style={{ margin: 0 }}>启用</Tag>
+        : <Tag icon={<CloseCircleOutlined />} color="default" style={{ margin: 0 }}>禁用</Tag>,
+    },
+    {
+      title: '定时', key: 'schedule', width: 90,
+      render: (_: any, r: PushConfig) => r.auto_push
+        ? <Tag color="purple">{r.push_interval}分钟</Tag>
+        : <Text type="secondary">手动</Text>,
+    },
+    {
+      title: '操作', key: 'actions', width: 280, fixed: 'right' as const,
+      render: (_: any, r: PushConfig) => (
+        <Space size={4}>
+          <Tooltip title="手动推送">
+            <Button
+              type="primary" size="small" icon={<CloudUploadOutlined />}
+              loading={pushingIds.has(r.id)}
+              disabled={!r.is_active || !r.api_url}
+              onClick={() => triggerPushForConfig(r.id, r.name)}
+            />
+          </Tooltip>
+          <Tooltip title="复制配置">
+            <Button size="small" icon={<CopyOutlined />} onClick={() => duplicateConfig(r)} />
+          </Tooltip>
+          <Tooltip title={r.is_active ? '禁用' : '启用'}>
+            <Switch size="small" checked={r.is_active} onChange={() => toggleConfig(r.id)} />
+          </Tooltip>
+          <Button size="small" icon={<SettingOutlined />} onClick={() => openEditConfig(r)}>编辑</Button>
+          <Popconfirm title={`确定删除「${r.name}」？`} onConfirm={() => deleteConfig(r.id)} okText="删除" cancelText="取消">
+            <Button size="small" danger icon={<DeleteOutlined />} />
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ]
+
+  // ─── 推送历史列定义 ───
+  const historyColumns = [
     { title: 'ID', dataIndex: 'id', key: 'id', width: 60 },
     { title: '批次ID', dataIndex: 'batch_id', key: 'batch_id', width: 180, ellipsis: true },
     {
@@ -293,6 +484,22 @@ const Push: React.FC = () => {
         : <Tag color="red" style={{ margin: 0 }}>失败</Tag>,
     },
     { title: '数据量', dataIndex: 'data_count', key: 'data_count', width: 80 },
+    {
+      title: '跳过统计', key: 'skip', width: 180,
+      render: (_: any, r: any) => {
+        const img = r.skipped_image_count || 0
+        const link = r.skipped_link_count || 0
+        const pushed = r.pushed_count ?? r.data_count ?? 0
+        if (img === 0 && link === 0) return <Text type="secondary">-</Text>
+        return (
+          <Space size={4} wrap>
+            <Tag color="green" style={{ margin: 0 }}>推 {pushed}</Tag>
+            {img > 0 && <Tooltip title="图片未转存跳过"><Tag color="orange" style={{ margin: 0 }}>图 {img}</Tag></Tooltip>}
+            {link > 0 && <Tooltip title="链接失效跳过"><Tag color="red" style={{ margin: 0 }}>链 {link}</Tag></Tooltip>}
+          </Space>
+        )
+      },
+    },
     { title: '消息', dataIndex: 'message', key: 'message', ellipsis: true },
     {
       title: '错误信息', dataIndex: 'error_msg', key: 'error_msg', ellipsis: true,
@@ -302,9 +509,13 @@ const Push: React.FC = () => {
       title: '推送时间', dataIndex: 'pushed_at', key: 'pushed_at', width: 170,
       render: (v: string) => v ? new Date(v + 'Z').toLocaleString('zh-CN') : '-',
     },
+    {
+      title: '操作', key: 'action', width: 80, fixed: 'right' as const,
+      render: (_: any, r: any) => (
+        <Button size="small" onClick={() => openHistDetail(r.id)}>详情</Button>
+      ),
+    },
   ]
-
-  const { containerRef, scrollY } = useTableScrollY()
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -313,33 +524,119 @@ const Push: React.FC = () => {
         description="管理消息推送和调度配置"
         extra={
           <Space>
-            <Button icon={<BarChartOutlined />} onClick={openStats}>推送统计</Button>
-            <Button icon={<SettingOutlined />} onClick={openConfig}>推送配置</Button>
+            <Button icon={<BarChartOutlined />} onClick={() => { fetchStats(); setStatsOpen(true) }}>推送统计</Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreateConfig}>添加配置</Button>
           </Space>
         }
       />
 
-      <Space style={{ marginBottom: 12, flexShrink: 0 }}>
-        <Button type="primary" icon={<RocketOutlined />} onClick={triggerPush}>手动推送</Button>
-        <Button icon={<ReloadOutlined />} onClick={retryFailed}>重试失败</Button>
-        <Button onClick={() => { fetchHistories(page); fetchStats() }}>刷新</Button>
-      </Space>
-
       <div ref={containerRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-        <Table
-          dataSource={histories}
-          columns={columns}
-          rowKey="id"
-          loading={loading}
-          scroll={{ y: scrollY }}
-          pagination={{
-            current: page, total, pageSize: 20,
-            onChange: (p) => fetchHistories(p),
-            showTotal: (t) => `共 ${t} 条`, size: 'small',
+        <Tabs
+          activeKey={activeTab}
+          onChange={(key) => {
+            setActiveTab(key)
+            if (key === 'history') fetchHistories(1)
           }}
-          style={{ background: '#fff', borderRadius: 12 }}
+          style={{ height: '100%' }}
+          items={[
+            {
+              key: 'configs',
+              label: '推送配置',
+              children: (
+                <Table
+                  dataSource={configs}
+                  columns={configColumns}
+                  rowKey="id"
+                  loading={configsLoading}
+                  scroll={{ y: scrollY - 40 }}
+                  pagination={false}
+                  style={{ background: '#fff', borderRadius: 12 }}
+                  locale={{ emptyText: (
+                    <div style={{ padding: '40px 0' }}>
+                      <CloudUploadOutlined style={{ fontSize: 40, color: '#d9d9d9', marginBottom: 12 }} />
+                      <p style={{ color: '#999' }}>暂无推送配置</p>
+                      <Button type="primary" icon={<PlusOutlined />} onClick={openCreateConfig}>创建第一个推送配置</Button>
+                    </div>
+                  )}}
+                />
+              ),
+            },
+            {
+              key: 'history',
+              label: '推送历史',
+              children: (
+                <div>
+                  <Space style={{ marginBottom: 12 }}>
+                    <Button icon={<ReloadOutlined />} onClick={retryFailed}>重试失败</Button>
+                    <Button onClick={() => { fetchHistories(histPage); fetchStats() }}>刷新</Button>
+                  </Space>
+                  <Table
+                    dataSource={histories}
+                    columns={historyColumns}
+                    rowKey="id"
+                    loading={histLoading}
+                    scroll={{ y: scrollY - 100 }}
+                    pagination={{
+                      current: histPage, total: histTotal, pageSize: 20,
+                      onChange: (p) => fetchHistories(p),
+                      showTotal: (t) => `共 ${t} 条`, size: 'small',
+                    }}
+                    style={{ background: '#fff', borderRadius: 12 }}
+                  />
+                </div>
+              ),
+            },
+          ]}
         />
       </div>
+
+      {/* 推送历史详情弹窗（含跳过明细 skip_records） */}
+      <Modal
+        title="推送历史详情"
+        open={histDetailOpen}
+        onCancel={() => setHistDetailOpen(false)}
+        footer={<Button onClick={() => setHistDetailOpen(false)}>关闭</Button>}
+        width={760}
+      >
+        {histDetailLoading ? (
+          <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>加载中...</div>
+        ) : histDetail ? (
+          <div>
+            <Row gutter={16} style={{ marginBottom: 16 }}>
+              <Col span={6}><Card size="small"><Statistic title="实际推送" value={histDetail.history.pushed_count ?? histDetail.history.data_count ?? 0} valueStyle={{ color: '#3f8600' }} /></Card></Col>
+              <Col span={6}><Card size="small"><Statistic title="图片未转存跳过" value={histDetail.history.skipped_image_count ?? 0} valueStyle={{ color: '#d48806' }} /></Card></Col>
+              <Col span={6}><Card size="small"><Statistic title="链接失效跳过" value={histDetail.history.skipped_link_count ?? 0} valueStyle={{ color: '#cf1322' }} /></Card></Col>
+              <Col span={6}><Card size="small"><Statistic title="状态" value={histDetail.history.status === 'success' ? '成功' : '失败'} valueStyle={{ color: histDetail.history.status === 'success' ? '#3f8600' : '#cf1322' }} /></Card></Col>
+            </Row>
+            <div style={{ marginBottom: 8 }}>
+              <Text strong>跳过明细</Text>
+              <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                （共 {histDetail.skip_records?.length ?? 0} 条）
+              </Text>
+            </div>
+            <Table
+              size="small"
+              rowKey="resource_id"
+              dataSource={histDetail.skip_records || []}
+              pagination={false}
+              locale={{ emptyText: '无跳过记录' }}
+              scroll={{ y: 320 }}
+              columns={[
+                { title: '资源ID', dataIndex: 'resource_id', key: 'resource_id', width: 80 },
+                { title: '标题', dataIndex: 'title', key: 'title', ellipsis: true, render: (v: string) => v || '-' },
+                {
+                  title: '原因', dataIndex: 'skip_reason', key: 'skip_reason', width: 130,
+                  render: (v: string) => v === 'image_not_forwarded'
+                    ? <Tag color="orange" style={{ margin: 0 }}>图片未转存</Tag>
+                    : <Tag color="red" style={{ margin: 0 }}>链接失效</Tag>,
+                },
+                { title: '失效链接', dataIndex: 'urls_invalid', key: 'urls_invalid', ellipsis: true, render: (v: string) => v || '-' },
+                { title: '详情', dataIndex: 'detail', key: 'detail', ellipsis: true, render: (v: string) => v || '-' },
+              ]}
+            />
+          </div>
+        ) : null}
+      </Modal>
 
       {/* 推送统计弹窗 */}
       <Modal
@@ -362,23 +659,36 @@ const Push: React.FC = () => {
         </Row>
       </Modal>
 
-      {/* ====== 推送配置弹窗 — 优化版左右分栏 ====== */}
+      {/* ====== 配置编辑弹窗 — 左右分栏 ====== */}
       <Modal
-        title={<span><SendOutlined style={{ marginRight: 8 }} />推送配置</span>}
-        open={configOpen}
-        onCancel={() => setConfigOpen(false)}
+        title={<span><SendOutlined style={{ marginRight: 8 }} />{editingId ? '编辑推送配置' : '新建推送配置'}</span>}
+        open={editOpen}
+        onCancel={() => setEditOpen(false)}
         onOk={() => form.submit()}
-        confirmLoading={configSaving}
-        okText="保存全部配置"
+        confirmLoading={editSaving}
+        okText={editingId ? '保存修改' : '创建配置'}
         width={1080}
         styles={{ body: { maxHeight: 'calc(100vh - 200px)', overflowY: 'auto', paddingRight: 4 } }}
       >
+        <Form form={form} onFinish={saveConfig} onValuesChange={handleValuesChange} layout="vertical" size="middle">
         <Row gutter={20}>
           {/* ===== 左侧：配置表单 ===== */}
           <Col span={14}>
-            <Form form={form} onFinish={saveConfig} onValuesChange={handleValuesChange} layout="vertical" size="middle">
 
-              {/* 基本连接配置 */}
+              {/* 基本配置 */}
+              <Card
+                size="small"
+                title={<span><SettingOutlined style={{ marginRight: 6, color: '#1677ff' }} />基本配置</span>}
+                style={{ marginBottom: 16 }}
+                styles={{ body: { paddingTop: 16, paddingBottom: 8 } }}
+              >
+                <Form.Item name="name" label="配置名称"
+                  rules={[{ required: true, message: '请填写配置名称' }]}>
+                  <Input placeholder="如：官网推送、备份API" />
+                </Form.Item>
+              </Card>
+
+              {/* 连接配置 */}
               <Card
                 size="small"
                 title={<span><ApiOutlined style={{ marginRight: 6, color: '#1677ff' }} />连接配置</span>}
@@ -454,13 +764,13 @@ const Push: React.FC = () => {
                     const at = getFieldValue('auth_type')
                     if (at === 'custom_header') return (
                       <Form.Item name="auth_key" label="Header 名称"
-                        extra={<Text type="secondary" style={{ fontSize: 12 }}>自定义认证 Header 的 Key，如 X-API-Token、X-Api-Key</Text>}>
+                        extra={<Text type="secondary" style={{ fontSize: 12 }}>自定义认证 Header 的 Key</Text>}>
                         <Input placeholder="X-API-Token" />
                       </Form.Item>
                     )
                     if (at === 'query') return (
                       <Form.Item name="auth_key" label="参数名称"
-                        extra={<Text type="secondary" style={{ fontSize: 12 }}>URL Query 参数的 Key，如 token、api_key</Text>}>
+                        extra={<Text type="secondary" style={{ fontSize: 12 }}>URL Query 参数的 Key</Text>}>
                         <Input placeholder="token" />
                       </Form.Item>
                     )
@@ -535,32 +845,67 @@ const Push: React.FC = () => {
                 </Form.List>
               </Card>
 
-              {/* 定时推送 */}
-              <Card
-                size="small"
-                title={<span><ThunderboltOutlined style={{ marginRight: 6, color: '#eb2f96' }} />定时推送</span>}
-                style={{ marginBottom: 0 }}
-                styles={{ body: { paddingTop: 16, paddingBottom: 8 } }}
-              >
-                <Form.Item name="auto_push" label="自动定时推送" valuePropName="checked"
-                  extra="开启后按设定间隔自动推送未推送的采集数据">
-                  <Switch checkedChildren="开" unCheckedChildren="关" />
-                </Form.Item>
-                <Form.Item noStyle shouldUpdate={(prev, cur) => prev.auto_push !== cur.auto_push}>
-                  {({ getFieldValue }) => getFieldValue('auto_push') ? (
-                    <Form.Item name="interval" label="推送间隔（分钟）"
-                      extra="每隔多少分钟自动推送一次，最小 1 分钟">
-                      <InputNumber min={1} max={1440} style={{ width: 200 }} />
-                    </Form.Item>
-                  ) : null}
-                </Form.Item>
-              </Card>
-
-            </Form>
           </Col>
 
-          {/* ===== 号侧：实时预览面板 ===== */}
+          {/* ===== 右侧：数据源 + 定时推送 + 实时预览 ===== */}
           <Col span={10} style={{ position: 'sticky', top: 0, alignSelf: 'flex-start' }}>
+            {/* 数据源 */}
+            <Card
+              size="small"
+              title={<span><CloudUploadOutlined style={{ marginRight: 6, color: '#13c2c2' }} />数据源</span>}
+              style={{ marginBottom: 16 }}
+              styles={{ body: { paddingTop: 16, paddingBottom: 8 } }}
+            >
+              <Form.Item name="data_source_type" label="推送数据范围">
+                <Radio.Group>
+                  <Radio value="all">全部采集器</Radio>
+                  <Radio value="selected">指定采集器</Radio>
+                </Radio.Group>
+              </Form.Item>
+              <Form.Item noStyle shouldUpdate={(prev: any, cur: any) => prev.data_source_type !== cur.data_source_type}>
+                {({ getFieldValue }) => {
+                  if (getFieldValue('data_source_type') === 'selected') return (
+                    <Form.Item name="collector_ids" label="选择采集器"
+                      rules={[{ required: true, message: '请至少选择一个采集器' }]}>
+                      <Select
+                        mode="multiple"
+                        placeholder="选择要推送的采集器"
+                        options={collectors.map((c: any) => ({
+                          value: c.id,
+                          label: c.channel_name || `频道 ${c.channel_id}`,
+                        }))}
+                        optionFilterProp="label"
+                        showSearch
+                      />
+                    </Form.Item>
+                  )
+                  return null
+                }}
+              </Form.Item>
+            </Card>
+
+            {/* 定时推送 */}
+            <Card
+              size="small"
+              title={<span><ThunderboltOutlined style={{ marginRight: 6, color: '#eb2f96' }} />定时推送</span>}
+              style={{ marginBottom: 16 }}
+              styles={{ body: { paddingTop: 16, paddingBottom: 8 } }}
+            >
+              <Form.Item name="auto_push" label="自动定时推送" valuePropName="checked"
+                extra="开启后按设定间隔自动推送未推送的采集数据">
+                <Switch checkedChildren="开" unCheckedChildren="关" />
+              </Form.Item>
+              <Form.Item noStyle shouldUpdate={(prev: any, cur: any) => prev.auto_push !== cur.auto_push}>
+                {({ getFieldValue }) => getFieldValue('auto_push') ? (
+                  <Form.Item name="push_interval" label="推送间隔（分钟）"
+                    extra="每隔多少分钟自动推送一次，最小 1 分钟">
+                    <InputNumber min={1} max={1440} style={{ width: '100%' }} />
+                  </Form.Item>
+                ) : null}
+              </Form.Item>
+            </Card>
+
+            {/* 实时预览面板 */}
             <div style={{
               background: '#0f172a',
               borderRadius: 10,
@@ -584,7 +929,7 @@ const Push: React.FC = () => {
               </div>
 
               <div style={{ padding: 16 }}>
-                {/* 请求行 — 始终显示，URL 为空时用占位 */}
+                {/* 请求行 */}
                 <div style={{
                   display: 'flex', alignItems: 'center', gap: 8,
                   marginBottom: 16, padding: '8px 12px',
@@ -656,7 +1001,7 @@ const Push: React.FC = () => {
                   </div>
                 )}
 
-                {/* 请求体 — 始终显示 */}
+                {/* 请求体 */}
                 <div>
                   <div style={{ color: '#94a3b8', fontSize: 11, fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                     Request Body
@@ -690,6 +1035,7 @@ const Push: React.FC = () => {
             </div>
           </Col>
         </Row>
+        </Form>
       </Modal>
     </div>
   )

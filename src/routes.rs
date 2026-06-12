@@ -167,9 +167,40 @@ pub fn build_router(state: AppState) -> Router {
         .route("/push/trigger", post(handlers::push::trigger_push))
         .route("/push/stats", get(handlers::push::get_stats))
         .route("/push/histories", get(handlers::push::list_histories))
+        .route(
+            "/push/histories/{id}",
+            get(handlers::push::get_push_history_detail),
+        )
         .route("/push/retry", post(handlers::push::retry_push))
         .route("/push/scheduler", put(handlers::push::update_scheduler))
         .route("/push/config-check", get(handlers::push::config_check))
+        // Push Configs (多推送配置管理)
+        .route(
+            "/push/configs",
+            get(handlers::push::list_push_configs).post(handlers::push::create_push_config),
+        )
+        .route(
+            "/push/configs/{id}",
+            get(handlers::push::get_push_config)
+                .put(handlers::push::update_push_config)
+                .delete(handlers::push::delete_push_config),
+        )
+        .route(
+            "/push/configs/{id}/toggle",
+            put(handlers::push::toggle_push_config),
+        )
+        .route(
+            "/push/configs/{id}/duplicate",
+            post(handlers::push::duplicate_push_config),
+        )
+        .route(
+            "/push/configs/{id}/trigger",
+            post(handlers::push::trigger_push_for_config),
+        )
+        .route(
+            "/push/configs/{id}/check-links",
+            post(handlers::push::check_links_for_config),
+        )
         .route(
             "/push/extract-config",
             put(handlers::resource::update_extract_config),
@@ -204,6 +235,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/resources/{id}/push",
             post(handlers::resource::push_resource),
+        )
+        .route(
+            "/resources/{id}/check-link",
+            post(handlers::resource::check_link),
         )
         .route(
             "/resources/{id}",

@@ -16,6 +16,7 @@ pub struct ResourceQueryParams {
     pub page_size: Option<i64>,
     pub status: Option<String>,
     pub category: Option<String>,
+    pub link_status: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -179,10 +180,17 @@ pub async fn list_resources(
     let page_size = params.page_size.unwrap_or(20).clamp(1, 100);
     let status = params.status.as_deref();
     let category = params.category.as_deref();
+    let link_status = params.link_status.as_deref();
 
-    let result =
-        crate::services::resource::list_resources(&state.db, page, page_size, status, category)
-            .await?;
+    let result = crate::services::resource::list_resources(
+        &state.db,
+        page,
+        page_size,
+        status,
+        category,
+        link_status,
+    )
+    .await?;
 
     Ok(Json(json!({
         "success": true,
@@ -257,6 +265,34 @@ pub async fn push_resource(
             "data": result,
         }))),
     }
+}
+
+/// POST /api/resources/{id}/check-link — 单条资源链接检测（Story4「检测」按钮）
+pub async fn check_link(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, AppError> {
+    let ignore_cache = body
+        .get("ignore_cache")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let resource = crate::services::resource::get_resource(&state.db, id).await?;
+    let (status, details) = crate::services::link_check::check_resource_links(
+        &state.db,
+        &state.option_cache,
+        &resource,
+        ignore_cache,
+    )
+    .await?;
+    let details_json: Vec<Value> = details
+        .into_iter()
+        .map(|(u, s)| json!({ "url": u, "status": s.as_str() }))
+        .collect();
+    Ok(Json(json!({
+        "success": true,
+        "data": { "link_status": status, "details": details_json },
+    })))
 }
 
 /// GET /api/resources/stats — 资源统计

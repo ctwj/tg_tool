@@ -8,11 +8,13 @@ import {
   RetweetOutlined,
   PictureOutlined,
 } from '@ant-design/icons'
+import { useNavigate } from 'react-router-dom'
 import apiClient from '../api/client'
 import type { QueueStatusResponse, ForwardTask } from '../types'
 import PageHeader from '../components/PageHeader'
 
 const ForwardQueue: React.FC = () => {
+  const navigate = useNavigate()
   const [queue, setQueue] = useState<QueueStatusResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [retryingId, setRetryingId] = useState<number | null>(null)
@@ -91,10 +93,38 @@ const ForwardQueue: React.FC = () => {
       render: (t: string, r: ForwardTask) => t || r.remote_id || '-',
     },
     {
-      title: '频道',
-      dataIndex: 'channel_id',
-      width: 110,
-      render: (v?: number) => v ? <code style={{ fontSize: 12, color: '#0ea5e9' }}>{v}</code> : '-',
+      title: '采集器',
+      dataIndex: 'channel_name',
+      width: 160,
+      ellipsis: true,
+      render: (_: unknown, r: ForwardTask) => {
+        // 有频道名且有对应采集器 → 可点击跳转到采集记录页，并用消息标题过滤
+        if (r.channel_name && r.collector_id) {
+          return (
+            <Button
+              type="link"
+              size="small"
+              style={{ padding: 0, height: 'auto' }}
+              onClick={() =>
+                navigate(`/collectors/${r.collector_id}/history`, {
+                  state: {
+                    keyword: r.title ?? '',
+                    channel_name: r.channel_name,
+                    channel_id: r.channel_id,
+                  },
+                })
+              }
+            >
+              {r.channel_name}
+            </Button>
+          )
+        }
+        // 有 channel_id 但无对应采集器（被删/未配置）→ 降级显示 ID，不可点击
+        if (r.channel_id) {
+          return <code style={{ fontSize: 12, color: '#0ea5e9' }}>{r.channel_id}</code>
+        }
+        return '-'
+      },
     },
     {
       title: '错误原因',

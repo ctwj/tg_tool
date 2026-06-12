@@ -2,7 +2,7 @@
 // 资源提取时将图片入队，后台按间隔通过 Bot API sendPhoto 发送到图床群组
 
 use crate::errors::AppError;
-use crate::models::forward_task::ForwardTask;
+use crate::models::forward_task::{ForwardTask, ForwardTaskWithCollector};
 use crate::state::{AppState, DbPool};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -530,33 +530,45 @@ pub async fn queue_status(db: &DbPool) -> Result<serde_json::Value, AppError> {
         }
     };
 
-    // 获取最近的 pending 任务列表
+    // 获取最近的 pending 任务列表（关联 collectors 带出频道名与采集器 ID）
     let tasks = match db {
         DbPool::Sqlite(pool) => {
-            sqlx::query_as::<_, ForwardTask>(
-                "SELECT * FROM forward_tasks WHERE status = 'pending' ORDER BY id ASC LIMIT 20",
+            sqlx::query_as::<_, ForwardTaskWithCollector>(
+                "SELECT ft.*,
+                  (SELECT c.id FROM collectors c WHERE c.channel_id = ft.channel_id LIMIT 1) AS collector_id,
+                  (SELECT c.channel_name FROM collectors c WHERE c.channel_id = ft.channel_id LIMIT 1) AS channel_name
+                 FROM forward_tasks ft WHERE ft.status = 'pending' ORDER BY ft.id ASC LIMIT 20",
             )
             .fetch_all(pool)
             .await?
         }
         DbPool::Postgres(pool) => {
-            sqlx::query_as::<_, ForwardTask>(
-                "SELECT * FROM forward_tasks WHERE status = 'pending' ORDER BY id ASC LIMIT 20",
+            sqlx::query_as::<_, ForwardTaskWithCollector>(
+                "SELECT ft.*,
+                  (SELECT c.id FROM collectors c WHERE c.channel_id = ft.channel_id LIMIT 1) AS collector_id,
+                  (SELECT c.channel_name FROM collectors c WHERE c.channel_id = ft.channel_id LIMIT 1) AS channel_name
+                 FROM forward_tasks ft WHERE ft.status = 'pending' ORDER BY ft.id ASC LIMIT 20",
             )
             .fetch_all(pool)
             .await?
         }
     };
 
-    // 获取失败任务列表（按更新时间倒序，LIMIT 50，便于前端展示与重试）
+    // 获取失败任务列表（按更新时间倒序，LIMIT 50，关联 collectors 带出频道名与采集器 ID）
     let failed_tasks = match db {
-        DbPool::Sqlite(pool) => sqlx::query_as::<_, ForwardTask>(
-            "SELECT * FROM forward_tasks WHERE status = 'failed' ORDER BY updated_at DESC LIMIT 50",
+        DbPool::Sqlite(pool) => sqlx::query_as::<_, ForwardTaskWithCollector>(
+            "SELECT ft.*,
+              (SELECT c.id FROM collectors c WHERE c.channel_id = ft.channel_id LIMIT 1) AS collector_id,
+              (SELECT c.channel_name FROM collectors c WHERE c.channel_id = ft.channel_id LIMIT 1) AS channel_name
+             FROM forward_tasks ft WHERE ft.status = 'failed' ORDER BY ft.updated_at DESC LIMIT 50",
         )
         .fetch_all(pool)
         .await?,
-        DbPool::Postgres(pool) => sqlx::query_as::<_, ForwardTask>(
-            "SELECT * FROM forward_tasks WHERE status = 'failed' ORDER BY updated_at DESC LIMIT 50",
+        DbPool::Postgres(pool) => sqlx::query_as::<_, ForwardTaskWithCollector>(
+            "SELECT ft.*,
+              (SELECT c.id FROM collectors c WHERE c.channel_id = ft.channel_id LIMIT 1) AS collector_id,
+              (SELECT c.channel_name FROM collectors c WHERE c.channel_id = ft.channel_id LIMIT 1) AS channel_name
+             FROM forward_tasks ft WHERE ft.status = 'failed' ORDER BY ft.updated_at DESC LIMIT 50",
         )
         .fetch_all(pool)
         .await?,

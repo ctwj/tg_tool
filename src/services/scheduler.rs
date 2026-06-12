@@ -15,15 +15,6 @@ pub struct SchedulerState {
     pub started_at: Option<std::time::Instant>,
     pub handle: Option<tokio::task::JoinHandle<()>>,
     pub cancel: Option<CancellationToken>,
-    pub api_url: String,
-    pub api_token: String,
-    pub target: String,
-    pub batch_size: i64,
-    pub auth_type: String,
-    pub auth_key: String,
-    pub http_method: String,
-    pub body_template: String,
-    pub custom_headers: String,
 }
 
 pub type SchedulerHandle = Arc<RwLock<SchedulerState>>;
@@ -32,27 +23,18 @@ pub type SchedulerHandle = Arc<RwLock<SchedulerState>>;
 pub fn create_scheduler() -> SchedulerHandle {
     Arc::new(RwLock::new(SchedulerState {
         running: false,
-        interval_minutes: 30,
+        interval_minutes: 1,
         last_run_at: None,
         started_at: None,
         handle: None,
         cancel: None,
-        api_url: String::new(),
-        api_token: String::new(),
-        target: "external_api".to_string(),
-        batch_size: 1000,
-        auth_type: "custom_header".to_string(),
-        auth_key: "X-API-Token".to_string(),
-        http_method: "POST".to_string(),
-        body_template: String::new(),
-        custom_headers: "[]".to_string(),
     }))
 }
 
-/// Start the push scheduler with a given interval
+/// Start the push scheduler — 固定 1 分钟 tick，检查每个配置是否到达其 push_interval
 pub async fn start_scheduler(
     scheduler: SchedulerHandle,
-    interval_minutes: u64,
+    _interval_minutes: u64,
     db: crate::state::DbPool,
     option_cache: crate::state::OptionCache,
 ) {
@@ -64,34 +46,22 @@ pub async fn start_scheduler(
     let cancel = CancellationToken::new();
     state.cancel = Some(cancel.clone());
     state.running = true;
-    state.interval_minutes = interval_minutes;
+    state.interval_minutes = 1;
     state.started_at = Some(std::time::Instant::now());
-
-    let api_url = state.api_url.clone();
-    let api_token = state.api_token.clone();
-    let target = state.target.clone();
-    let batch_size = state.batch_size;
 
     let sched = scheduler.clone();
     let handle = tokio::spawn(async move {
-        let duration = std::time::Duration::from_secs(interval_minutes * 60);
+        // 固定 1 分钟 tick
+        let duration = std::time::Duration::from_secs(60);
+        // 记录每个配置的上次推送时间 (config_id -> last_pushed_at)
+        let mut config_last_run: std::collections::HashMap<i64, std::time::Instant> =
+            std::collections::HashMap::new();
+
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(duration) => {
-                    tracing::info!("Scheduler tick: triggering push");
-                    let result = crate::services::push::trigger_push(
-                        &api_url,
-                        &api_token,
-                        &target,
-                        batch_size,
-                        &db,
-                        &option_cache,
-                    )
-                    .await;
-                    match result {
-                        Ok(v) => tracing::info!("Scheduled push result: {:?}", v),
-                        Err(e) => tracing::warn!("Scheduled push failed: {e}"),
-                    }
+                    tracing::info!("Push scheduler tick: scanning active push configs");
+                    run_push_tick(&db, &option_cache, &mut config_last_run).await;
                     {
                         let mut s = sched.write().await;
                         s.last_run_at = Some(std::time::Instant::now());
@@ -112,6 +82,62 @@ pub async fn start_scheduler(
     state.handle = Some(handle);
 }
 
+/// 推送调度器单次 tick：查询活跃配置，串行推送
+async fn run_push_tick(
+    db: &crate::state::DbPool,
+    option_cache: &crate::state::OptionCache,
+    config_last_run: &mut std::collections::HashMap<i64, std::time::Instant>,
+) {
+    let configs: Vec<crate::models::push_config::PushConfig> = match db {
+        crate::state::DbPool::Sqlite(pool) => {
+            sqlx::query_as(
+                "SELECT * FROM push_configs WHERE is_active = 1 AND auto_push = 1 ORDER BY id ASC",
+            )
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default()
+        }
+        crate::state::DbPool::Postgres(pool) => {
+            sqlx::query_as(
+                "SELECT * FROM push_configs WHERE is_active = TRUE AND auto_push = TRUE ORDER BY id ASC",
+            )
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default()
+        }
+    };
+
+    let now = std::time::Instant::now();
+    for config in &configs {
+        let last = config_last_run.get(&config.id).copied();
+        let interval_secs = (config.push_interval as u64) * 60;
+        let should_run = match last {
+            Some(t) => now.duration_since(t).as_secs() >= interval_secs,
+            None => true, // 从未运行过，立即执行
+        };
+
+        if !should_run {
+            continue;
+        }
+
+        tracing::info!(
+            "Push scheduler: executing config '{}' (id={})",
+            config.name,
+            config.id
+        );
+        match crate::services::push_config::push_for_config(db, option_cache, config.id, None).await
+        {
+            Ok(result) => {
+                tracing::info!("Push config '{}' result: {:?}", config.name, result);
+            }
+            Err(e) => {
+                tracing::warn!("Push config '{}' failed: {e}", config.name);
+            }
+        }
+        config_last_run.insert(config.id, now);
+    }
+}
+
 /// Stop the scheduler
 pub async fn stop_scheduler(scheduler: SchedulerHandle) {
     let mut state = scheduler.write().await;
@@ -124,56 +150,19 @@ pub async fn stop_scheduler(scheduler: SchedulerHandle) {
     state.running = false;
 }
 
-/// Update push scheduler interval (restarts the scheduler)
+/// Update push scheduler — restarts the scheduler
+/// interval_minutes 参数保留以兼容旧调用，实际使用固定 1 分钟 tick
 #[allow(clippy::too_many_arguments)]
 pub async fn update_scheduler(
     scheduler: SchedulerHandle,
     minutes: u64,
-    api_url: String,
-    api_token: String,
-    target: String,
-    batch_size: i64,
+    _api_url: String,
+    _api_token: String,
+    _target: String,
+    _batch_size: i64,
     db: crate::state::DbPool,
     option_cache: crate::state::OptionCache,
 ) {
-    {
-        let mut state = scheduler.write().await;
-        state.api_url = api_url;
-        state.api_token = api_token;
-        state.target = target;
-        state.batch_size = batch_size;
-        state.auth_type = option_cache
-            .read()
-            .await
-            .get("push_auth_type")
-            .cloned()
-            .unwrap_or_default();
-        state.auth_key = option_cache
-            .read()
-            .await
-            .get("push_auth_key")
-            .cloned()
-            .unwrap_or_default();
-        state.http_method = option_cache
-            .read()
-            .await
-            .get("push_http_method")
-            .cloned()
-            .unwrap_or_default();
-        state.body_template = option_cache
-            .read()
-            .await
-            .get("push_body_template")
-            .cloned()
-            .unwrap_or_default();
-        state.custom_headers = option_cache
-            .read()
-            .await
-            .get("push_custom_headers")
-            .cloned()
-            .unwrap_or_default();
-    }
-
     if minutes > 0 {
         stop_scheduler(scheduler.clone()).await;
         start_scheduler(scheduler, minutes, db, option_cache).await;
@@ -333,7 +322,7 @@ mod tests {
         let scheduler = create_scheduler();
         let state = scheduler.blocking_read();
         assert!(!state.running);
-        assert_eq!(state.interval_minutes, 30);
+        assert_eq!(state.interval_minutes, 1); // 固定 1 分钟 tick
         assert!(state.handle.is_none());
         assert!(state.cancel.is_none());
     }
