@@ -380,7 +380,7 @@ pub async fn classify_resources(
 // ─── US4: 资源级聚合 / 单条检测（不触发推送） ──────────────────────────────────
 
 /// 资源级链接状态聚合（纯函数）：
-/// 任一 URL invalid → "invalid"；全部 valid → "valid"；否则（含 pending/unknown/无URL/无缓存）→ "unknown"。
+/// 任一 URL invalid → "invalid"；全部 valid → "valid"；任一 pending 且无 invalid → "pending"；否则 → "unknown"。
 pub fn aggregate_link_status(
     resource: &ExtractedResource,
     statuses: &HashMap<String, LinkStatus>,
@@ -389,9 +389,12 @@ pub fn aggregate_link_status(
     if urls.is_empty() {
         return "unknown";
     }
+    let mut has_pending = false;
     for u in &urls {
-        if statuses.get(u) == Some(&LinkStatus::Invalid) {
-            return "invalid";
+        match statuses.get(u) {
+            Some(LinkStatus::Invalid) => return "invalid",
+            Some(LinkStatus::Pending) => has_pending = true,
+            _ => {}
         }
     }
     if urls
@@ -399,6 +402,8 @@ pub fn aggregate_link_status(
         .all(|u| statuses.get(u) == Some(&LinkStatus::Valid))
     {
         "valid"
+    } else if has_pending {
+        "pending"
     } else {
         "unknown"
     }
@@ -669,19 +674,19 @@ mod tests {
     }
 
     #[test]
-    fn test_aggregate_unknown_when_pending_or_nocache_or_nourl() {
-        // 含 pending
+    fn test_aggregate_pending_distinct_from_unknown() {
+        // pending 应返回 "pending"，不再混为 "unknown"
         let r1 = make_resource(1, Some("https://pan.quark.cn/s/a"), None, None);
         assert_eq!(
             aggregate_link_status(
                 &r1,
                 &st(&[("https://pan.quark.cn/s/a", LinkStatus::Pending)])
             ),
-            "unknown"
+            "pending"
         );
-        // 无缓存
+        // 无缓存 → unknown
         assert_eq!(aggregate_link_status(&r1, &HashMap::new()), "unknown");
-        // 无 URL
+        // 无 URL → unknown
         let r2 = make_resource(2, None, None, None);
         assert_eq!(aggregate_link_status(&r2, &HashMap::new()), "unknown");
     }

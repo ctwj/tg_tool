@@ -52,21 +52,21 @@ const pulseStyle = `
 const Scheduler: React.FC = () => {
   // 调度状态
   const [schedulers, setSchedulers] = useState<SchedulersStatus | null>(null)
-  const [statusLoading, setStatusLoading] = useState(false)
+  const [statusLoading, setStatusLoading] = useState(true)
 
   // 推送历史
   const [pushStats, setPushStats] = useState<PushStats | null>(null)
   const [pushHistories, setPushHistories] = useState<PushHistory[]>([])
   const [pushPage, setPushPage] = useState(1)
   const [pushTotal, setPushTotal] = useState(0)
-  const [pushLoading, setPushLoading] = useState(false)
+  const [pushLoading, setPushLoading] = useState(true)
 
   // 提取历史
   const [extractStats, setExtractStats] = useState<ExtractHistoryStats | null>(null)
   const [extractHistories, setExtractHistories] = useState<ExtractHistory[]>([])
   const [extractPage, setExtractPage] = useState(1)
   const [extractTotal, setExtractTotal] = useState(0)
-  const [extractLoading, setExtractLoading] = useState(false)
+  const [extractLoading, setExtractLoading] = useState(true)
 
   // 倒计时（每秒刷新一次）
   const [now, setNow] = useState(Date.now())
@@ -400,7 +400,7 @@ const Scheduler: React.FC = () => {
       {/* 统计卡片 */}
       <Row gutter={16} style={{ marginBottom: 16 }}>
         <Col xs={24} md={12}>
-          <Card title="推送统计" size="small" style={{ borderRadius: 12 }}>
+          <Card title="推送统计" size="small" loading={pushLoading && !pushStats} style={{ borderRadius: 12 }}>
             <Row gutter={16} align="middle">
               <Col span={6}>
                 <Statistic title="总次数" value={pushStats?.total ?? 0} />
@@ -430,7 +430,7 @@ const Scheduler: React.FC = () => {
           </Card>
         </Col>
         <Col xs={24} md={12}>
-          <Card title="提取统计" size="small" style={{ borderRadius: 12 }}>
+          <Card title="提取统计" size="small" loading={extractLoading && !extractStats} style={{ borderRadius: 12 }}>
             <Row gutter={16} align="middle">
               <Col span={6}>
                 <Statistic title="总次数" value={extractStats?.total ?? 0} />

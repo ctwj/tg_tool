@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Card, Col, Row, Typography, Tag, Space, Button } from 'antd'
+import { Card, Col, Row, Typography, Tag, Space, Button, Skeleton } from 'antd'
 import { ApiOutlined, SendOutlined, CloudDownloadOutlined, RocketOutlined, CheckCircleOutlined, LinkOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import apiClient from '../api/client'
@@ -21,10 +21,15 @@ interface DashboardData {
 
 const Dashboard: React.FC = () => {
   const [data, setData] = useState<DashboardData | null>(null)
+  const [loading, setLoading] = useState(true)
   const navigate = useNavigate()
 
   useEffect(() => {
-    apiClient.get('/status').then(res => setData(res.data.data)).catch(() => {})
+    apiClient
+      .get('/status')
+      .then(res => setData(res.data.data))
+      .catch(() => {})
+      .finally(() => setLoading(false))
   }, [])
 
   const hour = new Date().getHours()
@@ -137,8 +142,14 @@ const Dashboard: React.FC = () => {
                 <ApiOutlined /> 在线客户端
               </div>
               <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4, lineHeight: 1 }}>
-                {data?.clients.active ?? 0}
-                <span style={{ fontSize: 14, fontWeight: 400, opacity: 0.8 }}> / {data?.clients.total ?? 0}</span>
+                {loading ? (
+                  <Skeleton.Button active size="small" style={{ width: 72, height: 22, borderRadius: 4, background: 'rgba(255,255,255,0.25)' }} />
+                ) : (
+                  <>
+                    {data?.clients.active ?? 0}
+                    <span style={{ fontSize: 14, fontWeight: 400, opacity: 0.8 }}> / {data?.clients.total ?? 0}</span>
+                  </>
+                )}
               </div>
             </div>
             <div style={{
@@ -150,8 +161,14 @@ const Dashboard: React.FC = () => {
                 <RocketOutlined /> 运行调度
               </div>
               <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4, lineHeight: 1 }}>
-                {(data?.schedulers?.extract_running ? 1 : 0) + (data?.schedulers?.push_running ? 1 : 0)}
-                <span style={{ fontSize: 14, fontWeight: 400, opacity: 0.8 }}> / 2</span>
+                {loading ? (
+                  <Skeleton.Button active size="small" style={{ width: 72, height: 22, borderRadius: 4, background: 'rgba(255,255,255,0.25)' }} />
+                ) : (
+                  <>
+                    {(data?.schedulers?.extract_running ? 1 : 0) + (data?.schedulers?.push_running ? 1 : 0)}
+                    <span style={{ fontSize: 14, fontWeight: 400, opacity: 0.8 }}> / 2</span>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -163,6 +180,7 @@ const Dashboard: React.FC = () => {
         {statsCards.map((item) => (
           <Col span={6} key={item.title}>
             <Card
+              loading={loading && !data}
               style={{ borderRadius: 12 }}
               styles={{ body: { padding: '20px 24px' } }}
               hoverable
@@ -218,6 +236,7 @@ const Dashboard: React.FC = () => {
         </Col>
         <Col span={12}>
           <Card
+            loading={loading && !data}
             title={<span style={{ fontWeight: 600, color: '#0c4a6e' }}>调度任务</span>}
             style={{ borderRadius: 12 }}
             styles={{ body: { padding: '16px 24px' } }}

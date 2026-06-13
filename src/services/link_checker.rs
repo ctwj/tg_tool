@@ -74,10 +74,10 @@ pub struct PanCheckChecker {
 }
 
 impl PanCheckChecker {
-    /// 构造检测器。单请求超时 30 秒（单批），整批预算受 SC-002 的 60 秒约束。
+    /// 构造检测器。单请求超时 60 秒（PanCheck 同步检测可能较慢）。
     pub fn new(host: &str) -> Result<Self, AppError> {
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(60))
             .build()
             .map_err(|e| AppError::Internal(format!("创建 PanCheck HTTP 客户端失败: {e}")))?;
         Ok(Self {
@@ -111,14 +111,16 @@ impl LinkChecker for PanCheckChecker {
             let endpoint = format!("{}/api/v1/links/check", self.host);
             let body = serde_json::json!({
                 "links": urls,
-                "selectedPlatforms": PANCHECK_PLATFORMS,
+                "selected_platforms": PANCHECK_PLATFORMS,
             });
+            tracing::info!("PanCheck 请求: endpoint={endpoint}, urls={urls:?}");
             match self.client.post(&endpoint).json(&body).send().await {
                 Ok(resp) => {
                     let status = resp.status();
                     let text = resp.text().await.unwrap_or_default();
+                    tracing::info!("PanCheck 响应: status={status}, body={text}");
                     if !status.is_success() {
-                        tracing::warn!("PanCheck 返回非 2xx: status={status}");
+                        tracing::warn!("PanCheck 返回非 2xx: status={status}, body={text}");
                         return Ok(all_unknown(urls));
                     }
                     Ok(parse_pancheck_response(&text, urls))
@@ -171,12 +173,20 @@ fn pick_str<'a>(obj: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
 }
 
 /// 从一个 JSON 数组中提取 (url, platform, reason) 三元组列表。
+/// 支持两种格式：
+/// - 字符串数组：`["url1", "url2"]`（PanCheck 实际格式）
+/// - 对象数组：`[{"url":"...", "platform":"...", "reason":"..."}]`（预留兼容）
 fn extract_array(arr: &serde_json::Value) -> Vec<(String, Option<String>, Option<String>)> {
     arr.as_array()
         .map(|items| {
             items
                 .iter()
                 .filter_map(|it| {
+                    // 字符串格式：直接是 URL
+                    if let Some(url) = it.as_str() {
+                        return Some((url.to_string(), None, None));
+                    }
+                    // 对象格式：按候选键提取
                     let url = pick_str(it, &["url", "link"])?.to_string();
                     let platform =
                         pick_str(it, &["platform", "service", "type"]).map(str::to_string);
@@ -280,24 +290,40 @@ mod tests {
 
     #[test]
     fn test_parse_canonical_field_names() {
+        // PanCheck 实际格式：字符串数组
+        let body = r#"{
+            "valid_links":   ["https://pan.quark.cn/s/abc1"],
+            "invalid_links": ["https://pan.quark.cn/s/abc2"],
+            "pending_links": ["https://pan.quark.cn/s/abc3"]
+        }"#;
+        let req = vec![url(1), url(2), url(3), url(4)];
+        let v = parse_pancheck_response(body, &req);
+        assert_eq!(v[0].status, LinkStatus::Valid);
+        assert_eq!(v[1].status, LinkStatus::Invalid);
+        assert_eq!(v[2].status, LinkStatus::Pending);
+        assert_eq!(v[3].status, LinkStatus::Unknown); // 未出现在任何数组
+    }
+
+    #[test]
+    fn test_parse_object_array_format() {
+        // 对象数组格式（兼容）
         let body = r#"{
             "valid_links":   [{"url":"https://pan.quark.cn/s/abc1","platform":"quark"}],
             "invalid_links": [{"url":"https://pan.quark.cn/s/abc2","platform":"baidu","reason":"分享已失效"}],
             "pending_links": [{"url":"https://pan.quark.cn/s/abc3","platform":"115"}]
         }"#;
-        let req = vec![url(1), url(2), url(3), url(4)];
+        let req = vec![url(1), url(2), url(3)];
         let v = parse_pancheck_response(body, &req);
         assert_eq!(v[0].status, LinkStatus::Valid);
         assert_eq!(v[0].platform.as_deref(), Some("quark"));
         assert_eq!(v[1].status, LinkStatus::Invalid);
         assert_eq!(v[1].fail_reason.as_deref(), Some("分享已失效"));
         assert_eq!(v[2].status, LinkStatus::Pending);
-        assert_eq!(v[3].status, LinkStatus::Unknown); // 未出现在任何数组
     }
 
     #[test]
     fn test_parse_variant_field_names() {
-        // available / dead / pending（候选键名容错）
+        // available / dead / pending（候选键名容错）— 对象数组格式
         let body = r#"{
             "available": [{"link":"https://pan.quark.cn/s/abc1","service":"quark"}],
             "dead":      [{"link":"https://pan.quark.cn/s/abc2","type":"baidu","msg":"失效"}],
@@ -330,8 +356,8 @@ mod tests {
     fn test_parse_invalid_takes_priority() {
         // 同一 URL 同时在 valid 与 invalid（异常但 defensive）→ 判定 invalid
         let body = r#"{
-            "valid_links":   [{"url":"https://pan.quark.cn/s/abc1"}],
-            "invalid_links": [{"url":"https://pan.quark.cn/s/abc1","reason":"x"}]
+            "valid_links":   ["https://pan.quark.cn/s/abc1"],
+            "invalid_links": ["https://pan.quark.cn/s/abc1"]
         }"#;
         let req = vec![url(1)];
         let v = parse_pancheck_response(body, &req);

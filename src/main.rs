@@ -517,6 +517,20 @@ async fn run_migrations(pool: &DbPool) {
                     );
                 }
             }
+
+            // Migration 013: link_check_results + push_skip_records + push_histories skip columns
+            {
+                let m13 = include_str!("../migrations/013_resource_link_check_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m13).execute(pool).await {
+                    let msg = e.to_string();
+                    if !msg.contains("duplicate column") && !msg.contains("already exists") {
+                        panic!("Failed to run SQLite migration 013: {e}");
+                    }
+                    tracing::debug!("SQLite migration 013 skipped (already applied)");
+                } else {
+                    tracing::info!("SQLite migration 013 applied");
+                }
+            }
         }
         DbPool::Postgres(pool) => {
             let migration_sql = include_str!("../migrations/001_init_postgres.sql");
@@ -695,6 +709,20 @@ async fn run_migrations(pool: &DbPool) {
                             "PostgreSQL migration 012: added push_config_id to push_histories"
                         );
                     }
+                }
+            }
+
+            // Migration 013: link_check_results + push_skip_records + push_histories skip columns
+            {
+                let m13 = include_str!("../migrations/013_resource_link_check_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m13).execute(pool).await {
+                    let msg = e.to_string();
+                    if !msg.contains("already exists") && !msg.contains("duplicate") {
+                        panic!("Failed to run PostgreSQL migration 013: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 013 skipped (already applied)");
+                } else {
+                    tracing::info!("PostgreSQL migration 013 applied");
                 }
             }
         }
