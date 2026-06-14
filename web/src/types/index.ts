@@ -345,11 +345,14 @@ export interface ForwardTask {
   remote_id: string
   channel_id?: number
   message_id?: number
+  // 群组A 中的消息 ID（阶段1 完成后写入），用于阶段2 Bot forwardMessage
+  image_message_id?: number | null
   title?: string
   description?: string
   link?: string
   file_id?: string
-  status: 'pending' | 'forwarded' | 'failed'
+  // awaiting_bot = 阶段1 完成、待阶段2 Bot 转发取 file_id
+  status: 'pending' | 'awaiting_bot' | 'forwarded' | 'failed'
   retry_count: number
   error?: string
   created_at: string

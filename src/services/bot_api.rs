@@ -37,9 +37,12 @@ struct PhotoSize {
     height: i64,
 }
 
-/// sendPhoto 响应中的 Message
+/// sendPhoto / forwardMessage 响应中的 Message
+/// `id` 用 `#[serde(default)]` 保证 sendPhoto 路径（不需要 id）仍能反序列化
 #[derive(Debug, Deserialize)]
 struct BotMessage {
+    #[serde(default)]
+    id: i64,
     photo: Option<Vec<PhotoSize>>,
 }
 
@@ -161,6 +164,66 @@ pub async fn send_photo(
                 .and_then(|sizes| sizes.last().map(|s| s.file_id.clone()))
                 .ok_or_else(|| AppError::Internal("sendPhoto 响应无 photo 数据".to_string()))
         })?
+}
+
+/// 通过 Bot API forwardMessage 把消息从 from_chat_id 转发到 chat_id
+/// 同步返回新消息（含 photo 数组），从中提取最大尺寸的 file_id
+///
+/// 返回 `(forwarded_message_id, Option<file_id>)`：
+/// - `forwarded_message_id`：群组B 中的新消息 ID，用于后续 deleteMessage
+/// - `file_id`：Bot 视角的最大尺寸 file_id；None 表示原消息不是 photo 媒体
+pub async fn forward_message(
+    token: &str,
+    chat_id: &str,
+    from_chat_id: &str,
+    message_id: i64,
+    proxy_url: Option<&str>,
+) -> Result<(i64, Option<String>), AppError> {
+    let client = build_client(proxy_url)?;
+    let url = bot_api_url(token, "forwardMessage");
+
+    let resp = client
+        .post(&url)
+        .query(&[
+            ("chat_id", chat_id),
+            ("from_chat_id", from_chat_id),
+            ("message_id", &message_id.to_string()),
+        ])
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("forwardMessage 请求失败: {e}")))?;
+
+    let msg = handle_bot_response::<BotMessage>(resp, "forwardMessage").await?;
+    let file_id = msg
+        .photo
+        .and_then(|sizes| sizes.last().map(|s| s.file_id.clone()));
+    Ok((msg.id, file_id))
+}
+
+/// 通过 Bot API deleteMessage 删除指定消息
+/// 需 Bot 在目标 chat 有删除消息权限（管理员）；删除失败仅返回错误，由调用方决定是否影响任务
+pub async fn delete_message(
+    token: &str,
+    chat_id: &str,
+    message_id: i64,
+    proxy_url: Option<&str>,
+) -> Result<(), AppError> {
+    let client = build_client(proxy_url)?;
+    let url = bot_api_url(token, "deleteMessage");
+
+    let resp = client
+        .post(&url)
+        .query(&[
+            ("chat_id", chat_id),
+            ("message_id", &message_id.to_string()),
+        ])
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("deleteMessage 请求失败: {e}")))?;
+
+    // deleteMessage 返回 result=True，不需要结构化解析
+    let _ = handle_bot_response::<serde_json::Value>(resp, "deleteMessage").await?;
+    Ok(())
 }
 
 /// 通过 Bot API getFile + 文件下载获取图片二进制数据

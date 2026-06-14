@@ -1,9 +1,18 @@
-// 图片转发队列 — 入队、去重、后台处理
-// 资源提取时将图片入队，后台按间隔通过 Bot API sendPhoto 发送到图床群组
+// 图片转发队列 — 入队、去重、后台处理（双群组两阶段架构）
+//
+// 阶段1（pending → awaiting_bot）：
+//   MTProto 客户端用 copy_media 不下载地把图片转发到群组A，记录群组A 消息 ID
+// 阶段2（awaiting_bot → forwarded）：
+//   Bot 用 forwardMessage 把消息从群组A 转发到群组B，同步提取 file_id，写入 image_mappings
+//
+// 失败重试（FR-052）：根据 image_message_id 是否为空智能恢复
+//   - 空（阶段1 失败）→ 恢复为 pending
+//   - 非空（阶段2 失败）→ 恢复为 awaiting_bot，避免群组A 重复图片
 
 use crate::errors::AppError;
 use crate::models::forward_task::{ForwardTask, ForwardTaskWithCollector};
 use crate::state::{AppState, DbPool};
+use grammers_client::types::input_media::InputMedia;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -82,7 +91,11 @@ pub async fn stop_forward_scheduler(scheduler: ForwardSchedulerHandle) {
     state.running = false;
 }
 
-/// 入队转发任务（三层去重）
+/// 入队转发任务（三层去重 + 总开关）
+///
+/// 总开关：`image_storage_enabled` 配置为 `"false"`（精确匹配）时直接返回，不入队。
+/// 缺失或其他值（包括 `"true"`）按现有逻辑入队。
+/// 关闭开关时已在队列中的存量任务继续被调度器处理（FR-003）。
 pub async fn enqueue(
     state: &AppState,
     remote_id: &str,
@@ -93,6 +106,17 @@ pub async fn enqueue(
     link: Option<&str>,
 ) -> Result<(), AppError> {
     if remote_id.is_empty() {
+        return Ok(());
+    }
+
+    // ── 总开关检查（FR-001 / FR-002） ──────────────────────────────────
+    // OptionCache 缺失该键视为开启（保持现有部署行为兼容）
+    let enabled = {
+        let cache = state.option_cache.read().await;
+        cache.get("image_storage_enabled").map(|v| v.as_str()) != Some("false")
+    };
+    if !enabled {
+        tracing::debug!("图片转存功能已关闭，跳过入队: {remote_id}");
         return Ok(());
     }
 
@@ -120,11 +144,12 @@ pub async fn enqueue(
         return Ok(());
     }
 
-    // 去重层 2: forward_tasks 已有 pending/forwarded 任务
+    // 去重层 2: forward_tasks 已有 pending/awaiting_bot/forwarded 任务
+    // awaiting_bot 也加入白名单，避免两阶段之间被重复入队（data-model 不变量 4）
     let already_queued = match &state.db {
         DbPool::Sqlite(pool) => {
             let row: Option<(i64,)> = sqlx::query_as(
-                "SELECT id FROM forward_tasks WHERE remote_id = ? AND status IN ('pending', 'forwarded')",
+                "SELECT id FROM forward_tasks WHERE remote_id = ? AND status IN ('pending', 'awaiting_bot', 'forwarded')",
             )
             .bind(remote_id)
             .fetch_optional(pool)
@@ -133,7 +158,7 @@ pub async fn enqueue(
         }
         DbPool::Postgres(pool) => {
             let row: Option<(i64,)> = sqlx::query_as(
-                "SELECT id FROM forward_tasks WHERE remote_id = $1 AND status IN ('pending', 'forwarded')",
+                "SELECT id FROM forward_tasks WHERE remote_id = $1 AND status IN ('pending', 'awaiting_bot', 'forwarded')",
             )
             .bind(remote_id)
             .fetch_optional(pool)
@@ -180,20 +205,22 @@ pub async fn enqueue(
     Ok(())
 }
 
-/// 处理下一个 pending 任务
+/// 处理下一个任务：优先取 pending（阶段1），无则取 awaiting_bot（阶段2）
 async fn process_next_task(state: &AppState) -> Result<(), AppError> {
     // 读取配置
-    let (bot_token, chat_id, proxy_url) = {
+    let (bot_token, chat_id_a, chat_id_b, delete_temp, proxy_url) = {
         let cache = state.option_cache.read().await;
         let bot_id = cache.get("ImageBotId").cloned().unwrap_or_default();
         let chat_id_val = cache.get("ImageGroupChatId").cloned().unwrap_or_default();
 
         if bot_id.is_empty() || chat_id_val.is_empty() {
-            return Ok(()); // 未配置，静默跳过
+            return Ok(()); // 群组A/Bot 未配置，静默跳过
         }
 
-        // 获取 Bot Token
-        let token = get_bot_token(state, &bot_id).await?;
+        let token = match get_bot_token(state, &bot_id).await {
+            Ok(t) => t,
+            Err(_) => return Ok(()),
+        };
         let proxy = cache
             .get("http_proxy_url")
             .and_then(|v| if v.is_empty() { None } else { Some(v.clone()) })
@@ -203,76 +230,86 @@ async fn process_next_task(state: &AppState) -> Result<(), AppError> {
                     .and_then(|v| if v.is_empty() { None } else { Some(v.clone()) })
             });
 
-        (token, chat_id_val, proxy)
+        let chat_id_b_val = cache.get("ImageGroupChatId2").cloned().unwrap_or_default();
+        let delete_temp =
+            cache.get("delete_bot_forward_message").map(|v| v.as_str()) == Some("true");
+
+        (token, chat_id_val, chat_id_b_val, delete_temp, proxy)
     };
 
-    // 取一个 pending 任务
-    let task = fetch_pending_task(&state.db).await?;
-    let task = match task {
+    // 阶段1 优先：先取 pending 任务，无则取 awaiting_bot
+    let task = match fetch_pending_task(&state.db).await? {
         Some(t) => t,
-        None => return Ok(()), // 队列空
+        None => match fetch_awaiting_bot_task(&state.db).await? {
+            Some(t) => t,
+            None => return Ok(()), // 两类队列都空
+        },
     };
 
-    tracing::info!("处理转发任务: id={}, remote_id={}", task.id, task.remote_id);
-
-    // 下载图片：通过 MTProto 客户端从原始频道下载
-    let photo_bytes = download_photo_from_channel(state, &task).await;
-
-    let photo_bytes = match photo_bytes {
-        Ok(data) => data,
-        Err(e) => {
-            // 下载失败，标记为 failed
-            mark_task_failed(&state.db, task.id, &e.to_string()).await?;
-            tracing::warn!("转发任务 {} 下载图片失败: {e}", task.id);
-            return Ok(());
-        }
-    };
-
-    // 构建 caption
-    let caption = build_caption(
-        task.title.as_deref(),
-        task.description.as_deref(),
-        task.link.as_deref(),
+    tracing::info!(
+        "处理转发任务: id={}, remote_id={}, status={}",
+        task.id,
+        task.remote_id,
+        task.status
     );
 
-    // 发送图片到图床群组
-    let send_result = crate::services::bot_api::send_photo(
-        &bot_token,
-        &chat_id,
-        photo_bytes,
-        Some(&caption),
-        proxy_url.as_deref(),
-    )
-    .await;
-
-    match send_result {
-        Ok(file_id) => {
-            // 写入 image_mappings
-            save_mapping(&state.db, &task.remote_id, &file_id).await?;
-            // 更新任务状态为 forwarded
-            mark_task_forwarded(&state.db, task.id, &file_id).await?;
-            tracing::info!(
-                "转发成功: remote_id={}, file_id={}",
-                task.remote_id,
-                file_id
-            );
-        }
-        Err(e) => {
-            let err_str = e.to_string();
-            let is_flood = err_str.contains("FLOOD_WAIT");
-            mark_task_failed(&state.db, task.id, &err_str).await?;
-
-            if is_flood {
-                // FLOOD_WAIT: 解析等待秒数
-                let wait_secs: u64 = err_str
-                    .split("等待")
-                    .nth(1)
-                    .and_then(|s| s.split(' ').next())
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(5);
-                tracing::warn!("FLOOD_WAIT: 等待 {wait_secs} 秒");
-                tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+    match task.status.as_str() {
+        "pending" => {
+            // ── 阶段1：客户端 copy_media 转存到群组A ──
+            match run_stage_1_client_forward(state, &task, &chat_id_a).await {
+                Ok(image_message_id) => {
+                    mark_task_awaiting_bot(&state.db, task.id, image_message_id).await?;
+                    tracing::info!(
+                        "阶段1 成功: task={}, image_message_id={}",
+                        task.id,
+                        image_message_id
+                    );
+                }
+                Err(e) => {
+                    let err_str = format!("阶段1 copy_media/send_album 失败: {e}");
+                    mark_task_failed(&state.db, task.id, &err_str).await?;
+                    tracing::warn!("任务 {} {err_str}", task.id);
+                }
             }
+        }
+        "awaiting_bot" => {
+            // ── 阶段2：Bot forwardMessage 转发到群组B 取 file_id ──
+            match run_stage_2_bot_fetch_file_id(
+                &task,
+                &bot_token,
+                &chat_id_a,
+                &chat_id_b,
+                delete_temp,
+                proxy_url.as_deref(),
+            )
+            .await
+            {
+                Ok(file_id) => {
+                    save_mapping(&state.db, &task.remote_id, &file_id).await?;
+                    mark_task_forwarded(&state.db, task.id, &file_id).await?;
+                    tracing::info!("阶段2 成功: task={}, file_id={}", task.id, file_id);
+                }
+                Err(e) => {
+                    let err_str = e.to_string();
+                    let is_flood = err_str.contains("FLOOD_WAIT");
+                    mark_task_failed(&state.db, task.id, &err_str).await?;
+                    tracing::warn!("任务 {} 阶段2 失败: {err_str}", task.id);
+
+                    if is_flood {
+                        let wait_secs: u64 = err_str
+                            .split("等待")
+                            .nth(1)
+                            .and_then(|s| s.split(' ').next())
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(5);
+                        tracing::warn!("FLOOD_WAIT: 等待 {wait_secs} 秒");
+                        tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+                    }
+                }
+            }
+        }
+        other => {
+            tracing::warn!("任务 {} 处于非预期状态: {other}", task.id);
         }
     }
 
@@ -303,33 +340,41 @@ async fn get_bot_token(state: &AppState, bot_id: &str) -> Result<String, AppErro
     token.ok_or_else(|| AppError::NotFound(format!("Bot 客户端不存在: {bot_id}")))
 }
 
-/// 取一个 pending 任务
+/// 取一个 pending 任务（阶段1）
 async fn fetch_pending_task(db: &DbPool) -> Result<Option<ForwardTask>, AppError> {
+    let sql = "SELECT * FROM forward_tasks WHERE status = 'pending' ORDER BY id ASC LIMIT 1";
     match db {
-        DbPool::Sqlite(pool) => {
-            let row = sqlx::query_as::<_, ForwardTask>(
-                "SELECT * FROM forward_tasks WHERE status = 'pending' ORDER BY id ASC LIMIT 1",
-            )
+        DbPool::Sqlite(pool) => Ok(sqlx::query_as::<_, ForwardTask>(sql)
             .fetch_optional(pool)
-            .await?;
-            Ok(row)
-        }
-        DbPool::Postgres(pool) => {
-            let row = sqlx::query_as::<_, ForwardTask>(
-                "SELECT * FROM forward_tasks WHERE status = 'pending' ORDER BY id ASC LIMIT 1",
-            )
+            .await?),
+        DbPool::Postgres(pool) => Ok(sqlx::query_as::<_, ForwardTask>(sql)
             .fetch_optional(pool)
-            .await?;
-            Ok(row)
-        }
+            .await?),
     }
 }
 
-/// 通过 MTProto 客户端从原始频道下载图片
-async fn download_photo_from_channel(
+/// 取一个 awaiting_bot 任务（阶段2）
+async fn fetch_awaiting_bot_task(db: &DbPool) -> Result<Option<ForwardTask>, AppError> {
+    let sql = "SELECT * FROM forward_tasks WHERE status = 'awaiting_bot' ORDER BY id ASC LIMIT 1";
+    match db {
+        DbPool::Sqlite(pool) => Ok(sqlx::query_as::<_, ForwardTask>(sql)
+            .fetch_optional(pool)
+            .await?),
+        DbPool::Postgres(pool) => Ok(sqlx::query_as::<_, ForwardTask>(sql)
+            .fetch_optional(pool)
+            .await?),
+    }
+}
+
+/// 阶段1：客户端 copy_media 不下载地把图片转发到群组A，返回群组A 中的新消息 ID
+///
+/// 参考 forwarder.rs::forward_chat 的现成模式：
+/// `InputMedia::caption(text).copy_media(&media)` + `client.send_album(target, vec![input_media])`
+async fn run_stage_1_client_forward(
     state: &AppState,
     task: &ForwardTask,
-) -> Result<Vec<u8>, AppError> {
+    target_chat_id: &str,
+) -> Result<i64, AppError> {
     let channel_id = task
         .channel_id
         .ok_or_else(|| AppError::Internal("任务缺少 channel_id".to_string()))?;
@@ -337,28 +382,31 @@ async fn download_photo_from_channel(
         task.message_id
             .ok_or_else(|| AppError::Internal("任务缺少 message_id".to_string()))? as i32;
 
-    // 解析频道 PackedChat
-    let packed_chat =
+    let target_id: i64 = target_chat_id
+        .parse()
+        .map_err(|e| AppError::Internal(format!("无效的群组A chat_id: {e}")))?;
+
+    // 解析源频道 peer
+    let source_chat =
         crate::services::tg_api::resolve_peer(channel_id, &state.tg_clients, &state.peer_cache)
             .await
-            .map_err(|e| AppError::Internal(format!("解析频道失败: {e}")))?;
+            .map_err(|e| AppError::Internal(format!("阶段1 解析频道失败: {e}")))?;
 
-    // 获取 MTProto 客户端
+    // 取 active 客户端
     let tg_clients = state.tg_clients.read().await;
     let client = tg_clients
         .values()
         .find(|e| e.status == "active" && e.client.is_some())
         .and_then(|e| e.client.clone())
-        .ok_or_else(|| AppError::Internal("无可用 Telegram 客户端".to_string()))?;
+        .ok_or_else(|| AppError::Internal("阶段1 无可用 Telegram 客户端".to_string()))?;
     drop(tg_clients);
 
-    // 获取消息
+    // 取源消息
     let messages = client
-        .get_messages_by_id(packed_chat, &[message_id])
+        .get_messages_by_id(source_chat, &[message_id])
         .await
-        .map_err(|e| AppError::Internal(format!("获取消息失败: {e}")))?;
+        .map_err(|e| AppError::Internal(format!("阶段1 获取源消息失败: {e}")))?;
 
-    // 找到目标消息并提取 Media
     let mut media = None;
     for msg in messages.into_iter().flatten() {
         if msg.id() == message_id {
@@ -366,25 +414,145 @@ async fn download_photo_from_channel(
             break;
         }
     }
-    let media = media.ok_or_else(|| AppError::NotFound("消息无图片媒体".to_string()))?;
+    let media = media.ok_or_else(|| AppError::NotFound("阶段1 源消息无图片媒体".to_string()))?;
 
-    // 下载（与 image_proxy.rs 相同模式）
-    let downloadable = grammers_client::types::Downloadable::Media(media);
-    let mut data = Vec::new();
-    let mut download = client.iter_download(&downloadable);
-    while let Some(chunk) = download
-        .next()
+    // 解析目标群组A peer
+    let target_chat =
+        crate::services::tg_api::resolve_peer(target_id, &state.tg_clients, &state.peer_cache)
+            .await
+            .map_err(|e| AppError::Internal(format!("阶段1 解析群组A 失败: {e}")))?;
+
+    // 构造 caption + copy_media
+    let caption = build_caption(
+        task.title.as_deref(),
+        task.description.as_deref(),
+        task.link.as_deref(),
+    );
+    let input_media = InputMedia::caption(caption).copy_media(&media);
+
+    // 发送（不下载，仅引用原图 remote reference）
+    let result = client
+        .send_album(target_chat, vec![input_media])
         .await
-        .map_err(|e| AppError::Internal(format!("下载图片失败: {e}")))?
+        .map_err(|e| AppError::Internal(format!("阶段1 send_album 失败: {e}")))?;
+
+    // send_album 返回 Vec<Option<Message>>，取第一个
+    let new_msg_id = result
+        .into_iter()
+        .next()
+        .flatten()
+        .map(|m| m.id() as i64)
+        .ok_or_else(|| AppError::Internal("阶段1 send_album 未返回新消息".to_string()))?;
+
+    Ok(new_msg_id)
+}
+
+/// 阶段2：Bot 用 forwardMessage 把消息从群组A 转发到群组B，同步提取 file_id
+///
+/// 流程：
+/// 1. 若群组B 未配置 → 返回错误（任务保持 awaiting_bot，不影响阶段1 已转存的图片）
+/// 2. forward_message(token, 群组B, 群组A, image_message_id) → (fwd_msg_id, file_id_opt)
+/// 3. 若 file_id_opt 为 None → delete 临时消息并返回错误（防止群组B 累积无 file_id 的垃圾消息）
+/// 4. 若 delete_temp == true → delete 临时消息（失败仅 warn）
+/// 5. 返回 file_id
+async fn run_stage_2_bot_fetch_file_id(
+    task: &ForwardTask,
+    bot_token: &str,
+    image_group_chat_id: &str,   // 群组A（from）
+    image_group_chat_id_2: &str, // 群组B（to）
+    delete_temp: bool,
+    proxy_url: Option<&str>,
+) -> Result<String, AppError> {
+    if image_group_chat_id_2.is_empty() {
+        return Err(AppError::Internal(
+            "阶段2 失败: 群组B 未配置 (ImageGroupChatId2 为空)".to_string(),
+        ));
+    }
+
+    let image_message_id = task
+        .image_message_id
+        .ok_or_else(|| AppError::Internal("阶段2 失败: 任务缺少 image_message_id".to_string()))?;
+
+    let (fwd_msg_id, file_id_opt) = crate::services::bot_api::forward_message(
+        bot_token,
+        image_group_chat_id_2,
+        image_group_chat_id,
+        image_message_id,
+        proxy_url,
+    )
+    .await?;
+
+    let file_id = match file_id_opt {
+        Some(fid) => fid,
+        None => {
+            // forwardMessage 成功但无 photo — 清理临时消息后返回错误
+            if let Err(e) = crate::services::bot_api::delete_message(
+                bot_token,
+                image_group_chat_id_2,
+                fwd_msg_id,
+                proxy_url,
+            )
+            .await
+            {
+                tracing::warn!(
+                    "任务 {} 清理无 photo 的临时消息失败 (fwd_msg_id={}): {e}",
+                    task.id,
+                    fwd_msg_id
+                );
+            }
+            return Err(AppError::Internal(
+                "阶段2 失败: forwardMessage 返回无 photo".to_string(),
+            ));
+        }
+    };
+
+    if delete_temp
+        && let Err(e) = crate::services::bot_api::delete_message(
+            bot_token,
+            image_group_chat_id_2,
+            fwd_msg_id,
+            proxy_url,
+        )
+        .await
     {
-        data.extend_from_slice(&chunk);
+        // 删除失败仅 warn，不影响任务成功（file_id 已就绪）
+        tracing::warn!(
+            "任务 {} 阶段2 deleteMessage 失败 (fwd_msg_id={}): {e}",
+            task.id,
+            fwd_msg_id
+        );
     }
 
-    if data.is_empty() {
-        return Err(AppError::NotFound("下载的图片数据为空".to_string()));
-    }
+    Ok(file_id)
+}
 
-    Ok(data)
+/// 标记任务为 awaiting_bot（阶段1 成功，等待阶段2）
+async fn mark_task_awaiting_bot(
+    db: &DbPool,
+    task_id: i64,
+    image_message_id: i64,
+) -> Result<(), AppError> {
+    match db {
+        DbPool::Sqlite(pool) => {
+            sqlx::query(
+                "UPDATE forward_tasks SET status = 'awaiting_bot', image_message_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            )
+            .bind(image_message_id)
+            .bind(task_id)
+            .execute(pool)
+            .await?;
+        }
+        DbPool::Postgres(pool) => {
+            sqlx::query(
+                "UPDATE forward_tasks SET status = 'awaiting_bot', image_message_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+            )
+            .bind(image_message_id)
+            .bind(task_id)
+            .execute(pool)
+            .await?;
+        }
+    }
+    Ok(())
 }
 
 /// 构建 caption（标题 + 描述 + 链接，上限 1024 字符）
@@ -583,53 +751,72 @@ pub async fn queue_status(db: &DbPool) -> Result<serde_json::Value, AppError> {
     }))
 }
 
-/// 重试单个失败任务
+/// 重试单个失败任务（智能恢复 — FR-052）
+///
+/// 根据 `image_message_id` 是否为空决定恢复目标：
+/// - NULL（阶段1 失败）→ `pending`，重做阶段1
+/// - 非空（阶段2 失败）→ `awaiting_bot`，仅重做阶段2，避免群组A 重复图片
 pub async fn retry_task(db: &DbPool, task_id: i64) -> Result<(), AppError> {
-    match db {
+    let rows = match db {
         DbPool::Sqlite(pool) => {
-            let result = sqlx::query(
-                "UPDATE forward_tasks SET status = 'pending', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'failed'",
+            sqlx::query(
+                "UPDATE forward_tasks
+                 SET status = CASE WHEN image_message_id IS NULL THEN 'pending' ELSE 'awaiting_bot' END,
+                     error = NULL,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE id = ? AND status = 'failed'",
             )
             .bind(task_id)
             .execute(pool)
-            .await?;
-            if result.rows_affected() == 0 {
-                return Err(AppError::NotFound("失败任务不存在".to_string()));
-            }
+            .await?
+            .rows_affected()
         }
         DbPool::Postgres(pool) => {
-            let result = sqlx::query(
-                "UPDATE forward_tasks SET status = 'pending', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND status = 'failed'",
+            sqlx::query(
+                "UPDATE forward_tasks
+                 SET status = CASE WHEN image_message_id IS NULL THEN 'pending' ELSE 'awaiting_bot' END,
+                     error = NULL,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE id = $1 AND status = 'failed'",
             )
             .bind(task_id)
             .execute(pool)
-            .await?;
-            if result.rows_affected() == 0 {
-                return Err(AppError::NotFound("失败任务不存在".to_string()));
-            }
+            .await?
+            .rows_affected()
         }
+    };
+    if rows == 0 {
+        return Err(AppError::NotFound("失败任务不存在".to_string()));
     }
     Ok(())
 }
 
-/// 重试所有失败任务
+/// 重试所有失败任务（智能恢复 — FR-052）
 pub async fn retry_all_failed(db: &DbPool) -> Result<i64, AppError> {
     let count = match db {
         DbPool::Sqlite(pool) => {
-            let result = sqlx::query(
-                "UPDATE forward_tasks SET status = 'pending', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'failed'",
+            sqlx::query(
+                "UPDATE forward_tasks
+                 SET status = CASE WHEN image_message_id IS NULL THEN 'pending' ELSE 'awaiting_bot' END,
+                     error = NULL,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE status = 'failed'",
             )
             .execute(pool)
-            .await?;
-            result.rows_affected() as i64
+            .await?
+            .rows_affected() as i64
         }
         DbPool::Postgres(pool) => {
-            let result = sqlx::query(
-                "UPDATE forward_tasks SET status = 'pending', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'failed'",
+            sqlx::query(
+                "UPDATE forward_tasks
+                 SET status = CASE WHEN image_message_id IS NULL THEN 'pending' ELSE 'awaiting_bot' END,
+                     error = NULL,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE status = 'failed'",
             )
             .execute(pool)
-            .await?;
-            result.rows_affected() as i64
+            .await?
+            .rows_affected() as i64
         }
     };
     Ok(count)

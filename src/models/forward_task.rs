@@ -7,6 +7,9 @@ pub struct ForwardTask {
     pub remote_id: String,
     pub channel_id: Option<i64>,
     pub message_id: Option<i64>,
+    /// 群组A 中的消息 ID，阶段1（copy_media 转存）成功后写入
+    /// NULL 表示阶段1 未完成；用于阶段2 Bot forwardMessage 调用
+    pub image_message_id: Option<i64>,
     pub title: Option<String>,
     pub description: Option<String>,
     pub link: Option<String>,
@@ -27,6 +30,7 @@ pub struct ForwardTaskWithCollector {
     pub remote_id: String,
     pub channel_id: Option<i64>,
     pub message_id: Option<i64>,
+    pub image_message_id: Option<i64>,
     pub title: Option<String>,
     pub description: Option<String>,
     pub link: Option<String>,

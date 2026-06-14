@@ -72,6 +72,10 @@ async fn setup_test_db() -> DbPool {
     let m14 = include_str!("../migrations/014_push_config_link_check_sqlite.sql");
     let _ = sqlx::raw_sql(m14).execute(&pool).await;
 
+    // Migration 015: forward_tasks 加 image_message_id 字段
+    let m15 = include_str!("../migrations/015_forward_task_message_id_sqlite.sql");
+    let _ = sqlx::raw_sql(m15).execute(&pool).await;
+
     // 插入 root 用户（使用当前 bcrypt 版本生成 hash）
     let hash = crypto::hash_password("123456").expect("Failed to hash root password");
     sqlx::query("INSERT INTO users (username, password, role, status) VALUES ('root', ?, 100, 1)")
@@ -2617,6 +2621,212 @@ async fn test_image_forward_queue_status() {
     let failed_tasks = body["data"]["failed_tasks"].as_array().unwrap();
     assert_eq!(failed_tasks.len(), 2);
     assert!(failed_tasks.iter().any(|t| t["error"] == "FLOOD_WAIT_300"));
+}
+
+// ============================================================
+// 023 US1: 转存开关 — enqueue 在 image_storage_enabled=false 时不入队
+// ============================================================
+
+#[tokio::test]
+async fn test_image_storage_toggle_blocks_enqueue() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db.clone());
+    let pool = match &db {
+        DbPool::Sqlite(p) => p.clone(),
+        _ => panic!("expected sqlite"),
+    };
+
+    // 1. 默认（开关缺失）→ 视为开启，应入队成功
+    tgTool::services::forward_queue::enqueue(
+        &state,
+        "photo_default",
+        Some(-100111),
+        Some(123),
+        Some("标题"),
+        Some("描述"),
+        Some("https://example.com"),
+    )
+    .await
+    .expect("enqueue 默认应成功");
+
+    let count_default: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM forward_tasks WHERE remote_id = 'photo_default'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count_default.0, 1, "默认开关缺失应视为开启，任务应已入队");
+
+    // 2. 关闭开关 → enqueue 直接返回，不入队
+    {
+        let mut cache = state.option_cache.write().await;
+        cache.insert("image_storage_enabled".to_string(), "false".to_string());
+    }
+    tgTool::services::forward_queue::enqueue(
+        &state,
+        "photo_disabled",
+        Some(-100111),
+        Some(456),
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("enqueue 关闭时应返回 Ok");
+
+    let count_disabled: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM forward_tasks WHERE remote_id = 'photo_disabled'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count_disabled.0, 0, "关闭开关时不应入队");
+
+    // 3. 再次开启 → 恢复入队
+    {
+        let mut cache = state.option_cache.write().await;
+        cache.insert("image_storage_enabled".to_string(), "true".to_string());
+    }
+    tgTool::services::forward_queue::enqueue(
+        &state,
+        "photo_reenabled",
+        Some(-100111),
+        Some(789),
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("enqueue 开启时应成功");
+
+    let count_reenabled: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM forward_tasks WHERE remote_id = 'photo_reenabled'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count_reenabled.0, 1, "重新开启后应入队");
+
+    // 4. awaiting_bot 状态在去重白名单中（不应被重复入队）
+    sqlx::query("INSERT INTO forward_tasks (remote_id, status, image_message_id) VALUES ('photo_awaiting', 'awaiting_bot', 999)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    tgTool::services::forward_queue::enqueue(
+        &state,
+        "photo_awaiting",
+        Some(-100111),
+        Some(1),
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("enqueue 对 awaiting_bot 任务应去重");
+
+    let count_awaiting: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM forward_tasks WHERE remote_id = 'photo_awaiting'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count_awaiting.0, 1, "awaiting_bot 状态应阻止重复入队");
+}
+
+// ============================================================
+// 023 US3: 智能重试 — 根据 image_message_id 决定恢复阶段
+// ============================================================
+
+#[tokio::test]
+async fn test_smart_retry_restores_correct_stage() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db.clone());
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    let pool = match &db {
+        DbPool::Sqlite(p) => p.clone(),
+        _ => panic!("expected sqlite"),
+    };
+
+    // 阶段1 失败任务（无 image_message_id）→ 重试应恢复为 pending
+    sqlx::query("INSERT INTO forward_tasks (remote_id, status, retry_count, error) VALUES ('stage1_fail', 'failed', 1, '阶段1 copy_media 失败')")
+        .execute(&pool).await.unwrap();
+    // 阶段2 失败任务（有 image_message_id）→ 重试应恢复为 awaiting_bot
+    sqlx::query("INSERT INTO forward_tasks (remote_id, status, image_message_id, retry_count, error) VALUES ('stage2_fail', 'failed', 12345, 1, '阶段2 forwardMessage 失败')")
+        .execute(&pool).await.unwrap();
+
+    // 调用 retry-all
+    let req = build_auth_request("POST", "/api/image-forward/retry-all", &token, None);
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+
+    // 验证：stage1_fail → pending（无 image_message_id）
+    let s1: (String,) =
+        sqlx::query_as("SELECT status FROM forward_tasks WHERE remote_id = 'stage1_fail'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(s1.0, "pending", "阶段1 失败任务应恢复为 pending");
+
+    // 验证：stage2_fail → awaiting_bot（有 image_message_id）
+    let s2: (String,) =
+        sqlx::query_as("SELECT status FROM forward_tasks WHERE remote_id = 'stage2_fail'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(s2.0, "awaiting_bot", "阶段2 失败任务应恢复为 awaiting_bot");
+
+    // 错误字段应被清空
+    let err1: (Option<String>,) =
+        sqlx::query_as("SELECT error FROM forward_tasks WHERE remote_id = 'stage1_fail'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(err1.0.is_none(), "重试后 error 应为 NULL");
+}
+
+// ============================================================
+// 023 US3: 单任务重试也走智能恢复路径
+// ============================================================
+
+#[tokio::test]
+async fn test_smart_retry_single_task() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db.clone());
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    let pool = match &db {
+        DbPool::Sqlite(p) => p.clone(),
+        _ => panic!("expected sqlite"),
+    };
+
+    // 阶段2 失败任务（有 image_message_id）
+    sqlx::query("INSERT INTO forward_tasks (remote_id, status, image_message_id, error) VALUES ('single_stage2', 'failed', 999, 'forwardMessage failed')")
+        .execute(&pool).await.unwrap();
+    let task_id: (i64,) =
+        sqlx::query_as("SELECT id FROM forward_tasks WHERE remote_id = 'single_stage2'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    let req = build_auth_request(
+        "POST",
+        &format!("/api/image-forward/retry/{}", task_id.0),
+        &token,
+        None,
+    );
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // 单任务重试应保持 image_message_id 并恢复为 awaiting_bot
+    let row: (String, Option<i64>) =
+        sqlx::query_as("SELECT status, image_message_id FROM forward_tasks WHERE id = ?")
+            .bind(task_id.0)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(row.0, "awaiting_bot");
+    assert_eq!(row.1, Some(999));
 }
 
 // ============================================================
