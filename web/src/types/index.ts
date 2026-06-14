@@ -137,6 +137,48 @@ export interface PushHistory {
   message?: string
   error_msg?: string
   pushed_at: string
+  pushed_count?: number
+  skipped_image_count?: number
+  skipped_link_count?: number
+}
+
+// 推送跳过明细（资源链接/图片转存未通过）
+export interface PushSkipRecord {
+  resource_id: number
+  title?: string
+  skip_reason: 'image_not_forwarded' | 'link_invalid'
+  urls_invalid?: string | null
+  detail?: string | null
+}
+
+// 推送历史详情（含跳过明细）
+export interface PushHistoryDetail {
+  history: PushHistory
+  skip_records: PushSkipRecord[]
+}
+
+// Push config — 多推送配置
+export interface PushConfig {
+  id: number
+  name: string
+  api_url: string
+  api_token?: string
+  target: string
+  auth_type: 'none' | 'bearer' | 'custom_header' | 'query'
+  auth_key: string
+  http_method: 'POST' | 'PUT' | 'PATCH'
+  body_template?: string
+  custom_headers: string
+  batch_size: number
+  data_source_type: 'all' | 'selected'
+  collector_ids?: number[]
+  collector_count: number
+  auto_push: boolean
+  push_interval: number
+  link_check_before_push: boolean
+  is_active: boolean
+  created_at: string
+  updated_at: string
 }
 
 export interface PushSchedulerConfig {
@@ -198,6 +240,7 @@ export interface ExtractedResource {
   is_pushed: boolean
   is_edited: boolean
   img_forward_status?: string | null  // 'pending' | 'forwarded' | 'failed' | null
+  link_status?: string | null  // 'valid' | 'invalid' | 'unknown'（链接有效性检测聚合状态）
   created_at: string
   updated_at: string
 }
@@ -311,6 +354,8 @@ export interface ForwardTask {
   error?: string
   created_at: string
   updated_at: string
+  collector_id?: number
+  channel_name?: string
 }
 
 export interface QueueStatusResponse {

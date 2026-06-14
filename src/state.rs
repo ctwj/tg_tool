@@ -172,6 +172,34 @@ impl AppState {
             .get("http_proxy_url")
             .and_then(|v| if v.is_empty() { None } else { Some(v.clone()) })
     }
+
+    /// 获取 PanCheck 服务 Host（如 http://pancheck:6080）；空=未配置（不启用链接检测）
+    pub async fn pancheck_host(&self) -> Option<String> {
+        let cache = self.option_cache.read().await;
+        cache
+            .get("pancheck_host")
+            .and_then(|v| if v.is_empty() { None } else { Some(v.clone()) })
+    }
+
+    /// 获取链接检测并发数（默认 5，范围 1-20）
+    pub async fn link_check_concurrency(&self) -> usize {
+        let cache = self.option_cache.read().await;
+        cache
+            .get("link_check_concurrency")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(5)
+            .clamp(1, 20)
+    }
+
+    /// 获取链接检测缓存 TTL（小时，默认 24，最小 1）
+    pub async fn link_check_cache_ttl_hours(&self) -> i64 {
+        let cache = self.option_cache.read().await;
+        cache
+            .get("link_check_cache_ttl_hours")
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(24)
+            .max(1)
+    }
 }
 
 #[cfg(test)]

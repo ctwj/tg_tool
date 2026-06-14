@@ -60,6 +60,18 @@ async fn setup_test_db() -> DbPool {
     let m11 = include_str!("../migrations/011_rule_source_client_sqlite.sql");
     let _ = sqlx::raw_sql(m11).execute(&pool).await;
 
+    // Migration 012: push_configs + push_config_collectors + resource_push_status
+    let m12 = include_str!("../migrations/012_push_configs_sqlite.sql");
+    let _ = sqlx::raw_sql(m12).execute(&pool).await;
+
+    // Migration 013: link_check_results + push_skip_records + push_histories 跳过统计列
+    let m13 = include_str!("../migrations/013_resource_link_check_sqlite.sql");
+    let _ = sqlx::raw_sql(m13).execute(&pool).await;
+
+    // Migration 014: push_configs 加 link_check_before_push 开关
+    let m14 = include_str!("../migrations/014_push_config_link_check_sqlite.sql");
+    let _ = sqlx::raw_sql(m14).execute(&pool).await;
+
     // 插入 root 用户（使用当前 bcrypt 版本生成 hash）
     let hash = crypto::hash_password("123456").expect("Failed to hash root password");
     sqlx::query("INSERT INTO users (username, password, role, status) VALUES ('root', ?, 100, 1)")
@@ -2718,4 +2730,754 @@ async fn test_rule_update_filter() {
     assert_eq!(body["data"]["keywords"], "资源,分享");
     assert_eq!(body["data"]["media_filter"], "document");
     assert_eq!(body["data"]["forward_client_id"], "client_xyz");
+}
+
+// ============================================================
+// T004: 推送配置 CRUD 集成测试
+// ============================================================
+
+#[tokio::test]
+async fn test_create_push_config() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/push/configs",
+            &token,
+            Some(
+                serde_json::json!({
+                    "name": "测试推送",
+                    "api_url": "https://api.example.com/push",
+                    "api_token": "secret123",
+                    "target": "test",
+                    "auth_type": "bearer",
+                    "http_method": "POST",
+                    "batch_size": 500,
+                    "data_source_type": "all",
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    assert!(body["data"]["id"].is_number());
+}
+
+#[tokio::test]
+async fn test_list_push_configs() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 先创建一个配置
+    let _ = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/push/configs",
+            &token,
+            Some(
+                serde_json::json!({
+                    "name": "配置A",
+                    "api_url": "https://a.example.com",
+                    "data_source_type": "all",
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request("GET", "/api/push/configs", &token, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    let list = body["data"]["list"].as_array().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["name"], "配置A");
+}
+
+#[tokio::test]
+async fn test_update_push_config() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 创建
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/push/configs",
+            &token,
+            Some(serde_json::json!({"name": "原名称", "api_url": "https://old.com", "data_source_type": "all"}).to_string()),
+        ))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    let id = body["data"]["id"].as_i64().unwrap();
+
+    // 更新
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "PUT",
+            &format!("/api/push/configs/{id}"),
+            &token,
+            Some(serde_json::json!({"name": "新名称", "api_url": "https://new.com"}).to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+
+    // 验证
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request("GET", "/api/push/configs", &token, None))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    let list = body["data"]["list"].as_array().unwrap();
+    assert_eq!(list[0]["name"], "新名称");
+    assert_eq!(list[0]["api_url"], "https://new.com");
+}
+
+#[tokio::test]
+async fn test_delete_push_config() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 创建
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/push/configs",
+            &token,
+            Some(serde_json::json!({"name": "待删除", "api_url": "https://del.com", "data_source_type": "all"}).to_string()),
+        ))
+        .await
+        .unwrap();
+    let id = parse_body(resp.into_body()).await["data"]["id"]
+        .as_i64()
+        .unwrap();
+
+    // 删除
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "DELETE",
+            &format!("/api/push/configs/{id}"),
+            &token,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // 验证列表为空
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request("GET", "/api/push/configs", &token, None))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert!(body["data"]["list"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_toggle_push_config() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 创建（默认 is_active=true）
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/push/configs",
+            &token,
+            Some(serde_json::json!({"name": "切换测试", "api_url": "https://tog.com", "data_source_type": "all"}).to_string()),
+        ))
+        .await
+        .unwrap();
+    let id = parse_body(resp.into_body()).await["data"]["id"]
+        .as_i64()
+        .unwrap();
+
+    // 切换为禁用
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "PUT",
+            &format!("/api/push/configs/{id}/toggle"),
+            &token,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // 验证
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request("GET", "/api/push/configs", &token, None))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_eq!(body["data"]["list"][0]["is_active"], false);
+}
+
+// ============================================================
+// T005: 数据源采集器选择集成测试
+// ============================================================
+
+#[tokio::test]
+async fn test_create_push_config_with_collectors() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db.clone());
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 先创建采集器（插入 clients + collectors）
+    let pool = match &db {
+        DbPool::Sqlite(p) => p.clone(),
+        _ => panic!("expected sqlite"),
+    };
+    sqlx::query("INSERT INTO clients (id, user_id, client_type, status) VALUES ('test-client', 1, 'Client', 'active')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO collectors (user_id, channel_id, channel_name, collector_type, is_active) VALUES (1, 100, '频道A', 'origin', 1)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO collectors (user_id, channel_id, channel_name, collector_type, is_active) VALUES (1, 200, '频道B', 'origin', 1)")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // 创建带 collector_ids 的推送配置
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/push/configs",
+            &token,
+            Some(
+                serde_json::json!({
+                    "name": "指定采集器",
+                    "api_url": "https://api.example.com",
+                    "data_source_type": "selected",
+                    "collector_ids": [1, 2],
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+
+    // 验证列表显示 collector_count
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request("GET", "/api/push/configs", &token, None))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    let list = body["data"]["list"].as_array().unwrap();
+    assert_eq!(list[0]["data_source_type"], "selected");
+    assert_eq!(list[0]["collector_count"], 2);
+}
+
+/// 辅助函数：从 app 中获取测试 DB（未使用，保留备用）
+#[allow(dead_code)]
+fn get_test_db(_app: &mut axum::Router) -> DbPool {
+    // 此函数仅在测试中使用，通过直接访问全局 setup 实现
+    // 在集成测试中我们直接用 setup_test_db 获取 pool
+    unreachable!("use setup_test_db() directly")
+}
+
+#[tokio::test]
+async fn test_update_push_config_collectors() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db.clone());
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    let pool = match &db {
+        DbPool::Sqlite(p) => p.clone(),
+        _ => panic!("expected sqlite"),
+    };
+    sqlx::query("INSERT INTO clients (id, user_id, client_type, status) VALUES ('test-client', 1, 'Client', 'active')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO collectors (user_id, channel_id, channel_name, collector_type, is_active) VALUES (1, 100, '频道A', 'origin', 1)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO collectors (user_id, channel_id, channel_name, collector_type, is_active) VALUES (1, 200, '频道B', 'origin', 1)")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // 创建
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/push/configs",
+            &token,
+            Some(serde_json::json!({"name": "更新采集器", "api_url": "https://api.example.com", "data_source_type": "selected", "collector_ids": [1]}).to_string()),
+        ))
+        .await
+        .unwrap();
+    let id = parse_body(resp.into_body()).await["data"]["id"]
+        .as_i64()
+        .unwrap();
+
+    // 更新 collector_ids（全量替换）
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "PUT",
+            &format!("/api/push/configs/{id}"),
+            &token,
+            Some(serde_json::json!({"collector_ids": [1, 2]}).to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // 验证
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request("GET", "/api/push/configs", &token, None))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_eq!(body["data"]["list"][0]["collector_count"], 2);
+}
+
+// ============================================================
+// T012: 按配置推送集成测试
+// ============================================================
+
+#[tokio::test]
+async fn test_trigger_push_for_config_not_found() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 推送不存在的配置
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/push/configs/999/trigger",
+            &token,
+            Some("{}".to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert_eq!(body["success"], false);
+}
+
+#[tokio::test]
+async fn test_trigger_push_for_config_empty_url() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 创建一个空 api_url 的配置
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/push/configs",
+            &token,
+            Some(
+                serde_json::json!({"name": "空URL", "api_url": "https://example.com/api"})
+                    .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    let id = parse_body(resp.into_body()).await["data"]["id"]
+        .as_i64()
+        .unwrap();
+
+    // 触发推送（无资源可推送）
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            &format!("/api/push/configs/{id}/trigger"),
+            &token,
+            Some("{}".to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    // 没有资源，应该返回成功但 processed_count=0
+    assert!(body["success"].as_bool().unwrap());
+}
+
+#[tokio::test]
+async fn test_push_status_per_config() {
+    let db = setup_test_db().await;
+    let pool = match &db {
+        DbPool::Sqlite(p) => p.clone(),
+        _ => panic!("expected sqlite"),
+    };
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 创建 2 个推送配置
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/push/configs",
+            &token,
+            Some(serde_json::json!({"name": "配置A", "api_url": "https://a.com/api"}).to_string()),
+        ))
+        .await
+        .unwrap();
+    let config_a = parse_body(resp.into_body()).await["data"]["id"]
+        .as_i64()
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/push/configs",
+            &token,
+            Some(serde_json::json!({"name": "配置B", "api_url": "https://b.com/api"}).to_string()),
+        ))
+        .await
+        .unwrap();
+    let _config_b = parse_body(resp.into_body()).await["data"]["id"]
+        .as_i64()
+        .unwrap();
+
+    // 手动插入 resource_push_status 验证独立性（需要先有 extracted_resources 记录）
+    // 插入 client + collector + collector_history + extracted_resource
+    sqlx::query("INSERT INTO clients (id, user_id, client_type, status) VALUES ('test-client', 1, 'Client', 'active')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO collectors (user_id, channel_id, channel_name, collector_type, is_active) VALUES (1, 100, '频道A', 'origin', 1)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO collector_histories (collector_id, channel_id, message_id, is_auto_push) VALUES (1, 100, 1, 0)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO extracted_resources (collector_history_id, title, source, extract_mode) VALUES (1, '测试资源', 'tg', 'rule')")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    sqlx::query("INSERT INTO resource_push_status (resource_id, push_config_id, status) VALUES (1, ?, 'pushed')")
+        .bind(config_a)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // 验证配置 A 有推送状态记录
+    let count_a: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM resource_push_status WHERE push_config_id = ?")
+            .bind(config_a)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count_a, 1);
+
+    // 配置 B 没有推送状态
+    let count_b: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM resource_push_status WHERE push_config_id = ?")
+            .bind(_config_b)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count_b, 0);
+}
+
+// ============================================================
+// T019: 复制推送配置集成测试
+// ============================================================
+
+#[tokio::test]
+async fn test_duplicate_push_config() {
+    let db = setup_test_db().await;
+    let pool = match &db {
+        DbPool::Sqlite(p) => p.clone(),
+        _ => panic!("expected sqlite"),
+    };
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 创建采集器
+    sqlx::query("INSERT INTO clients (id, user_id, client_type, status) VALUES ('test-client', 1, 'Client', 'active')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO collectors (user_id, channel_id, channel_name, collector_type, is_active) VALUES (1, 100, '频道A', 'origin', 1)")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // 创建带 collector_ids 的配置
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/push/configs",
+            &token,
+            Some(
+                serde_json::json!({
+                    "name": "原始配置",
+                    "api_url": "https://api.example.com",
+                    "api_token": "secret-token",
+                    "target": "test",
+                    "auth_type": "bearer",
+                    "data_source_type": "selected",
+                    "collector_ids": [1],
+                    "auto_push": true,
+                    "push_interval": 60,
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    let orig_id = parse_body(resp.into_body()).await["data"]["id"]
+        .as_i64()
+        .unwrap();
+
+    // 复制
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            &format!("/api/push/configs/{orig_id}/duplicate"),
+            &token,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    let new_id = body["data"]["id"].as_i64().unwrap();
+    assert_ne!(new_id, orig_id);
+
+    // 验证列表中有副本，名称带"(副本)"
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request("GET", "/api/push/configs", &token, None))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    let list = body["data"]["list"].as_array().unwrap();
+    // 按 id 倒序，第一个是副本
+    let duplicate = list
+        .iter()
+        .find(|c| c["id"].as_i64().unwrap() == new_id)
+        .unwrap();
+    assert_eq!(duplicate["name"], "原始配置(副本)");
+    assert_eq!(duplicate["api_url"], "https://api.example.com");
+    assert_eq!(duplicate["auth_type"], "bearer");
+    assert_eq!(duplicate["collector_count"], 1);
+}
+
+// ============================================================
+// 022-resource-link-check：资源链接有效性检测集成测试
+// ============================================================
+
+/// 辅助：在 SQLite 测试库中插入一条资源（含父链 collectors→collector_histories），返回其 id
+async fn insert_test_resource(db: &DbPool, title: &str, url: &str) -> i64 {
+    match db {
+        DbPool::Sqlite(pool) => {
+            // 父链：collectors(root user_id=1) → collector_histories → extracted_resources
+            sqlx::query(
+                "INSERT OR IGNORE INTO collectors (user_id, channel_id, collector_type) VALUES (1, 100, 'channel')",
+            )
+            .execute(pool)
+            .await
+            .unwrap();
+            let collector_id: i64 =
+                sqlx::query_scalar("SELECT id FROM collectors WHERE channel_id = 100")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap();
+            sqlx::query(
+                "INSERT OR IGNORE INTO collector_histories (collector_id, channel_id, message_id) VALUES (?, 100, 1)",
+            )
+            .bind(collector_id)
+            .execute(pool)
+            .await
+            .unwrap();
+            let hist_id: i64 = sqlx::query_scalar(
+                "SELECT id FROM collector_histories WHERE channel_id = 100 AND message_id = 1",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO extracted_resources (collector_history_id, title, url, source, extract_mode, is_pushed, is_edited) \
+                 VALUES (?, ?, ?, 'tg', 'rule', 0, 0)",
+            )
+            .bind(hist_id)
+            .bind(title)
+            .bind(url)
+            .execute(pool)
+            .await
+            .unwrap();
+            sqlx::query_scalar::<_, i64>("SELECT last_insert_rowid()")
+                .fetch_one(pool)
+                .await
+                .unwrap()
+        }
+        _ => 0,
+    }
+}
+
+/// GET /api/resources 列表项含 link_status 字段（无缓存 → unknown），FR-011
+#[tokio::test]
+async fn test_resources_list_has_link_status() {
+    let db = setup_test_db().await;
+    insert_test_resource(&db, "测试资源", "https://pan.quark.cn/s/abc").await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    let resp = app
+        .oneshot(build_auth_request(
+            "GET",
+            "/api/resources?page=1&page_size=10",
+            &token,
+            None,
+        ))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    let list = body["data"]["list"].as_array().unwrap();
+    assert!(!list.is_empty(), "资源列表不应为空");
+    // 新增字段存在；无缓存时聚合为 unknown
+    assert!(
+        list[0].get("link_status").is_some(),
+        "列表项应含 link_status"
+    );
+    assert_eq!(list[0]["link_status"], "unknown");
+}
+
+/// GET /api/push/histories/{id} 返回跳过统计 + skip_records 明细，Story3 AC2
+#[tokio::test]
+async fn test_push_history_detail_skip_records() {
+    let db = setup_test_db().await;
+    let res_id = insert_test_resource(&db, "失效资源", "https://pan.baidu.com/s/z").await;
+    let hist_id: i64 = match &db {
+        DbPool::Sqlite(pool) => {
+            let r = sqlx::query(
+                "INSERT INTO push_histories (batch_id, target, status, data_count, message, pushed_count, skipped_image_count, skipped_link_count) \
+                 VALUES ('batch_link_test','default','success',3,'推送成功',2,1,1)",
+            )
+            .execute(pool)
+            .await
+            .unwrap();
+            let hid = r.last_insert_rowid();
+            sqlx::query(
+                "INSERT INTO push_skip_records (push_history_id, resource_id, skip_reason, urls_invalid, detail) \
+                 VALUES (?, ?, 'link_invalid', 'https://pan.baidu.com/s/z', '网盘链接已失效')",
+            )
+            .bind(hid)
+            .bind(res_id)
+            .execute(pool)
+            .await
+            .unwrap();
+            hid
+        }
+        _ => 0,
+    };
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    let resp = app
+        .oneshot(build_auth_request(
+            "GET",
+            &format!("/api/push/histories/{hist_id}"),
+            &token,
+            None,
+        ))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    assert_eq!(body["data"]["history"]["skipped_link_count"], 1);
+    assert_eq!(body["data"]["history"]["skipped_image_count"], 1);
+    assert_eq!(body["data"]["history"]["pushed_count"], 2);
+    let sr = body["data"]["skip_records"].as_array().unwrap();
+    assert_eq!(sr.len(), 1, "应有 1 条跳过明细");
+    assert_eq!(sr[0]["skip_reason"], "link_invalid");
+    assert_eq!(sr[0]["title"], "失效资源");
+}
+
+/// POST /api/resources/{id}/check-link：pancheck_host 未配置时降级为 unknown，不报错（FR-004）
+#[tokio::test]
+async fn test_resource_check_link_unconfigured_degrades() {
+    let db = setup_test_db().await;
+    let res_id = insert_test_resource(&db, "待检测", "https://pan.quark.cn/s/a").await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    let resp = app
+        .oneshot(build_auth_request(
+            "POST",
+            &format!("/api/resources/{res_id}/check-link"),
+            &token,
+            Some(r#"{"ignore_cache":false}"#.to_string()),
+        ))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    // 未配置 PanCheck → 不报错，降级为未检测
+    assert_eq!(body["data"]["link_status"], "unknown");
 }

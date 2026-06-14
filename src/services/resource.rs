@@ -22,8 +22,16 @@ pub struct ExtractionResult {
 /// 资源列表结果
 #[derive(Debug, serde::Serialize)]
 pub struct ResourceListResult {
-    pub list: Vec<ExtractedResource>,
+    pub list: Vec<ResourceListItem>,
     pub pagination: PaginationInfo,
+}
+
+/// 资源列表项（资源 + 链接状态，flatten 保持 API 向后兼容，仅新增 link_status 字段）
+#[derive(Debug, serde::Serialize)]
+pub struct ResourceListItem {
+    #[serde(flatten)]
+    pub resource: ExtractedResource,
+    pub link_status: String,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -643,55 +651,57 @@ async fn insert_resource(db: &DbPool, r: &NewExtractedResource) -> Result<bool, 
     Ok(true)
 }
 
-/// 资源列表（分页 + 状态筛选）
+/// 资源列表（分页 + 状态/分类/链接状态筛选 + 链接状态展示，FR-011）
 pub async fn list_resources(
     db: &DbPool,
     page: i64,
     page_size: i64,
     status: Option<&str>,
     category: Option<&str>,
+    link_status: Option<&str>,
 ) -> Result<ResourceListResult, AppError> {
     let offset = (page - 1).max(0) * page_size;
-
     let where_clause = build_where_clause(status, category);
-    let count_sql = format!(
-        "SELECT COUNT(*) FROM extracted_resources WHERE {}",
-        where_clause
-    );
-    let query_sql = format!(
-        "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
-         (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status \
-         FROM extracted_resources er WHERE {} ORDER BY er.created_at DESC LIMIT ? OFFSET ?",
-        where_clause
-    );
-    let query_sql_pg = format!(
-        "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
-         (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status \
-         FROM extracted_resources er WHERE {} ORDER BY er.created_at DESC LIMIT $1 OFFSET $2",
-        where_clause
-    );
+    let want_link = link_status
+        .filter(|s| !s.is_empty() && *s != "all")
+        .map(|s| s.to_string());
 
-    let (list, total): (Vec<ExtractedResource>, i64) = match db {
-        DbPool::Sqlite(pool) => {
-            let total: i64 = sqlx::query_scalar(&count_sql).fetch_one(pool).await?;
-            let list = sqlx::query_as(&query_sql)
-                .bind(page_size)
-                .bind(offset)
-                .fetch_all(pool)
-                .await?;
-            (list, total)
-        }
-        DbPool::Postgres(pool) => {
-            let total: i64 = sqlx::query_scalar(&count_sql).fetch_one(pool).await?;
-            let list = sqlx::query_as(&query_sql_pg)
-                .bind(page_size)
-                .bind(offset)
-                .fetch_all(pool)
-                .await?;
-            (list, total)
-        }
+    // 链接状态筛选：SQL 无法按逗号拆分 URL 过滤 → 取候选（上限保护）→ 聚合 → 过滤 → 分页
+    if let Some(want) = want_link {
+        const FILTER_CAP: i64 = 1000;
+        let candidates = fetch_resources(db, &where_clause, FILTER_CAP, 0).await?;
+        let annotated = annotate_link_status(db, candidates).await?;
+        let total;
+        let list: Vec<ResourceListItem> = {
+            let filtered: Vec<ResourceListItem> = annotated
+                .into_iter()
+                .filter(|it| it.link_status == want)
+                .collect();
+            total = filtered.len() as i64;
+            filtered
+                .into_iter()
+                .skip(offset as usize)
+                .take(page_size as usize)
+                .collect()
+        };
+        return Ok(ResourceListResult {
+            list,
+            pagination: PaginationInfo {
+                page,
+                page_size,
+                total,
+            },
+        });
+    }
+
+    // 常规分页
+    let count_sql = format!("SELECT COUNT(*) FROM extracted_resources WHERE {where_clause}");
+    let total: i64 = match db {
+        DbPool::Sqlite(pool) => sqlx::query_scalar(&count_sql).fetch_one(pool).await?,
+        DbPool::Postgres(pool) => sqlx::query_scalar(&count_sql).fetch_one(pool).await?,
     };
-
+    let raw = fetch_resources(db, &where_clause, page_size, offset).await?;
+    let list = annotate_link_status(db, raw).await?;
     Ok(ResourceListResult {
         list,
         pagination: PaginationInfo {
@@ -700,6 +710,64 @@ pub async fn list_resources(
             total,
         },
     })
+}
+
+/// 资源 SELECT 列（含 img_forward_status 子查询）。
+const RESOURCE_COLS: &str = "er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
+     (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status";
+
+/// 按 WHERE 子句取资源（含 img_forward_status 子查询）。
+async fn fetch_resources(
+    db: &DbPool,
+    where_clause: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<ExtractedResource>, AppError> {
+    match db {
+        DbPool::Sqlite(pool) => {
+            let sql = format!(
+                "SELECT {RESOURCE_COLS} FROM extracted_resources er WHERE {where_clause} ORDER BY er.created_at DESC LIMIT ? OFFSET ?"
+            );
+            Ok(sqlx::query_as(&sql)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?)
+        }
+        DbPool::Postgres(pool) => {
+            let sql = format!(
+                "SELECT {RESOURCE_COLS} FROM extracted_resources er WHERE {where_clause} ORDER BY er.created_at DESC LIMIT $1 OFFSET $2"
+            );
+            Ok(sqlx::query_as(&sql)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?)
+        }
+    }
+}
+
+/// 为资源批量附加链接状态（仅读缓存，不触发 PanCheck，避免列页触发外部检测）。
+async fn annotate_link_status(
+    db: &DbPool,
+    resources: Vec<ExtractedResource>,
+) -> Result<Vec<ResourceListItem>, AppError> {
+    let urls: Vec<String> = resources
+        .iter()
+        .flat_map(|r| crate::services::link_check::split_resource_urls(r.url.as_deref()))
+        .collect();
+    let st = crate::services::link_check::cached_link_status_map(db, &urls).await?;
+    Ok(resources
+        .into_iter()
+        .map(|r| {
+            let link_status =
+                crate::services::link_check::aggregate_link_status(&r, &st).to_string();
+            ResourceListItem {
+                resource: r,
+                link_status,
+            }
+        })
+        .collect())
 }
 
 /// 构建 WHERE 子句
@@ -1055,8 +1123,8 @@ pub fn render_template(template: &str, vars: &std::collections::HashMap<&str, St
     result
 }
 
-/// 推送资源 — 读取未推送资源并通过通用 HTTP 适配器推送到外部 API
-/// 支持自定义认证方式、HTTP 方法、请求体模板和自定义 Header
+/// 推送资源 — 读取未推送资源，经「图片转存 + 链接有效性」双维分类后，
+/// 仅推送有效资源到外部 API（通用 HTTP 适配器）。跳过资源记录明细与统计。
 pub async fn push_resources(
     api_url: &str,
     api_token: &str,
@@ -1065,14 +1133,14 @@ pub async fn push_resources(
     db: &DbPool,
     option_cache: &OptionCache,
 ) -> Result<serde_json::Value, AppError> {
-    // 读取 is_pushed=false 的资源（跳过有封面但封面尚未转发成功的）
+    // 取未推送资源（含 img_forward_status 子查询；图片转存过滤改由 Rust 分类统计）
     let resources: Vec<ExtractedResource> = match db {
         DbPool::Sqlite(pool) => {
             sqlx::query_as(
-                "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at \
+                "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
+                 (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status \
                  FROM extracted_resources er \
                  WHERE er.is_pushed = 0 \
-                 AND (er.img IS NULL OR er.img = '' OR er.img IN (SELECT ft.remote_id FROM forward_tasks ft WHERE ft.status = 'forwarded')) \
                  LIMIT ?"
             )
             .bind(batch_size)
@@ -1081,10 +1149,10 @@ pub async fn push_resources(
         }
         DbPool::Postgres(pool) => {
             sqlx::query_as(
-                "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at \
+                "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
+                 (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status \
                  FROM extracted_resources er \
                  WHERE er.is_pushed = FALSE \
-                 AND (er.img IS NULL OR er.img = '' OR er.img IN (SELECT ft.remote_id FROM forward_tasks ft WHERE ft.status = 'forwarded')) \
                  LIMIT $1"
             )
             .bind(batch_size)
@@ -1107,44 +1175,93 @@ pub async fn push_resources(
         chrono::Utc::now().timestamp()
     );
 
-    let resource_count = resources.len();
-    let result =
-        build_and_send_push_request(&resources, api_url, api_token, target, option_cache).await;
+    // 有效性分类：图片未转存 / 链接失效 跳过（FR-001/FR-003/FR-006）
+    let classify =
+        match crate::services::link_check::classify_resources(db, option_cache, &resources).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("资源有效性分类失败，降级为全部尝试推送: {e}");
+                crate::services::link_check::ClassifyResult {
+                    valid: resources.clone(),
+                    skipped: Vec::new(),
+                }
+            }
+        };
+    let skipped_image = classify.skipped_image_count();
+    let skipped_link = classify.skipped_link_count();
+    let valid = &classify.valid;
+    let skipped_json = json!({
+        "image_not_forwarded": skipped_image,
+        "link_invalid": skipped_link,
+        "total": skipped_image + skipped_link,
+    });
+
+    if valid.is_empty() {
+        // 无有效资源：仅记录跳过，不推送
+        record_push_history_with_skips(
+            db,
+            &batch_id,
+            target,
+            "success",
+            0,
+            skipped_image as i64,
+            skipped_link as i64,
+            "没有可推送的有效资源",
+            None,
+            None,
+            &classify.skipped,
+        )
+        .await?;
+        return Ok(json!({
+            "status": "no_valid_resources",
+            "processed_count": 0,
+            "batch_id": batch_id,
+            "skipped": skipped_json,
+        }));
+    }
+
+    let resource_count = valid.len();
+    let result = build_and_send_push_request(valid, api_url, api_token, target, option_cache).await;
 
     match result {
         Ok((status_code, body, is_success, _request_info)) => {
             if is_success {
-                // 标记为已推送
-                for r in &resources {
+                for r in valid {
                     mark_resource_pushed(db, r.id).await?;
                 }
-
-                // 记录推送历史
-                record_push_history(
+                record_push_history_with_skips(
+                    db,
                     &batch_id,
                     target,
                     "success",
                     resource_count as i64,
+                    skipped_image as i64,
+                    skipped_link as i64,
                     "推送成功",
                     None,
-                    db,
+                    None,
+                    &classify.skipped,
                 )
                 .await?;
-
                 Ok(json!({
                     "status": "success",
                     "processed_count": resource_count,
-                    "batch_id": batch_id
+                    "batch_id": batch_id,
+                    "skipped": skipped_json,
                 }))
             } else {
-                record_push_history(
+                record_push_history_with_skips(
+                    db,
                     &batch_id,
                     target,
                     "failed",
                     resource_count as i64,
+                    skipped_image as i64,
+                    skipped_link as i64,
                     &format!("API返回错误: {}", status_code),
                     Some(&body),
-                    db,
+                    None,
+                    &classify.skipped,
                 )
                 .await?;
                 Err(AppError::Internal(format!(
@@ -1154,14 +1271,18 @@ pub async fn push_resources(
             }
         }
         Err(e) => {
-            record_push_history(
+            record_push_history_with_skips(
+                db,
                 &batch_id,
                 target,
                 "failed",
                 0,
+                skipped_image as i64,
+                skipped_link as i64,
                 "推送请求失败",
                 Some(&e.to_string()),
-                db,
+                None,
+                &classify.skipped,
             )
             .await?;
             Err(AppError::Internal(format!("推送请求失败: {e}")))
@@ -1169,10 +1290,8 @@ pub async fn push_resources(
     }
 }
 
-/// 构建并发送推送请求 — 被 push_resources（批量）和 push_single_resource（单条）共用
+/// 构建并发送推送请求 — 从 option_cache 读取认证/模板配置
 /// 返回 (http_status, response_body, is_success, request_info)
-///   - request_info: 描述本次发出的请求（method/url/headers/body），认证字段值脱敏为 "***"，供前端展示
-///   - 调用方负责 mark_resource_pushed + record_push_history
 async fn build_and_send_push_request(
     resources: &[ExtractedResource],
     api_url: &str,
@@ -1180,29 +1299,6 @@ async fn build_and_send_push_request(
     target: &str,
     option_cache: &OptionCache,
 ) -> Result<(u16, String, bool, serde_json::Value), AppError> {
-    // 转换为推送格式
-    let push_data: Vec<serde_json::Value> = resources
-        .iter()
-        .map(|r| {
-            let urls: Vec<&str> = r
-                .url
-                .as_deref()
-                .map(|u| u.split(',').map(|s| s.trim()).collect())
-                .unwrap_or_default();
-            json!({
-                "title": r.title,
-                "url": urls,
-                "description": r.description,
-                "category": r.category,
-                "tags": r.tags,
-                "img": r.img,
-                "source": r.source,
-                "extra": r.extra,
-            })
-        })
-        .collect();
-
-    // 读取通用推送配置
     let cache = option_cache.read().await;
     let auth_type = cache
         .get("push_auth_type")
@@ -1221,7 +1317,78 @@ async fn build_and_send_push_request(
         .get("push_custom_headers")
         .cloned()
         .unwrap_or_else(|| "[]".to_string());
+    let image_domain = cache.get("TelegramImageDomain").cloned();
     drop(cache);
+
+    build_and_send_push_with_params(
+        resources,
+        api_url,
+        api_token,
+        target,
+        &auth_type,
+        &auth_key,
+        &http_method,
+        &body_template,
+        &custom_headers_str,
+        image_domain.as_deref(),
+    )
+    .await
+}
+
+/// 构建并发送推送请求 — 接受直接参数（供 push_config 按配置推送使用）
+/// 返回 (http_status, response_body, is_success, request_info)
+///
+/// `image_domain`：图床域名（如 `https://img.example.com`），配置后 img 字段会从 photo_id
+/// 拼接为完整 URL `{domain}/{photo_id}`；未配置（None 或空）时 img 保留原 photo_id。
+pub async fn build_and_send_push_with_params(
+    resources: &[ExtractedResource],
+    api_url: &str,
+    api_token: &str,
+    target: &str,
+    auth_type: &str,
+    auth_key: &str,
+    http_method: &str,
+    body_template: &str,
+    custom_headers_str: &str,
+    image_domain: Option<&str>,
+) -> Result<(u16, String, bool, serde_json::Value), AppError> {
+    // 规范化图床域名：trim + 去尾部斜杠
+    let domain_norm = image_domain
+        .map(|d| d.trim().trim_end_matches('/'))
+        .filter(|d| !d.is_empty());
+
+    // 转换为推送格式
+    let push_data: Vec<serde_json::Value> = resources
+        .iter()
+        .map(|r| {
+            let urls: Vec<&str> = r
+                .url
+                .as_deref()
+                .map(|u| u.split(',').map(|s| s.trim()).collect())
+                .unwrap_or_default();
+            // img 字段：配置了图床域名时拼接为完整 URL，否则保留原 photo_id
+            let img_value = r.img.as_deref().and_then(|raw| {
+                let raw = raw.trim();
+                if raw.is_empty() {
+                    return None;
+                }
+                match domain_norm {
+                    Some(d) => Some(format!("{d}/{raw}")),
+                    None => Some(raw.to_string()),
+                }
+            });
+            json!({
+                "title": r.title,
+                "url": urls,
+                "description": r.description,
+                "category": r.category,
+                "tags": r.tags,
+                "img": img_value,
+                "source": r.source,
+                "extra": r.extra,
+            })
+        })
+        .collect();
 
     // 构建请求体（使用模板或默认格式）
     let default_template = r#"{"resources": {{resources}}}"#;
@@ -1267,7 +1434,7 @@ async fn build_and_send_push_request(
     })];
 
     // 添加认证
-    match auth_type.as_str() {
+    match auth_type {
         "bearer" => {
             request = request.header("Authorization", format!("Bearer {}", api_token));
             info_headers.push(json!({
@@ -1277,7 +1444,7 @@ async fn build_and_send_push_request(
             }));
         }
         "custom_header" => {
-            request = request.header(&auth_key, api_token);
+            request = request.header(auth_key, api_token);
             info_headers.push(json!({
                 "key": auth_key,
                 "value": "***",
@@ -1285,7 +1452,7 @@ async fn build_and_send_push_request(
             }));
         }
         "query" => {
-            request = request.query(&[(&auth_key as &str, api_token)]);
+            request = request.query(&[(auth_key, api_token)]);
             info_headers.push(json!({
                 "key": auth_key,
                 "value": "***",
@@ -1297,15 +1464,15 @@ async fn build_and_send_push_request(
     }
 
     // 添加自定义 Header
-    if let Ok(headers) = serde_json::from_str::<Vec<serde_json::Value>>(&custom_headers_str) {
+    if let Ok(headers) = serde_json::from_str::<Vec<serde_json::Value>>(custom_headers_str) {
         for h in &headers {
             let key = h.get("key").and_then(|v| v.as_str()).unwrap_or("").trim();
             let value = h.get("value").and_then(|v| v.as_str()).unwrap_or("");
             if !key.is_empty() {
                 // 检查是否与认证 header 冲突
-                let is_auth_header = match auth_type.as_str() {
+                let is_auth_header = match auth_type {
                     "bearer" => key.eq_ignore_ascii_case("Authorization"),
-                    "custom_header" => key.eq_ignore_ascii_case(&auth_key),
+                    "custom_header" => key.eq_ignore_ascii_case(auth_key),
                     _ => false,
                 };
                 if is_auth_header {
@@ -1364,7 +1531,7 @@ async fn build_and_send_push_request(
 }
 
 /// 标记资源为已推送
-async fn mark_resource_pushed(db: &DbPool, id: i64) -> Result<(), AppError> {
+pub async fn mark_resource_pushed(db: &DbPool, id: i64) -> Result<(), AppError> {
     match db {
         DbPool::Sqlite(pool) => {
             sqlx::query("UPDATE extracted_resources SET is_pushed = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
@@ -1413,6 +1580,112 @@ async fn record_push_history(
         }
     }
     Ok(())
+}
+
+/// 插入推送跳过明细（push_skip_records）。
+pub async fn insert_skip_records(
+    db: &DbPool,
+    push_history_id: i64,
+    skipped: &[crate::services::link_check::SkipEntry],
+) -> Result<(), AppError> {
+    for s in skipped {
+        let urls_invalid = if s.urls_invalid.is_empty() {
+            None
+        } else {
+            Some(s.urls_invalid.join(","))
+        };
+        let reason = s.reason.as_str();
+        match db {
+            DbPool::Sqlite(pool) => {
+                sqlx::query(
+                    "INSERT INTO push_skip_records (push_history_id, resource_id, skip_reason, urls_invalid, detail) \
+                     VALUES (?, ?, ?, ?, ?)",
+                )
+                .bind(push_history_id)
+                .bind(s.resource.id)
+                .bind(reason)
+                .bind(&urls_invalid)
+                .bind(&s.detail)
+                .execute(pool)
+                .await?;
+            }
+            DbPool::Postgres(pool) => {
+                sqlx::query(
+                    "INSERT INTO push_skip_records (push_history_id, resource_id, skip_reason, urls_invalid, detail) \
+                     VALUES ($1, $2, $3, $4, $5)",
+                )
+                .bind(push_history_id)
+                .bind(s.resource.id)
+                .bind(reason)
+                .bind(&urls_invalid)
+                .bind(&s.detail)
+                .execute(pool)
+                .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 记录推送历史（含跳过统计汇总列）并写入跳过明细，返回 push_histories.id。
+/// `push_config_id` 为 None 时表示全局推送（不关联配置）。
+#[allow(clippy::too_many_arguments)]
+pub async fn record_push_history_with_skips(
+    db: &DbPool,
+    batch_id: &str,
+    target: &str,
+    status: &str,
+    pushed_count: i64,
+    skipped_image: i64,
+    skipped_link: i64,
+    message: &str,
+    error_msg: Option<&str>,
+    push_config_id: Option<i64>,
+    skipped: &[crate::services::link_check::SkipEntry],
+) -> Result<i64, AppError> {
+    let id: i64 = match db {
+        DbPool::Sqlite(pool) => {
+            let result = sqlx::query(
+                "INSERT INTO push_histories \
+                 (batch_id, target, status, data_count, message, error_msg, pushed_count, skipped_image_count, skipped_link_count, push_config_id) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(batch_id)
+            .bind(target)
+            .bind(status)
+            .bind(pushed_count) // data_count 保留为实际推送数（向后兼容）
+            .bind(message)
+            .bind(error_msg)
+            .bind(pushed_count)
+            .bind(skipped_image)
+            .bind(skipped_link)
+            .bind(push_config_id)
+            .execute(pool)
+            .await?;
+            result.last_insert_rowid()
+        }
+        DbPool::Postgres(pool) => {
+            sqlx::query_scalar(
+                "INSERT INTO push_histories \
+                 (batch_id, target, status, data_count, message, error_msg, pushed_count, skipped_image_count, skipped_link_count, push_config_id) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
+            )
+            .bind(batch_id)
+            .bind(target)
+            .bind(status)
+            .bind(pushed_count)
+            .bind(message)
+            .bind(error_msg)
+            .bind(pushed_count)
+            .bind(skipped_image)
+            .bind(skipped_link)
+            .bind(push_config_id)
+            .fetch_one(pool)
+            .await?
+        }
+    };
+    insert_skip_records(db, id, skipped).await?;
+    Ok(id)
 }
 
 /// 单条资源推送 — 复用与 push_resources 完全相同的推送配置发起请求

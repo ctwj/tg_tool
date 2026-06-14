@@ -42,6 +42,9 @@ const Settings: React.FC = () => {
   const [imageSaving, setImageSaving] = useState(false)
   const [testPhotoId, setTestPhotoId] = useState('')
 
+  // ─── 网盘链接检测配置 ───
+  const [linkCheckSaving, setLinkCheckSaving] = useState(false)
+
   // ─── 大模型配置 ───
   const [endpoints, setEndpoints] = useState<AiEndpoint[]>([])
   const [aiSaving, setAiSaving] = useState(false)
@@ -112,6 +115,24 @@ const Settings: React.FC = () => {
       message.error('保存失败')
     } finally {
       setImageSaving(false)
+    }
+  }
+
+  const saveLinkCheckOptions = async () => {
+    setLinkCheckSaving(true)
+    try {
+      const v = form.getFieldsValue(['link_checker_type', 'pancheck_host', 'link_check_concurrency', 'link_check_cache_ttl_hours'])
+      await apiClient.put('/options', {
+        link_checker_type: v.link_checker_type || 'pancheck',
+        pancheck_host: v.pancheck_host || '',
+        link_check_concurrency: String(v.link_check_concurrency ?? 5),
+        link_check_cache_ttl_hours: String(v.link_check_cache_ttl_hours ?? 24),
+      })
+      message.success('链接检测配置已保存')
+    } catch {
+      message.error('保存失败')
+    } finally {
+      setLinkCheckSaving(false)
     }
   }
 
@@ -456,6 +477,57 @@ const Settings: React.FC = () => {
                         loading={httpTestLoading}
                       >
                         测试 HTTP 代理
+                      </Button>
+                    </Form.Item>
+                  </Card>
+
+                  {/* 网盘链接检测配置 */}
+                  <Card
+                    title="网盘链接检测配置（PanCheck）"
+                    size="small"
+                    style={{ marginBottom: 16, borderRadius: 10 }}
+                    type="inner"
+                  >
+                    <Alert
+                      message="推送前自动跳过网盘链接已失效的资源。配置检测服务地址后启用链接检测；留空则仅按图片转存状态过滤（不检测链接）。"
+                      type="info"
+                      showIcon
+                      style={{ marginBottom: 16, borderRadius: 8 }}
+                    />
+                    <Form.Item
+                      name="link_checker_type"
+                      label="检测服务类型"
+                      initialValue="pancheck"
+                      help="选择链接检测服务（可插拔，新增检测服务后在此切换；当前支持 PanCheck）"
+                    >
+                      <Select options={[{ label: 'PanCheck', value: 'pancheck' }]} />
+                    </Form.Item>
+                    <Form.Item
+                      name="pancheck_host"
+                      label="PanCheck 服务地址"
+                      help="PanCheck 服务 Host，如 http://pancheck:6080。系统将调用 {地址}/api/v1/links/check"
+                    >
+                      <Input placeholder="http://pancheck:6080" />
+                    </Form.Item>
+                    <Form.Item
+                      name="link_check_concurrency"
+                      label="检测并发数"
+                      initialValue={5}
+                      help="同时调用 PanCheck 的并发数（1-20，默认 5）"
+                    >
+                      <InputNumber min={1} max={20} step={1} style={{ width: '100%' }} placeholder="5" />
+                    </Form.Item>
+                    <Form.Item
+                      name="link_check_cache_ttl_hours"
+                      label="结果缓存时长（小时）"
+                      initialValue={24}
+                      help="链接检测结果缓存有效期，过期后重新检测（默认 24）"
+                    >
+                      <InputNumber min={1} max={720} step={1} style={{ width: '100%' }} placeholder="24" />
+                    </Form.Item>
+                    <Form.Item>
+                      <Button type="primary" onClick={saveLinkCheckOptions} loading={linkCheckSaving}>
+                        保存链接检测配置
                       </Button>
                     </Form.Item>
                   </Card>

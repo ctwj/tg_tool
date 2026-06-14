@@ -55,3 +55,4 @@ specs/
 *.db-shm
 *.db-wal
 target_test
+.codegraph

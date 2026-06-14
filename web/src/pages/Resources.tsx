@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { Table, Button, Modal, Form, Input, Select, Space, message, Tag, Popconfirm, Typography, Pagination, Tooltip, Statistic, Row, Col, Card, Switch, InputNumber, Divider, Alert, Spin } from 'antd'
-import { ThunderboltOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, BarChartOutlined, SettingOutlined, EyeOutlined, SendOutlined } from '@ant-design/icons'
+import { ThunderboltOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, BarChartOutlined, SettingOutlined, EyeOutlined, SendOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
 import apiClient from '../api/client'
 import type { ExtractedResource, ResourceStats, ExtractionResult, ResourceDetailResponse } from '../types'
 import PageHeader from '../components/PageHeader'
@@ -63,6 +63,8 @@ const Resources: React.FC = () => {
   const [pageSize, setPageSize] = useState(20)
   const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined)
   const [categoryFilter, setCategoryFilter] = useState<string | undefined>(undefined)
+  const [linkStatusFilter, setLinkStatusFilter] = useState<string | undefined>(undefined)
+  const [checkingIds, setCheckingIds] = useState<Set<number>>(new Set())
 
   // 编辑弹窗
   const [editModalOpen, setEditModalOpen] = useState(false)
@@ -137,6 +139,7 @@ const Resources: React.FC = () => {
       params.set('page_size', String(pageSize))
       if (statusFilter) params.set('status', statusFilter)
       if (categoryFilter) params.set('category', categoryFilter)
+      if (linkStatusFilter) params.set('link_status', linkStatusFilter)
 
       const resp = await apiClient.get(`/resources?${params}`)
       if (resp.data?.success) {
@@ -164,7 +167,7 @@ const Resources: React.FC = () => {
 
   useEffect(() => {
     fetchResources()
-  }, [page, pageSize, statusFilter, categoryFilter])
+  }, [page, pageSize, statusFilter, categoryFilter, linkStatusFilter])
 
   // 加载提取配置
   useEffect(() => {
@@ -340,6 +343,26 @@ const Resources: React.FC = () => {
     }
   }
 
+  // 检测链接有效性（单条，调用 PanCheck，不改 is_pushed）
+  const handleCheck = async (record: ExtractedResource) => {
+    setCheckingIds(prev => new Set(prev).add(record.id))
+    try {
+      const resp = await apiClient.post(`/resources/${record.id}/check-link`, {}, { timeout: 60000 })
+      if (resp.data?.success) {
+        const ls = resp.data.data?.link_status
+        const label = ls === 'valid' ? '有效' : ls === 'invalid' ? '失效' : '未检测'
+        message.success(`检测完成：${label}`)
+        fetchResources()
+      } else {
+        message.error(resp.data?.message || '检测失败')
+      }
+    } catch (e: any) {
+      message.error(e?.response?.data?.message || e?.message || '检测请求失败')
+    } finally {
+      setCheckingIds(prev => { const s = new Set(prev); s.delete(record.id); return s })
+    }
+  }
+
   const columns = [
     {
       title: '标题',
@@ -459,6 +482,17 @@ const Resources: React.FC = () => {
       render: (pushed: boolean) => pushed ? <Tag color="green" style={{ margin: 0 }}>已推送</Tag> : <Tag color="orange" style={{ margin: 0 }}>未推送</Tag>,
     },
     {
+      title: '链接',
+      dataIndex: 'link_status',
+      key: 'link_status',
+      width: 80,
+      render: (ls?: string) => {
+        if (ls === 'valid') return <Tooltip title="网盘链接有效"><Tag color="green" style={{ margin: 0 }}>有效</Tag></Tooltip>
+        if (ls === 'invalid') return <Tooltip title="网盘链接已失效"><Tag color="red" style={{ margin: 0 }}>失效</Tag></Tooltip>
+        return <Tooltip title="未检测/无链接"><Tag color="default" style={{ margin: 0 }}>未检</Tag></Tooltip>
+      },
+    },
+    {
       title: '已编辑',
       dataIndex: 'is_edited',
       key: 'is_edited',
@@ -475,7 +509,7 @@ const Resources: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 185,
+      width: 220,
       fixed: 'right' as const,
       render: (_: unknown, record: ExtractedResource) => (
         <Space size={4}>
@@ -492,6 +526,15 @@ const Resources: React.FC = () => {
               icon={<SendOutlined />}
               loading={pushingIds.has(record.id)}
               onClick={() => handlePush(record)}
+            />
+          </Tooltip>
+          <Tooltip title="检测链接">
+            <Button
+              size="small"
+              type="text"
+              icon={<SafetyCertificateOutlined />}
+              loading={checkingIds.has(record.id)}
+              onClick={() => handleCheck(record)}
             />
           </Tooltip>
           <Popconfirm title="确定删除此资源？" onConfirm={() => handleDelete(record.id)}>
@@ -533,6 +576,18 @@ const Resources: React.FC = () => {
               onChange={setCategoryFilter}
               options={categoryOptions}
             />
+            <Select
+              placeholder="链接状态"
+              allowClear
+              style={{ width: 120 }}
+              value={linkStatusFilter}
+              onChange={setLinkStatusFilter}
+              options={[
+                { label: '有效', value: 'valid' },
+                { label: '失效', value: 'invalid' },
+                { label: '未检测', value: 'unknown' },
+              ]}
+            />
             <Tooltip title="统计">
               <Button icon={<BarChartOutlined />} onClick={() => { setStatsVisible(!statsVisible); fetchStats() }} />
             </Tooltip>
@@ -571,7 +626,7 @@ const Resources: React.FC = () => {
           loading={loading}
           pagination={false}
           size="middle"
-          scroll={{ x: 1700, y: scrollY }}
+          scroll={{ x: 1780, y: scrollY }}
           style={{ background: '#fff', borderRadius: 12 }}
           className="resource-table"
         />

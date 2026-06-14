@@ -39,13 +39,13 @@ const CollectorHistory: React.FC = () => {
   const { id } = useParams<{ id: string }>()
   const location = useLocation()
   const navigate = useNavigate()
-  const state = location.state as { channel_name?: string; channel_id?: number } | null
+  const state = location.state as { channel_name?: string; channel_id?: number; keyword?: string } | null
 
   const [data, setData] = useState<CollectorHistory[]>([])
   const [loading, setLoading] = useState(false)
   const [pagination, setPagination] = useState({ page: 1, pageSize: 20, total: 0 })
   const [extractedFilter, setExtractedFilter] = useState<boolean | undefined>(undefined)
-  const [keyword, setKeyword] = useState('')
+  const [keyword, setKeyword] = useState(state?.keyword ?? '')
 
   // 资源提取弹窗状态
   const [extractModalOpen, setExtractModalOpen] = useState(false)
@@ -209,6 +209,7 @@ const CollectorHistory: React.FC = () => {
             placeholder="搜索 ID 或内容"
             allowClear
             style={{ width: 220 }}
+            defaultValue={keyword}
             onSearch={v => setKeyword(v)}
             onChange={e => { if (!e.target.value) setKeyword('') }}
           />

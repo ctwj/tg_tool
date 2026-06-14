@@ -145,4 +145,6 @@ shell commands, and other important information, read the current plan:
 - [调度可视化面板](specs/018-scheduler-dashboard/plan.md) — 调度状态卡片（运行/间隔/下次执行倒计时）、推送/提取历史记录、提取历史持久化、修正重启后 next_run 计算
 - [转发队列监控与代码卫生](specs/019-forward-queue-monitor/plan.md) — 图片转发队列监控页面、queue_status 补 failed 列表、清理死代码 WebSocket、修复 2 处中间件 panic
 - [转发规则配置增强](specs/020-forward-rule-enhance/plan.md) — 客户端→频道级联选择、关键词+媒体类型过滤、转发客户端绑定
+- [推送管理多 API 配置](specs/021-multi-push-config/plan.md) — 多推送配置(CRUD+复制)、数据源采集器选择、独立推送状态追踪、多配置串行调度
+- [推送资源链接有效性检测](specs/022-resource-link-check/plan.md) — 推送前图片转存+网盘链接双维过滤、可插拔 LinkChecker(PanCheck)、URL 键缓存(TTL 24h)、双通道检测(内联兜底+按配置批量)、跳过统计与明细
 <!-- SPECKIT END -->

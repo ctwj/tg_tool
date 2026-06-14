@@ -102,6 +102,124 @@ async fn main() {
         });
     }
 
+    // Auto-migrate: 将旧系统选项中的推送配置迁移为 push_configs 记录
+    {
+        let db = &state.db;
+        let has_configs: bool = match db {
+            tgTool::state::DbPool::Sqlite(pool) => {
+                let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM push_configs")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0);
+                count > 0
+            }
+            tgTool::state::DbPool::Postgres(pool) => {
+                let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM push_configs")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0);
+                count > 0
+            }
+        };
+
+        if !has_configs {
+            let cache = state.option_cache.read().await;
+            let api_url = cache.get("push_api_url").cloned().unwrap_or_default();
+            if !api_url.is_empty() {
+                tracing::info!("Auto-migrating legacy push config to push_configs table");
+                let api_token = cache.get("push_api_token").cloned();
+                let target = cache.get("push_target").cloned().unwrap_or_default();
+                let auth_type = cache
+                    .get("push_auth_type")
+                    .cloned()
+                    .unwrap_or_else(|| "custom_header".to_string());
+                let auth_key = cache
+                    .get("push_auth_key")
+                    .cloned()
+                    .unwrap_or_else(|| "X-API-Token".to_string());
+                let http_method = cache
+                    .get("push_http_method")
+                    .cloned()
+                    .unwrap_or_else(|| "POST".to_string());
+                let body_template = cache.get("push_body_template").cloned();
+                let custom_headers = cache
+                    .get("push_custom_headers")
+                    .cloned()
+                    .unwrap_or_else(|| "[]".to_string());
+                let batch_size: i64 = cache
+                    .get("push_batch_size")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(1000);
+                let auto_push = cache.get("push_auto_push").cloned().unwrap_or_default();
+                let auto_push_bool = auto_push == "1" || auto_push.eq_ignore_ascii_case("true");
+                let push_interval: i64 = cache
+                    .get("push_interval")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(30);
+                drop(cache);
+
+                let config_id = tgTool::services::push_config::create_config(
+                    db,
+                    "默认推送配置",
+                    &api_url,
+                    api_token.as_deref(),
+                    &target,
+                    &auth_type,
+                    &auth_key,
+                    &http_method,
+                    body_template.as_deref(),
+                    &custom_headers,
+                    batch_size,
+                    "all",
+                    &[],
+                    auto_push_bool,
+                    push_interval,
+                    true,
+                )
+                .await;
+
+                match config_id {
+                    Ok(id) => {
+                        tracing::info!("Migrated legacy push config as push_configs id={id}");
+                        // 迁移 push_histories 关联
+                        match db {
+                            tgTool::state::DbPool::Sqlite(pool) => {
+                                let _ = sqlx::query("UPDATE push_histories SET push_config_id = ? WHERE push_config_id IS NULL")
+                                    .bind(id)
+                                    .execute(pool)
+                                    .await;
+                            }
+                            tgTool::state::DbPool::Postgres(pool) => {
+                                let _ = sqlx::query("UPDATE push_histories SET push_config_id = $1 WHERE push_config_id IS NULL")
+                                    .bind(id)
+                                    .execute(pool)
+                                    .await;
+                            }
+                        }
+                        // 迁移已推送资源状态
+                        match db {
+                            tgTool::state::DbPool::Sqlite(pool) => {
+                                let _ = sqlx::query("INSERT OR IGNORE INTO resource_push_status (resource_id, push_config_id, status) SELECT id, ?, 'pushed' FROM extracted_resources WHERE is_pushed = 1")
+                                    .bind(id)
+                                    .execute(pool)
+                                    .await;
+                            }
+                            tgTool::state::DbPool::Postgres(pool) => {
+                                let _ = sqlx::query("INSERT INTO resource_push_status (resource_id, push_config_id, status) SELECT id, $1, 'pushed' FROM extracted_resources WHERE is_pushed = TRUE ON CONFLICT (resource_id, push_config_id) DO NOTHING")
+                                    .bind(id)
+                                    .execute(pool)
+                                    .await;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to migrate legacy push config: {e}");
+                    }
+                }
+            }
+        }
+    }
+
     // Check if auto extract is enabled
     {
         let cache = state.option_cache.read().await;
@@ -337,6 +455,97 @@ async fn run_migrations(pool: &DbPool) {
                 }
                 tracing::debug!("SQLite migration 011 skipped (already applied)");
             }
+            // Migration 012: push_configs + push_config_collectors + resource_push_status
+            {
+                let m12_tables = "\
+                    CREATE TABLE IF NOT EXISTS push_configs ( \
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, \
+                        name TEXT NOT NULL, \
+                        api_url TEXT NOT NULL DEFAULT '', \
+                        api_token TEXT, \
+                        target TEXT NOT NULL DEFAULT '', \
+                        auth_type TEXT NOT NULL DEFAULT 'custom_header', \
+                        auth_key TEXT NOT NULL DEFAULT 'X-API-Token', \
+                        http_method TEXT NOT NULL DEFAULT 'POST', \
+                        body_template TEXT, \
+                        custom_headers TEXT NOT NULL DEFAULT '[]', \
+                        batch_size INTEGER NOT NULL DEFAULT 1000, \
+                        data_source_type TEXT NOT NULL DEFAULT 'all', \
+                        auto_push INTEGER NOT NULL DEFAULT 0, \
+                        push_interval INTEGER NOT NULL DEFAULT 30, \
+                        is_active INTEGER NOT NULL DEFAULT 1, \
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, \
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP \
+                    ); \
+                    CREATE TABLE IF NOT EXISTS push_config_collectors ( \
+                        push_config_id INTEGER NOT NULL REFERENCES push_configs(id) ON DELETE CASCADE, \
+                        collector_id INTEGER NOT NULL REFERENCES collectors(id) ON DELETE CASCADE, \
+                        PRIMARY KEY (push_config_id, collector_id) \
+                    ); \
+                    CREATE TABLE IF NOT EXISTS resource_push_status ( \
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, \
+                        resource_id INTEGER NOT NULL REFERENCES extracted_resources(id) ON DELETE CASCADE, \
+                        push_config_id INTEGER NOT NULL REFERENCES push_configs(id) ON DELETE CASCADE, \
+                        status TEXT NOT NULL DEFAULT 'pending', \
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, \
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, \
+                        UNIQUE(resource_id, push_config_id) \
+                    ); \
+                    CREATE INDEX IF NOT EXISTS idx_resource_push_status_config ON resource_push_status(push_config_id); \
+                    CREATE INDEX IF NOT EXISTS idx_resource_push_status_status ON resource_push_status(status); \
+                ";
+                sqlx::raw_sql(m12_tables)
+                    .execute(pool)
+                    .await
+                    .expect("Failed to run SQLite migration 012 (tables)");
+
+                // ALTER TABLE ADD COLUMN — 幂等：先检查列是否存在
+                let has_col: bool = sqlx::query_scalar(
+                    "SELECT COUNT(*) > 0 FROM pragma_table_info('push_histories') WHERE name = 'push_config_id'"
+                )
+                .fetch_one(pool)
+                .await
+                .unwrap_or(false);
+                if !has_col {
+                    sqlx::query("ALTER TABLE push_histories ADD COLUMN push_config_id INTEGER REFERENCES push_configs(id)")
+                        .execute(pool)
+                        .await
+                        .expect("Failed to add push_config_id to push_histories");
+                    tracing::info!("SQLite migration 012: added push_config_id to push_histories");
+                } else {
+                    tracing::debug!(
+                        "SQLite migration 012: push_config_id already exists in push_histories"
+                    );
+                }
+            }
+
+            // Migration 013: link_check_results + push_skip_records + push_histories skip columns
+            {
+                let m13 = include_str!("../migrations/013_resource_link_check_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m13).execute(pool).await {
+                    let msg = e.to_string();
+                    if !msg.contains("duplicate column") && !msg.contains("already exists") {
+                        panic!("Failed to run SQLite migration 013: {e}");
+                    }
+                    tracing::debug!("SQLite migration 013 skipped (already applied)");
+                } else {
+                    tracing::info!("SQLite migration 013 applied");
+                }
+            }
+
+            // Migration 014: push_configs 加 link_check_before_push 开关
+            {
+                let m14 = include_str!("../migrations/014_push_config_link_check_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m14).execute(pool).await {
+                    let msg = e.to_string();
+                    if !msg.contains("duplicate column") && !msg.contains("already exists") {
+                        panic!("Failed to run SQLite migration 014: {e}");
+                    }
+                    tracing::debug!("SQLite migration 014 skipped (already applied)");
+                } else {
+                    tracing::info!("SQLite migration 014 applied");
+                }
+            }
         }
         DbPool::Postgres(pool) => {
             let migration_sql = include_str!("../migrations/001_init_postgres.sql");
@@ -441,6 +650,108 @@ async fn run_migrations(pool: &DbPool) {
                         panic!("Failed to run PostgreSQL migration 011: {e}");
                     }
                     tracing::debug!("PostgreSQL migration 011 skipped (already applied)");
+                }
+            }
+            // Migration 012: push_configs + push_config_collectors + resource_push_status
+            {
+                let m12 = include_str!("../migrations/012_push_configs_postgres.sql");
+                // CREATE TABLE IF NOT EXISTS 部分是幂等的，ALTER TABLE ADD COLUMN 需要检查
+                // 先执行整个文件，如果 ALTER TABLE 报列已存在则忽略
+                if let Err(e) = sqlx::raw_sql(m12).execute(pool).await {
+                    let msg = e.to_string();
+                    if !msg.contains("already exists") && !msg.contains("duplicate") {
+                        panic!("Failed to run PostgreSQL migration 012: {e}");
+                    }
+                    // 如果只是 ALTER TABLE 列已存在，尝试单独补建表
+                    tracing::debug!(
+                        "PostgreSQL migration 012: partial skip, ensuring tables exist"
+                    );
+                    let m12_tables = "\
+                        CREATE TABLE IF NOT EXISTS push_configs ( \
+                            id BIGSERIAL PRIMARY KEY, \
+                            name TEXT NOT NULL, \
+                            api_url TEXT NOT NULL DEFAULT '', \
+                            api_token TEXT, \
+                            target TEXT NOT NULL DEFAULT '', \
+                            auth_type TEXT NOT NULL DEFAULT 'custom_header', \
+                            auth_key TEXT NOT NULL DEFAULT 'X-API-Token', \
+                            http_method TEXT NOT NULL DEFAULT 'POST', \
+                            body_template TEXT, \
+                            custom_headers TEXT NOT NULL DEFAULT '[]', \
+                            batch_size BIGINT NOT NULL DEFAULT 1000, \
+                            data_source_type TEXT NOT NULL DEFAULT 'all', \
+                            auto_push BOOLEAN NOT NULL DEFAULT false, \
+                            push_interval BIGINT NOT NULL DEFAULT 30, \
+                            is_active BOOLEAN NOT NULL DEFAULT true, \
+                            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, \
+                            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP \
+                        ); \
+                        CREATE TABLE IF NOT EXISTS push_config_collectors ( \
+                            push_config_id BIGINT NOT NULL REFERENCES push_configs(id) ON DELETE CASCADE, \
+                            collector_id BIGINT NOT NULL REFERENCES collectors(id) ON DELETE CASCADE, \
+                            PRIMARY KEY (push_config_id, collector_id) \
+                        ); \
+                        CREATE TABLE IF NOT EXISTS resource_push_status ( \
+                            id BIGSERIAL PRIMARY KEY, \
+                            resource_id BIGINT NOT NULL REFERENCES extracted_resources(id) ON DELETE CASCADE, \
+                            push_config_id BIGINT NOT NULL REFERENCES push_configs(id) ON DELETE CASCADE, \
+                            status TEXT NOT NULL DEFAULT 'pending', \
+                            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, \
+                            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, \
+                            UNIQUE(resource_id, push_config_id) \
+                        ); \
+                        CREATE INDEX IF NOT EXISTS idx_resource_push_status_config ON resource_push_status(push_config_id); \
+                        CREATE INDEX IF NOT EXISTS idx_resource_push_status_status ON resource_push_status(status); \
+                    ";
+                    sqlx::raw_sql(m12_tables)
+                        .execute(pool)
+                        .await
+                        .expect("Failed to ensure PostgreSQL migration 012 tables");
+
+                    // ALTER TABLE — 检查列是否存在
+                    let has_col: bool = sqlx::query_scalar(
+                        "SELECT COUNT(*) > 0 FROM information_schema.columns WHERE table_name = 'push_histories' AND column_name = 'push_config_id'"
+                    )
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(false);
+                    if !has_col {
+                        sqlx::query("ALTER TABLE push_histories ADD COLUMN push_config_id BIGINT REFERENCES push_configs(id)")
+                            .execute(pool)
+                            .await
+                            .expect("Failed to add push_config_id to push_histories");
+                        tracing::info!(
+                            "PostgreSQL migration 012: added push_config_id to push_histories"
+                        );
+                    }
+                }
+            }
+
+            // Migration 013: link_check_results + push_skip_records + push_histories skip columns
+            {
+                let m13 = include_str!("../migrations/013_resource_link_check_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m13).execute(pool).await {
+                    let msg = e.to_string();
+                    if !msg.contains("already exists") && !msg.contains("duplicate") {
+                        panic!("Failed to run PostgreSQL migration 013: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 013 skipped (already applied)");
+                } else {
+                    tracing::info!("PostgreSQL migration 013 applied");
+                }
+            }
+
+            // Migration 014: push_configs 加 link_check_before_push 开关
+            {
+                let m14 = include_str!("../migrations/014_push_config_link_check_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m14).execute(pool).await {
+                    let msg = e.to_string();
+                    if !msg.contains("already exists") && !msg.contains("duplicate") {
+                        panic!("Failed to run PostgreSQL migration 014: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 014 skipped (already applied)");
+                } else {
+                    tracing::info!("PostgreSQL migration 014 applied");
                 }
             }
         }
