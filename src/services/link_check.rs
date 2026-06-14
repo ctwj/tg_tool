@@ -377,6 +377,12 @@ pub async fn classify_resources(
     Ok(classify_resources_with_statuses(resources, &statuses))
 }
 
+/// 跳过链接检测的资源分类：仅做图片未转存过滤，URL 全部视为有效。
+/// 用于关闭「推送前链接检测」的推送配置 —— 不调用 LinkChecker，避免重复检测。
+pub fn classify_without_link_check(resources: &[ExtractedResource]) -> ClassifyResult {
+    classify_resources_with_statuses(resources, &HashMap::new())
+}
+
 // ─── US4: 资源级聚合 / 单条检测（不触发推送） ──────────────────────────────────
 
 /// 资源级链接状态聚合（纯函数）：
@@ -647,6 +653,30 @@ mod tests {
         let urls = split_resource_urls(Some("  https://a.com/s/1 , https://b.com/s/2  "));
         assert_eq!(urls.len(), 2);
         assert!(urls.iter().all(|u| !u.contains(',') && !u.starts_with(' ')));
+    }
+
+    #[test]
+    fn test_classify_without_link_check_skips_only_image() {
+        // 关闭链接检测时：图片未转存的资源仍跳过；其余无论 URL 状态全部 valid
+        let resources = vec![
+            make_resource(1, Some("https://pan.quark.cn/s/a"), None, None),
+            make_resource(
+                2,
+                Some("https://pan.quark.cn/s/b"),
+                Some("i1"),
+                Some("forwarded"),
+            ),
+            make_resource(
+                3,
+                Some("https://pan.baidu.com/s/z"),
+                Some("i2"),
+                Some("pending"),
+            ),
+        ];
+        let res = classify_without_link_check(&resources);
+        assert_eq!(res.valid.len(), 2); // r1 + r2
+        assert_eq!(res.skipped_image_count(), 1); // r3 图片未转存
+        assert_eq!(res.skipped_link_count(), 0); // 不做链接检测
     }
 
     // --- 资源级聚合 ---

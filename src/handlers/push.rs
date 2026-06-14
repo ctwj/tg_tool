@@ -461,6 +461,10 @@ pub async fn create_push_config(
         .get("push_interval")
         .and_then(|v| v.as_i64())
         .unwrap_or(30);
+    let link_check_before_push = body
+        .get("link_check_before_push")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
 
     let id = crate::services::push_config::create_config(
         &state.db,
@@ -478,6 +482,7 @@ pub async fn create_push_config(
         &collector_ids,
         auto_push,
         push_interval,
+        link_check_before_push,
     )
     .await?;
 

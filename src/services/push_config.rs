@@ -47,6 +47,7 @@ pub async fn create_config(
     collector_ids: &[i64],
     auto_push: bool,
     push_interval: i64,
+    link_check_before_push: bool,
 ) -> Result<i64, AppError> {
     if name.is_empty() {
         return Err(AppError::BadRequest("配置名称不能为空".into()));
@@ -64,8 +65,8 @@ pub async fn create_config(
     match db {
         DbPool::Sqlite(pool) => {
             let result = sqlx::query(
-                "INSERT INTO push_configs (name, api_url, api_token, target, auth_type, auth_key, http_method, body_template, custom_headers, batch_size, data_source_type, auto_push, push_interval) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO push_configs (name, api_url, api_token, target, auth_type, auth_key, http_method, body_template, custom_headers, batch_size, data_source_type, auto_push, push_interval, link_check_before_push) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(name)
             .bind(api_url)
@@ -80,6 +81,7 @@ pub async fn create_config(
             .bind(dst)
             .bind(auto_push)
             .bind(push_interval)
+            .bind(link_check_before_push)
             .execute(pool)
             .await?;
 
@@ -102,8 +104,8 @@ pub async fn create_config(
         }
         DbPool::Postgres(pool) => {
             let config_id: i64 = sqlx::query_scalar(
-                "INSERT INTO push_configs (name, api_url, api_token, target, auth_type, auth_key, http_method, body_template, custom_headers, batch_size, data_source_type, auto_push, push_interval) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
+                "INSERT INTO push_configs (name, api_url, api_token, target, auth_type, auth_key, http_method, body_template, custom_headers, batch_size, data_source_type, auto_push, push_interval, link_check_before_push) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
                  RETURNING id",
             )
             .bind(name)
@@ -119,6 +121,7 @@ pub async fn create_config(
             .bind(dst)
             .bind(auto_push)
             .bind(push_interval)
+            .bind(link_check_before_push)
             .fetch_one(pool)
             .await?;
 
@@ -220,11 +223,15 @@ pub async fn update_config(
         .get("push_interval")
         .and_then(|v| v.as_i64())
         .unwrap_or(existing.push_interval);
+    let link_check_before_push = body
+        .get("link_check_before_push")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(existing.link_check_before_push);
 
     match db {
         DbPool::Sqlite(pool) => {
             let result = sqlx::query(
-                "UPDATE push_configs SET name=?, api_url=?, api_token=?, target=?, auth_type=?, auth_key=?, http_method=?, body_template=?, custom_headers=?, batch_size=?, data_source_type=?, auto_push=?, push_interval=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                "UPDATE push_configs SET name=?, api_url=?, api_token=?, target=?, auth_type=?, auth_key=?, http_method=?, body_template=?, custom_headers=?, batch_size=?, data_source_type=?, auto_push=?, push_interval=?, link_check_before_push=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
             )
             .bind(name)
             .bind(api_url)
@@ -239,6 +246,7 @@ pub async fn update_config(
             .bind(data_source_type)
             .bind(auto_push)
             .bind(push_interval)
+            .bind(link_check_before_push)
             .bind(config_id)
             .execute(pool)
             .await?;
@@ -248,7 +256,7 @@ pub async fn update_config(
         }
         DbPool::Postgres(pool) => {
             let result = sqlx::query(
-                "UPDATE push_configs SET name=$1, api_url=$2, api_token=$3, target=$4, auth_type=$5, auth_key=$6, http_method=$7, body_template=$8, custom_headers=$9, batch_size=$10, data_source_type=$11, auto_push=$12, push_interval=$13, updated_at=CURRENT_TIMESTAMP WHERE id=$14",
+                "UPDATE push_configs SET name=$1, api_url=$2, api_token=$3, target=$4, auth_type=$5, auth_key=$6, http_method=$7, body_template=$8, custom_headers=$9, batch_size=$10, data_source_type=$11, auto_push=$12, push_interval=$13, link_check_before_push=$14, updated_at=CURRENT_TIMESTAMP WHERE id=$15",
             )
             .bind(name)
             .bind(api_url)
@@ -263,6 +271,7 @@ pub async fn update_config(
             .bind(data_source_type)
             .bind(auto_push)
             .bind(push_interval)
+            .bind(link_check_before_push)
             .bind(config_id)
             .execute(pool)
             .await?;
@@ -422,6 +431,7 @@ pub async fn duplicate_config(db: &DbPool, config_id: i64) -> Result<i64, AppErr
         &[], // collector_ids 在后面单独处理
         existing.auto_push,
         existing.push_interval,
+        existing.link_check_before_push,
     )
     .await?;
 
@@ -587,7 +597,8 @@ pub async fn push_for_config(
     }
 
     // 3. 有效性分类：图片未转存 / 链接失效 跳过（FR-001/FR-003/FR-006）
-    let classify =
+    //    若配置关闭「推送前链接检测」，则跳过 LinkChecker 调用，仅过滤图片未转存
+    let classify = if config.link_check_before_push {
         match crate::services::link_check::classify_resources(db, option_cache, &resources).await {
             Ok(c) => c,
             Err(e) => {
@@ -597,7 +608,14 @@ pub async fn push_for_config(
                     skipped: Vec::new(),
                 }
             }
-        };
+        }
+    } else {
+        tracing::info!(
+            "推送配置 id={} 关闭了推送前链接检测，跳过 LinkChecker 调用",
+            config_id
+        );
+        crate::services::link_check::classify_without_link_check(&resources)
+    };
     let skipped_image = classify.skipped_image_count();
     let skipped_link = classify.skipped_link_count();
     let valid = &classify.valid;
@@ -639,6 +657,11 @@ pub async fn push_for_config(
     }
 
     let resource_count = valid.len();
+    // 读取图床域名 — 推送时把 img 字段（photo_id）拼接为完整图床 URL
+    let image_domain = {
+        let cache = option_cache.read().await;
+        cache.get("TelegramImageDomain").cloned()
+    };
     let result = crate::services::resource::build_and_send_push_with_params(
         valid,
         &config.api_url,
@@ -649,6 +672,7 @@ pub async fn push_for_config(
         &config.http_method,
         config.body_template.as_deref().unwrap_or(""),
         &config.custom_headers,
+        image_domain.as_deref(),
     )
     .await;
 

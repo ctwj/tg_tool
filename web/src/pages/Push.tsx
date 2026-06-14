@@ -64,6 +64,9 @@ const Push: React.FC = () => {
   // ─── 采集器列表（数据源选择用） ───
   const [collectors, setCollectors] = useState<any[]>([])
 
+  // ─── PanCheck 配置状态（用于「推送前链接检测」开关的提示） ───
+  const [pancheckConfigured, setPancheckConfigured] = useState<boolean | null>(null)
+
   // ─── 推送中状态 ───
   const [pushingIds, setPushingIds] = useState<Set<number>>(new Set())
 
@@ -127,10 +130,22 @@ const Push: React.FC = () => {
     } catch { /* ignore */ }
   }, [])
 
+  // 检查系统是否已配置 PanCheck（link_checker_type 为空或 pancheck，且 pancheck_host 非空）
+  const fetchPancheckStatus = useCallback(async () => {
+    try {
+      const res = await apiClient.get('/options')
+      const opts = res.data?.data ?? {}
+      const type = (opts.link_checker_type ?? '').toString().trim()
+      const host = (opts.pancheck_host ?? '').toString().trim()
+      setPancheckConfigured((!type || type === 'pancheck') && host !== '')
+    } catch { setPancheckConfigured(null) }
+  }, [])
+
   useEffect(() => {
     fetchConfigs()
     fetchStats()
     fetchCollectors()
+    fetchPancheckStatus()
   }, [])
 
   // ─── 配置操作 ───
@@ -152,13 +167,14 @@ const Push: React.FC = () => {
       collector_ids: [],
       auto_push: false,
       push_interval: 30,
+      link_check_before_push: true,
     })
     setFormValues({
       name: '', api_url: '', api_token: '',
       auth_type: 'custom_header', auth_key: 'X-API-Token',
       http_method: 'POST', body_template: '', custom_headers: [],
       batch_size: 1000, data_source_type: 'all', collector_ids: [],
-      auto_push: false, push_interval: 30,
+      auto_push: false, push_interval: 30, link_check_before_push: true,
     })
     setEditOpen(true)
   }
@@ -180,6 +196,7 @@ const Push: React.FC = () => {
       collector_ids: record.data_source_type === 'selected' ? (record.collector_ids || []) : [],
       auto_push: record.auto_push,
       push_interval: record.push_interval,
+      link_check_before_push: record.link_check_before_push ?? true,
     }
     form.setFieldsValue(fv)
     setFormValues({ ...fv })
@@ -210,6 +227,7 @@ const Push: React.FC = () => {
         collector_ids: values.data_source_type === 'selected' ? (values.collector_ids || []) : [],
         auto_push: values.auto_push || false,
         push_interval: values.push_interval || 30,
+        link_check_before_push: values.link_check_before_push ?? true,
       }
       if (editingId) {
         await apiClient.put(`/push/configs/${editingId}`, body)
@@ -273,6 +291,7 @@ const Push: React.FC = () => {
       collector_ids: record.data_source_type === 'selected' ? collectorIds : [],
       auto_push: record.auto_push,
       push_interval: record.push_interval,
+      link_check_before_push: record.link_check_before_push ?? true,
     }
     form.resetFields()
     form.setFieldsValue(fv)
@@ -903,6 +922,35 @@ const Push: React.FC = () => {
                   </Form.Item>
                 ) : null}
               </Form.Item>
+            </Card>
+
+            {/* 链接检测 */}
+            <Card
+              size="small"
+              title={<span><SafetyCertificateOutlined style={{ marginRight: 6, color: '#faad14' }} />推送前链接检测</span>}
+              style={{ marginBottom: 16 }}
+              styles={{ body: { paddingTop: 16, paddingBottom: 8 } }}
+            >
+              <Form.Item name="link_check_before_push" label="检测链接有效性" valuePropName="checked"
+                extra="开启后推送前会调用 LinkChecker 检测网盘链接是否失效，失效的资源跳过推送。若接收端也会自行检测链接，建议关闭以避免重复请求">
+                <Switch checkedChildren="开" unCheckedChildren="关" />
+              </Form.Item>
+              {formValues.link_check_before_push
+                ? (pancheckConfigured === false && (
+                    <Alert
+                      type="error" showIcon
+                      message="系统未配置 PanCheck"
+                      description="推送前链接检测需要先在「系统设置」中配置 PanCheck 服务地址，否则推送时将无法判定网盘链接是否失效。"
+                      style={{ marginTop: 4 }}
+                    />
+                  ))
+                : (
+                  <Alert
+                    type="info" showIcon
+                    message="已关闭：仅跳过图片未转存的资源，所有网盘链接一律推送（含失效链接）"
+                    style={{ marginTop: 4 }}
+                  />
+                )}
             </Card>
 
             {/* 实时预览面板 */}

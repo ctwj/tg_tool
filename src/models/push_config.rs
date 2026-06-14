@@ -18,6 +18,9 @@ pub struct PushConfig {
     pub data_source_type: String, // "all" | "selected"
     pub auto_push: bool,
     pub push_interval: i64,
+    /// 推送前是否检测链接有效性（默认 true）。关闭时不调 LinkChecker，
+    /// 仅保留图片未转存检查 —— 用于避免与接收端重复检测。
+    pub link_check_before_push: bool,
     pub is_active: bool,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
@@ -40,6 +43,7 @@ pub struct PushConfigWithCollectorCount {
     pub data_source_type: String,
     pub auto_push: bool,
     pub push_interval: i64,
+    pub link_check_before_push: bool,
     pub is_active: bool,
     pub collector_count: i64,
     pub created_at: NaiveDateTime,

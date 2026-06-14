@@ -175,6 +175,7 @@ export interface PushConfig {
   collector_count: number
   auto_push: boolean
   push_interval: number
+  link_check_before_push: boolean
   is_active: boolean
   created_at: string
   updated_at: string

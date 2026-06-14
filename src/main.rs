@@ -174,6 +174,7 @@ async fn main() {
                     &[],
                     auto_push_bool,
                     push_interval,
+                    true,
                 )
                 .await;
 
@@ -531,6 +532,20 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::info!("SQLite migration 013 applied");
                 }
             }
+
+            // Migration 014: push_configs 加 link_check_before_push 开关
+            {
+                let m14 = include_str!("../migrations/014_push_config_link_check_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m14).execute(pool).await {
+                    let msg = e.to_string();
+                    if !msg.contains("duplicate column") && !msg.contains("already exists") {
+                        panic!("Failed to run SQLite migration 014: {e}");
+                    }
+                    tracing::debug!("SQLite migration 014 skipped (already applied)");
+                } else {
+                    tracing::info!("SQLite migration 014 applied");
+                }
+            }
         }
         DbPool::Postgres(pool) => {
             let migration_sql = include_str!("../migrations/001_init_postgres.sql");
@@ -723,6 +738,20 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::debug!("PostgreSQL migration 013 skipped (already applied)");
                 } else {
                     tracing::info!("PostgreSQL migration 013 applied");
+                }
+            }
+
+            // Migration 014: push_configs 加 link_check_before_push 开关
+            {
+                let m14 = include_str!("../migrations/014_push_config_link_check_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m14).execute(pool).await {
+                    let msg = e.to_string();
+                    if !msg.contains("already exists") && !msg.contains("duplicate") {
+                        panic!("Failed to run PostgreSQL migration 014: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 014 skipped (already applied)");
+                } else {
+                    tracing::info!("PostgreSQL migration 014 applied");
                 }
             }
         }

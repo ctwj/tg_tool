@@ -1317,6 +1317,7 @@ async fn build_and_send_push_request(
         .get("push_custom_headers")
         .cloned()
         .unwrap_or_else(|| "[]".to_string());
+    let image_domain = cache.get("TelegramImageDomain").cloned();
     drop(cache);
 
     build_and_send_push_with_params(
@@ -1329,12 +1330,16 @@ async fn build_and_send_push_request(
         &http_method,
         &body_template,
         &custom_headers_str,
+        image_domain.as_deref(),
     )
     .await
 }
 
 /// 构建并发送推送请求 — 接受直接参数（供 push_config 按配置推送使用）
 /// 返回 (http_status, response_body, is_success, request_info)
+///
+/// `image_domain`：图床域名（如 `https://img.example.com`），配置后 img 字段会从 photo_id
+/// 拼接为完整 URL `{domain}/{photo_id}`；未配置（None 或空）时 img 保留原 photo_id。
 pub async fn build_and_send_push_with_params(
     resources: &[ExtractedResource],
     api_url: &str,
@@ -1345,7 +1350,13 @@ pub async fn build_and_send_push_with_params(
     http_method: &str,
     body_template: &str,
     custom_headers_str: &str,
+    image_domain: Option<&str>,
 ) -> Result<(u16, String, bool, serde_json::Value), AppError> {
+    // 规范化图床域名：trim + 去尾部斜杠
+    let domain_norm = image_domain
+        .map(|d| d.trim().trim_end_matches('/'))
+        .filter(|d| !d.is_empty());
+
     // 转换为推送格式
     let push_data: Vec<serde_json::Value> = resources
         .iter()
@@ -1355,13 +1366,24 @@ pub async fn build_and_send_push_with_params(
                 .as_deref()
                 .map(|u| u.split(',').map(|s| s.trim()).collect())
                 .unwrap_or_default();
+            // img 字段：配置了图床域名时拼接为完整 URL，否则保留原 photo_id
+            let img_value = r.img.as_deref().and_then(|raw| {
+                let raw = raw.trim();
+                if raw.is_empty() {
+                    return None;
+                }
+                match domain_norm {
+                    Some(d) => Some(format!("{d}/{raw}")),
+                    None => Some(raw.to_string()),
+                }
+            });
             json!({
                 "title": r.title,
                 "url": urls,
                 "description": r.description,
                 "category": r.category,
                 "tags": r.tags,
-                "img": r.img,
+                "img": img_value,
                 "source": r.source,
                 "extra": r.extra,
             })
