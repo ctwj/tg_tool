@@ -708,7 +708,18 @@ const Settings: React.FC = () => {
                       label="Bot 中转群组B（可选）"
                       help="留空则跳过阶段2，任务将停留在 awaiting_bot 状态、API 返回 404。配置后 Bot 从群组A 转发到此群组以获取 file_id"
                     >
-                      <Input placeholder="-1009876543210（Bot 需加入此群组；开启自动清理需为管理员）" />
+                      <AutoComplete
+                        style={{ width: '100%' }}
+                        placeholder={botChatsLoading ? '加载中...' : '-1009876543210（Bot 需加入此群组；开启自动清理需为管理员）'}
+                        options={botChats.map((c: any) => ({
+                          value: String(c.id),
+                          label: `${c.title} (${c.id})`,
+                        }))}
+                        filterOption={(input, option) =>
+                          (option?.label ?? '').toLowerCase().includes(input.toLowerCase()) ||
+                          (option?.value ?? '').toString().includes(input)
+                        }
+                      />
                     </Form.Item>
                     <Form.Item
                       name="delete_bot_forward_message"
