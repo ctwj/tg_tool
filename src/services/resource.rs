@@ -1340,6 +1340,7 @@ async fn build_and_send_push_request(
 ///
 /// `image_domain`：图床域名（如 `https://img.example.com`），配置后 img 字段会从 photo_id
 /// 拼接为完整 URL `{domain}/{photo_id}`；未配置（None 或空）时 img 保留原 photo_id。
+#[allow(clippy::too_many_arguments)]
 pub async fn build_and_send_push_with_params(
     resources: &[ExtractedResource],
     api_url: &str,
@@ -1395,7 +1396,7 @@ pub async fn build_and_send_push_with_params(
     let template = if body_template.is_empty() {
         default_template
     } else {
-        &body_template
+        body_template
     };
     let mut vars = std::collections::HashMap::new();
     vars.insert(

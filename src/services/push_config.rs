@@ -31,6 +31,7 @@ pub async fn list_configs(db: &DbPool) -> Result<Vec<PushConfigWithCollectorCoun
 }
 
 /// 创建推送配置（含数据源采集器关联）
+#[allow(clippy::too_many_arguments)]
 pub async fn create_config(
     db: &DbPool,
     name: &str,

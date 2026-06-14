@@ -157,6 +157,7 @@ pub async fn get_push_history_detail(
     let history = history.ok_or_else(|| AppError::NotFound("推送历史不存在".into()))?;
 
     // 跳过明细（关联资源标题）
+    #[allow(clippy::type_complexity)]
     let rows: Vec<(i64, String, Option<String>, Option<String>, Option<String>)> =
         match &state.db {
             crate::state::DbPool::Sqlite(pool) => sqlx::query_as(

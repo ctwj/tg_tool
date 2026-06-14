@@ -375,9 +375,10 @@ mod tests {
     // --- 工厂 resolve_checker（无缝切换入口） ---
 
     fn empty_cache() -> crate::state::OptionCache {
-        std::sync::Arc::new(tokio::sync::RwLock::new(
-            std::collections::HashMap::<String, String>::new(),
-        ))
+        std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::<
+            String,
+            String,
+        >::new()))
     }
 
     #[tokio::test]

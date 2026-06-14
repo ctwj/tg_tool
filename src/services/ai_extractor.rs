@@ -1009,10 +1009,10 @@ mod tests {
         let endpoints: Vec<AiEndpoint> = serde_json::from_str(endpoints_json).unwrap();
         assert_eq!(endpoints.len(), 3);
 
-        // select_endpoint 只选择 enable=true 的端点
-        let selected = select_endpoint(&endpoints);
-        assert!(selected.is_some());
-        let ep = selected.unwrap();
-        assert_ne!(ep.url, "https://api2.example.com"); // 不应选中 disabled 的
+        // 直接验证反序列化后的 enable 字段（不调用 select_endpoint，
+        // 避免污染全局 ENDPOINT_COUNTER 影响并行测试 test_select_endpoint_round_robin）
+        assert!(endpoints[0].enable, "显式 enable=true");
+        assert!(!endpoints[1].enable, "显式 enable=false");
+        assert!(endpoints[2].enable, "缺失 enable 字段时默认 true");
     }
 }
