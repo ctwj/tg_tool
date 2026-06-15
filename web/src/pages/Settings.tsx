@@ -108,7 +108,7 @@ const Settings: React.FC = () => {
   const saveImageOptions = async () => {
     setImageSaving(true)
     try {
-      const values = form.getFieldsValue(['image_group', 'TelegramImageDomain', 'ImageCacheTTL', 'ImageBotId', 'ImageGroupChatId', 'ImageForwardInterval'])
+      const values = form.getFieldsValue(['image_group', 'TelegramImageDomain', 'ImageCacheTTL', 'ImageBotId', 'ImageGroupChatId', 'ImageGroupChatId2', 'delete_bot_forward_message', 'ImageForwardInterval', 'image_storage_enabled'])
       await apiClient.put('/options', values)
       message.success('图床配置已保存')
     } catch {
@@ -572,6 +572,19 @@ const Settings: React.FC = () => {
                 {/* 图床设置 */}
                 <Card title="图床设置" style={{ borderRadius: 12 }}>
                   <Form form={form} layout="vertical">
+                    <div style={{ marginBottom: 16, padding: 12, background: '#fafafa', borderRadius: 8, border: '1px solid #f0f0f0' }}>
+                      <Form.Item
+                        name="image_storage_enabled"
+                        label="转存功能总开关"
+                        valuePropName="checked"
+                        getValueFromEvent={(checked: boolean) => checked ? 'true' : 'false'}
+                        getValueProps={(value: string) => ({ checked: value !== 'false' })}
+                        help="关闭后新图片不再入队（已入队任务会继续处理完）。默认开启"
+                        style={{ marginBottom: 0 }}
+                      >
+                        <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+                      </Form.Item>
+                    </div>
                     <Form.Item
                       name="TelegramImageDomain"
                       label="图床域名"
@@ -588,10 +601,11 @@ const Settings: React.FC = () => {
                       <InputNumber min={1} max={365} step={1} style={{ width: '100%' }} placeholder="7" />
                     </Form.Item>
                     <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16, marginTop: 8, marginBottom: 8 }}>
-                      <Text strong style={{ fontSize: 14, marginBottom: 12, display: 'block' }}>图片转发配置</Text>
+                      <Text strong style={{ fontSize: 14, marginBottom: 12, display: 'block' }}>图片转发配置（双群组两阶段）</Text>
                       <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 16 }}>
-                        配置图床 Bot 和目标群组后，提取资源时的图片会自动转发到目标群组，通过 Bot API file_id 实现跨实例访问。
-                        群组和频道均支持，只需将 Bot 添加为管理员。
+                        阶段1：客户端用 copy_media 不下载地把图片转发到「图床群组A」，记录消息 ID。<br />
+                        阶段2：Bot 用 forwardMessage 把消息从群组A 转发到「Bot 中转群组B」，同步获取 file_id 写入映射表。<br />
+                        客户端和 Bot 均需加入群组A；Bot 单独加入群组B（开启清理时需为管理员）。
                       </Text>
                     </div>
                     <Form.Item
@@ -632,8 +646,8 @@ const Settings: React.FC = () => {
                     </Form.Item>
                     <Form.Item
                       name="ImageGroupChatId"
-                      label="图床群组/频道"
-                      help="选择 Bot 后自动加载群组列表，也可手动输入。支持群组和频道，需将 Bot 添加为管理员"
+                      label="图床群组A（客户端转存目标）"
+                      help="选择 Bot 后自动加载群组列表，也可手动输入。客户端与 Bot 均需加入此群组"
                     >
                       <Space.Compact style={{ width: '100%' }}>
                         <AutoComplete
@@ -689,6 +703,34 @@ const Settings: React.FC = () => {
                         style={{ marginBottom: 16, borderRadius: 8 }}
                       />
                     )}
+                    <Form.Item
+                      name="ImageGroupChatId2"
+                      label="Bot 中转群组B（可选）"
+                      help="留空则跳过阶段2，任务将停留在 awaiting_bot 状态、API 返回 404。配置后 Bot 从群组A 转发到此群组以获取 file_id"
+                    >
+                      <AutoComplete
+                        style={{ width: '100%' }}
+                        placeholder={botChatsLoading ? '加载中...' : '-1009876543210（Bot 需加入此群组；开启自动清理需为管理员）'}
+                        options={botChats.map((c: any) => ({
+                          value: String(c.id),
+                          label: `${c.title} (${c.id})`,
+                        }))}
+                        filterOption={(input, option) =>
+                          (option?.label ?? '').toLowerCase().includes(input.toLowerCase()) ||
+                          (option?.value ?? '').toString().includes(input)
+                        }
+                      />
+                    </Form.Item>
+                    <Form.Item
+                      name="delete_bot_forward_message"
+                      label="自动删除群组B 临时消息"
+                      valuePropName="checked"
+                      getValueFromEvent={(checked: boolean) => checked ? 'true' : 'false'}
+                      getValueProps={(value: string) => ({ checked: value === 'true' })}
+                      help="开启后 Bot 提取 file_id 后自动删除群组B 中的转发消息。需 Bot 为群组B 管理员；默认关闭"
+                    >
+                      <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+                    </Form.Item>
                     <Form.Item
                       name="ImageForwardInterval"
                       label="转发间隔（秒）"

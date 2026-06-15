@@ -147,4 +147,5 @@ shell commands, and other important information, read the current plan:
 - [转发规则配置增强](specs/020-forward-rule-enhance/plan.md) — 客户端→频道级联选择、关键词+媒体类型过滤、转发客户端绑定
 - [推送管理多 API 配置](specs/021-multi-push-config/plan.md) — 多推送配置(CRUD+复制)、数据源采集器选择、独立推送状态追踪、多配置串行调度
 - [推送资源链接有效性检测](specs/022-resource-link-check/plan.md) — 推送前图片转存+网盘链接双维过滤、可插拔 LinkChecker(PanCheck)、URL 键缓存(TTL 24h)、双通道检测(内联兜底+按配置批量)、跳过统计与明细
+- [图片转存功能改进（双群组两阶段 + 开关） Plan](specs/023-two-stage-image-storage/plan.md) — 客户端 copy_media 转存到群组A、Bot forwardMessage 转发到群组B 取 file_id、转存开关、awaiting_bot 状态机、智能重试
 <!-- SPECKIT END -->

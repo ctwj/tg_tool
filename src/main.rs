@@ -546,6 +546,20 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::info!("SQLite migration 014 applied");
                 }
             }
+
+            // Migration 015: forward_tasks 加 image_message_id 字段 + awaiting_bot 部分索引
+            {
+                let m15 = include_str!("../migrations/015_forward_task_message_id_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m15).execute(pool).await {
+                    let msg = e.to_string();
+                    if !msg.contains("duplicate column") && !msg.contains("already exists") {
+                        panic!("Failed to run SQLite migration 015: {e}");
+                    }
+                    tracing::debug!("SQLite migration 015 skipped (already applied)");
+                } else {
+                    tracing::info!("SQLite migration 015 applied");
+                }
+            }
         }
         DbPool::Postgres(pool) => {
             let migration_sql = include_str!("../migrations/001_init_postgres.sql");
@@ -752,6 +766,20 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::debug!("PostgreSQL migration 014 skipped (already applied)");
                 } else {
                     tracing::info!("PostgreSQL migration 014 applied");
+                }
+            }
+
+            // Migration 015: forward_tasks 加 image_message_id 字段 + awaiting_bot 部分索引
+            {
+                let m15 = include_str!("../migrations/015_forward_task_message_id_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m15).execute(pool).await {
+                    let msg = e.to_string();
+                    if !msg.contains("already exists") && !msg.contains("duplicate") {
+                        panic!("Failed to run PostgreSQL migration 015: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 015 skipped (already applied)");
+                } else {
+                    tracing::info!("PostgreSQL migration 015 applied");
                 }
             }
         }
