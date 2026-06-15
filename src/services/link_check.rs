@@ -486,6 +486,8 @@ mod tests {
                 .unwrap()
                 .naive_utc(),
             img_forward_status: img_status.map(str::to_string),
+            image_message_id: None,
+            file_id: None,
         }
     }
 

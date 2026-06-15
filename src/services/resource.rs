@@ -712,9 +712,11 @@ pub async fn list_resources(
     })
 }
 
-/// 资源 SELECT 列（含 img_forward_status 子查询）。
+/// 资源 SELECT 列（含封面转发状态/消息ID/file_id 子查询）。
 const RESOURCE_COLS: &str = "er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
-     (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status";
+     (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status, \
+     (SELECT ft.image_message_id FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS image_message_id, \
+     (SELECT ft.file_id FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS file_id";
 
 /// 按 WHERE 子句取资源（含 img_forward_status 子查询）。
 async fn fetch_resources(

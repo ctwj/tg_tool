@@ -41,7 +41,7 @@ struct PhotoSize {
 /// `id` 用 `#[serde(default)]` 保证 sendPhoto 路径（不需要 id）仍能反序列化
 #[derive(Debug, Deserialize)]
 struct BotMessage {
-    #[serde(default)]
+    #[serde(default, rename = "message_id")]
     id: i64,
     photo: Option<Vec<PhotoSize>>,
 }

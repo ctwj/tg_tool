@@ -22,6 +22,12 @@ pub struct ExtractedResource {
     /// 封面图转发状态，由 SQL 子查询填充：None/Some("pending")/Some("forwarded")/Some("failed")
     #[sqlx(default)]
     pub img_forward_status: Option<String>,
+    /// 图床群组A 的消息ID（阶段1 copy_media 完成后写入），由 SQL 子查询填充
+    #[sqlx(default)]
+    pub image_message_id: Option<i64>,
+    /// Bot 二次 forwardMessage 后获取到的图片 file_id（阶段2 完成后写入），由 SQL 子查询填充
+    #[sqlx(default)]
+    pub file_id: Option<String>,
 }
 
 /// 用于创建新资源记录的参数
