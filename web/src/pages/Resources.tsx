@@ -369,51 +369,84 @@ const Resources: React.FC = () => {
       dataIndex: 'title',
       key: 'title',
       width: 250,
-      ellipsis: true,
-      render: (text: string) => <Text strong style={{ color: '#0c4a6e' }}>{text}</Text>,
+      render: (text: string) => (
+        <Tooltip title={text}>
+          <Text strong className="clamp-2" style={{ color: '#0c4a6e' }}>{text}</Text>
+        </Tooltip>
+      ),
     },
     {
       title: '封面ID',
       dataIndex: 'img',
       key: 'img',
-      width: 140,
-      ellipsis: true,
+      width: 180,
       render: (img: string, record: ExtractedResource) => {
         if (!img) return '-'
 
         const fwdStatus = record.img_forward_status
+        const msgId = record.image_message_id
+        const fileId = record.file_id
 
-        // 封面转发失败 → 红色不可点击
-        if (fwdStatus === 'failed') {
-          return <Tooltip title="封面转发失败"><Text style={{ fontSize: 12, color: '#ef4444' }}>{img}</Text></Tooltip>
+        // 状态色：失败红 / 已转发绿 / 待转发蓝 / 未转发黄
+        const color = fwdStatus === 'failed' ? '#ef4444'
+          : fwdStatus === 'forwarded' ? '#10b981'
+          : fwdStatus === 'pending' ? '#0ea5e9'
+          : '#f59e0b'
+
+        const statusText = fwdStatus === 'failed' ? '封面转发失败'
+          : fwdStatus === 'forwarded' ? '封面已转发'
+          : fwdStatus === 'pending' ? '封面待转发'
+          : '封面未转发'
+
+        // 点击 URL：基于 Bot file_id 的图片代理（无 file_id 则不可点击）
+        const domain = imageDomain ? imageDomain.replace(/\/+$/, '') : ''
+        const fileUrl = fileId
+          ? `${domain}/api/images/file/${fileId}`
+          : null
+
+        const msgTooltip = msgId != null
+          ? `群组A 消息ID: ${msgId}`
+          : '群组A 消息ID: (历史数据缺失)'
+
+        const fileTooltip = fileId
+          ? `Bot file_id（点击打开）:\n${fileId}`
+          : 'Bot file_id: 尚未获取'
+
+        // 单行省略号样式
+        const ellipsisStyle: React.CSSProperties = {
+          fontSize: 12,
+          color,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
         }
 
-        // 封面已转发 + 有图床域名 → 绿色可点击
-        if (fwdStatus === 'forwarded' && imageDomain) {
-          const fullUrl = `${imageDomain.replace(/\/+$/, '')}/${img}`
-          return (
-            <Tooltip title={fullUrl}>
-              <Button type="link" size="small"
-                style={{ padding: 0, fontSize: 12, height: 'auto', color: '#10b981' }}
-                onClick={() => window.open(fullUrl, '_blank')}>
-                {img}
-              </Button>
+        return (
+          <div style={{ lineHeight: '18px', width: '100%' }}>
+            {/* msg 行 — 不可点击，单行省略 */}
+            <Tooltip title={`${msgTooltip}  ·  ${statusText}`}>
+              <div style={ellipsisStyle}>
+                <span style={{ color: '#9ca3af', marginRight: 4 }}>msg</span>
+                {msgId != null ? msgId : '-'}
+              </div>
             </Tooltip>
-          )
-        }
-
-        // 封面已转发但无图床域名 → 绿色不可点击
-        if (fwdStatus === 'forwarded') {
-          return <Tooltip title="封面已转发（请配置图床域名以预览）"><Text style={{ fontSize: 12, color: '#10b981' }}>{img}</Text></Tooltip>
-        }
-
-        // 封面待转发 → 蓝色不可点击
-        if (fwdStatus === 'pending') {
-          return <Tooltip title="封面待转发"><Text style={{ fontSize: 12, color: '#0ea5e9' }}>{img}</Text></Tooltip>
-        }
-
-        // 未转发 → 黄色不可点击
-        return <Tooltip title="封面未转发"><Text style={{ fontSize: 12, color: '#f59e0b' }}>{img}</Text></Tooltip>
+            {/* file 行 — 可点击，单行省略 */}
+            <Tooltip title={fileTooltip}>
+              {fileUrl ? (
+                <a href={fileUrl} target="_blank" rel="noreferrer"
+                   style={{ ...ellipsisStyle, display: 'block', textDecoration: 'none' }}>
+                  <span style={{ color: '#9ca3af', marginRight: 4 }}>file</span>
+                  {fileId}
+                </a>
+              ) : (
+                <div style={ellipsisStyle}>
+                  <span style={{ color: '#9ca3af', marginRight: 4 }}>file</span>
+                  -
+                </div>
+              )}
+            </Tooltip>
+          </div>
+        )
       },
     },
     {
@@ -421,16 +454,19 @@ const Resources: React.FC = () => {
       dataIndex: 'url',
       key: 'url',
       width: 220,
-      ellipsis: true,
       render: (url: string) => {
         if (!url) return '-'
-        const links = url.split(',')
+        const links = url.split(',').map(s => s.trim()).filter(Boolean)
         return (
-          <Space direction="vertical" size={2}>
+          <Space direction="vertical" size={2} style={{ width: '100%' }}>
             {links.map((link, i) => (
               <Tooltip key={i} title={link}>
                 <a href={link} target="_blank" rel="noreferrer"
-                   style={{ fontSize: 12, color: '#0ea5e9', display: 'block', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                   style={{
+                     fontSize: 12, color: '#0ea5e9',
+                     display: 'block', maxWidth: '100%',
+                     whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                   }}>
                   {link.replace(/^https?:\/\//, '')}
                 </a>
               </Tooltip>
@@ -444,8 +480,11 @@ const Resources: React.FC = () => {
       dataIndex: 'description',
       key: 'description',
       width: 180,
-      ellipsis: true,
-      render: (text: string) => text ? <Tooltip title={text}><Text style={{ fontSize: 12 }}>{text}</Text></Tooltip> : '-',
+      render: (text: string) => text ? (
+        <Tooltip title={text}>
+          <Text className="clamp-2" style={{ fontSize: 12 }}>{text}</Text>
+        </Tooltip>
+      ) : '-',
     },
     {
       title: '网盘类型',

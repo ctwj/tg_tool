@@ -26,6 +26,17 @@ pub async fn get_image_with_client(
     build_image_response(data, content_type, etag)
 }
 
+/// GET /api/images/file/{file_id}
+/// 直接按 Bot file_id 下载图片（跳过 image_mappings 查询）
+pub async fn get_image_by_file_id(
+    Path(file_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Response, AppError> {
+    let (data, content_type, etag) =
+        image_proxy::serve_image_by_file_id(&file_id, &state).await?;
+    build_image_response(data, content_type, etag)
+}
+
 fn build_image_response(
     data: Vec<u8>,
     content_type: String,

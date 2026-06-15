@@ -15,6 +15,20 @@ pub fn validate_photo_id(id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// 校验 Bot file_id 格式：允许字母、数字、`-`、`_`，长度 1-200
+pub fn validate_file_id(id: &str) -> Result<(), AppError> {
+    if id.is_empty() || id.len() > 200 {
+        return Err(AppError::BadRequest("无效的 file_id".into()));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(AppError::BadRequest("无效的 file_id".into()));
+    }
+    Ok(())
+}
+
 /// 检查缓存文件是否在 TTL 内有效
 fn is_cache_valid(path: &Path, ttl_days: u64) -> bool {
     let metadata = match std::fs::metadata(path) {
@@ -90,8 +104,20 @@ pub async fn serve_image(
         .inflight_downloads
         .insert(photo_id.to_string(), Instant::now());
 
-    // 5. 通过 Bot API 下载
-    let result = download_via_bot_api(state, photo_id, &cache_path).await;
+    // 5. 通过 Bot API 下载（先查 file_id）
+    let result = {
+        let file_id = get_file_id_for_remote_id(&state.db, photo_id).await?;
+        let file_id = match file_id {
+            Some(fid) => fid,
+            None => {
+                state.inflight_downloads.remove(photo_id);
+                return Err(AppError::NotFound(
+                    "图片尚未转发到图床，请等待转发队列处理".to_string(),
+                ));
+            }
+        };
+        download_via_bot_api(state, &file_id, &cache_path).await
+    };
 
     // 6. 移除下载标记
     state.inflight_downloads.remove(photo_id);
@@ -99,10 +125,58 @@ pub async fn serve_image(
     result
 }
 
-/// 通过 Bot API getFile 下载图片
+/// 按 Bot file_id 直接提供图片数据（跳过 image_mappings 查询）。
+/// 流程与 serve_image 相同：本地缓存 → 防重复 → Bot API getFile 下载。
+/// 缓存键加 `fid_` 前缀以避免与 photo_id 缓存冲突。
+pub async fn serve_image_by_file_id(
+    file_id: &str,
+    state: &AppState,
+) -> Result<(Vec<u8>, String, String), AppError> {
+    validate_file_id(file_id)?;
+
+    let cache_key = format!("fid_{file_id}");
+    let ttl_days = get_cache_ttl(state).await;
+    let cache_dir = &state.image_cache_dir;
+    let cache_path = cache_dir.join(format!("{cache_key}.jpg"));
+
+    // 1. 本地缓存
+    if cache_path.exists() && is_cache_valid(&cache_path, ttl_days) {
+        let data = tokio::fs::read(&cache_path)
+            .await
+            .map_err(|e| AppError::Internal(format!("读取缓存失败: {e}")))?;
+        let etag = compute_etag(&data);
+        tracing::debug!("缓存命中(file_id): {file_id}");
+        return Ok((data, "image/jpeg".to_string(), etag));
+    }
+
+    // 2. 防重复下载
+    if state.inflight_downloads.contains_key(&cache_key) {
+        for _ in 0..60 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            if cache_path.exists() {
+                let data = tokio::fs::read(&cache_path)
+                    .await
+                    .map_err(|e| AppError::Internal(format!("读取缓存失败: {e}")))?;
+                let etag = compute_etag(&data);
+                return Ok((data, "image/jpeg".to_string(), etag));
+            }
+        }
+        return Err(AppError::Internal("图片下载超时".into()));
+    }
+
+    // 3. 标记下载中
+    state
+        .inflight_downloads
+        .insert(cache_key.clone(), Instant::now());
+    let result = download_via_bot_api(state, file_id, &cache_path).await;
+    state.inflight_downloads.remove(&cache_key);
+    result
+}
+
+/// 通过 Bot API getFile 下载图片（直接使用传入的 file_id）
 async fn download_via_bot_api(
     state: &AppState,
-    photo_id: &str,
+    file_id: &str,
     cache_path: &Path,
 ) -> Result<(Vec<u8>, String, String), AppError> {
     // 读取图床配置
@@ -129,21 +203,9 @@ async fn download_via_bot_api(
         (token, proxy)
     };
 
-    // 查 image_mappings 获取 file_id
-    let file_id = get_file_id_for_remote_id(&state.db, photo_id).await?;
-    let file_id = match file_id {
-        Some(fid) => fid,
-        None => {
-            // 没有映射记录，可能是图片还未转发
-            return Err(AppError::NotFound(
-                "图片尚未转发到图床，请等待转发队列处理".to_string(),
-            ));
-        }
-    };
-
-    // 通过 Bot API getFile 下载
+    // 通过 Bot API getFile 下载（直接用传入的 file_id）
     let data =
-        crate::services::bot_api::get_file(&bot_token, &file_id, proxy_url.as_deref()).await?;
+        crate::services::bot_api::get_file(&bot_token, file_id, proxy_url.as_deref()).await?;
 
     if data.is_empty() {
         return Err(AppError::NotFound("图片数据为空".to_string()));
@@ -156,8 +218,8 @@ async fn download_via_bot_api(
 
     let etag = compute_etag(&data);
     tracing::info!(
-        "图片通过 Bot API 下载完成: {} ({} bytes)",
-        photo_id,
+        "图片通过 Bot API 下载完成: file_id={} ({} bytes)",
+        file_id,
         data.len()
     );
     Ok((data, "image/jpeg".to_string(), etag))

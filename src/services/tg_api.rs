@@ -7,6 +7,59 @@ use crate::state::{PeerCache, TgClientMap};
 /// Cache TTL for peer resolution (5 minutes)
 const PEER_CACHE_TTL_SECS: u64 = 300;
 
+/// 将 chat_id 归一化为两种可能格式的候选数组。
+///
+/// Telegram 群组/频道 ID 有两种表示：
+/// - **Bot API / Web 格式**：超级群和频道带 `-100` 前缀（如 `-1002859432332`）
+/// - **MTProto 原始格式**：`grammers-client` 的 `Chat::id()` 返回不带前缀的正数（如 `2859432332`）
+///
+/// 用户在 UI 配置的 `ImageGroupChatId` 通常是 Bot API 格式，
+/// 而 `iter_dialogs()` 遍历出的 `Chat::id()` 是 MTProto 原始格式。
+/// 不做归一化会导致永远匹配不到。
+fn id_candidates(chat_id: i64) -> [i64; 2] {
+    const MARKER: i64 = 1_000_000_000_000; // -100 前缀的阈值
+    if chat_id <= -MARKER {
+        // -100xxx 格式 → 同时接受原始正数
+        [chat_id, -chat_id - MARKER]
+    } else if chat_id > 0 && chat_id < MARKER {
+        // 原始正数（可能是 channel_id）→ 同时接受 -100xxx 格式
+        [chat_id, -(chat_id + MARKER)]
+    } else {
+        [chat_id, chat_id]
+    }
+}
+
+#[cfg(test)]
+mod id_candidates_tests {
+    use super::id_candidates;
+
+    #[test]
+    fn test_bot_api_format() {
+        // -1002859432332 → 同时匹配 2859432332
+        assert_eq!(id_candidates(-1002859432332), [-1002859432332, 2859432332]);
+    }
+
+    #[test]
+    fn test_mtproto_raw_format() {
+        // 2859432332 → 同时匹配 -1002859432332
+        assert_eq!(id_candidates(2859432332), [2859432332, -1002859432332]);
+    }
+
+    #[test]
+    fn test_user_id_unchanged() {
+        // 普通用户 ID（正数小值）→ 不会错误加 -100 前缀
+        // 注意：用户 ID < MARKER 会被当作可能 channel_id，但比较时仍包含原值
+        assert_eq!(id_candidates(12345678), [12345678, -1000012345678]);
+    }
+
+    #[test]
+    fn test_negative_chat_id() {
+        // 普通群（Chat）的负 ID（如 -12345678）→ 保持不变
+        // 这个范围 > -MARKER，不会触发 -100 解析
+        assert_eq!(id_candidates(-12345678), [-12345678, -12345678]);
+    }
+}
+
 /// Chat information
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ChatInfo {
@@ -149,6 +202,9 @@ pub async fn resolve_peer(
         .ok_or_else(|| AppError::NotFound("没有可用的在线客户端".into()))?;
     drop(clients);
 
+    // ID 归一化：同时匹配 Bot API 格式（-100xxx）和 MTProto 原始格式（正数）
+    let candidates = id_candidates(chat_id);
+
     let mut dialogs = client.iter_dialogs();
     let mut found = None;
     while let Some(dialog) = dialogs
@@ -156,7 +212,8 @@ pub async fn resolve_peer(
         .await
         .map_err(|e| AppError::Internal(format!("搜索目标聊天失败: {e}")))?
     {
-        if dialog.chat().id() == chat_id {
+        let id = dialog.chat().id();
+        if candidates.contains(&id) {
             found = Some(dialog.chat().pack());
             break;
         }

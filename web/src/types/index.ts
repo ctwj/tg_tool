@@ -240,6 +240,8 @@ export interface ExtractedResource {
   is_pushed: boolean
   is_edited: boolean
   img_forward_status?: string | null  // 'pending' | 'forwarded' | 'failed' | null
+  image_message_id?: number | null    // 图床群组A 的消息ID（阶段1 完成后写入）
+  file_id?: string | null              // Bot 二次转发获取的图片 file_id（阶段2 完成后写入）
   link_status?: string | null  // 'valid' | 'invalid' | 'unknown'（链接有效性检测聚合状态）
   created_at: string
   updated_at: string
