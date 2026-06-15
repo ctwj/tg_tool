@@ -32,8 +32,7 @@ pub async fn get_image_by_file_id(
     Path(file_id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Response, AppError> {
-    let (data, content_type, etag) =
-        image_proxy::serve_image_by_file_id(&file_id, &state).await?;
+    let (data, content_type, etag) = image_proxy::serve_image_by_file_id(&file_id, &state).await?;
     build_image_response(data, content_type, etag)
 }
 
