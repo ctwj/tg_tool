@@ -6,8 +6,21 @@ use crate::state::AppState;
 
 pub async fn get_options(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     let cache = state.option_cache.read().await;
-    let data: serde_json::Map<String, Value> =
-        cache.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
+    // SEC-009：敏感配置（token/secret/password/hash/api_key）值脱敏，防明文回显第三方凭据
+    let data: serde_json::Map<String, Value> = cache
+        .iter()
+        .map(|(k, v)| {
+            let is_sensitive = ["token", "secret", "password", "hash", "api_key"]
+                .iter()
+                .any(|s| k.to_lowercase().contains(s));
+            let value = if is_sensitive {
+                json!("******")
+            } else {
+                json!(v)
+            };
+            (k.clone(), value)
+        })
+        .collect();
 
     // Build env_defaults: show what env vars provide (hide sensitive values)
     let env_defaults = json!({
