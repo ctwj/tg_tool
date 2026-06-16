@@ -59,6 +59,92 @@ fn compute_etag(data: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- validate_photo_id（防路径穿越，与 feature 028 协同）---
+
+    #[test]
+    fn test_validate_photo_id_valid() {
+        assert!(validate_photo_id("123456789").is_ok());
+        assert!(validate_photo_id("123_456").is_ok());
+        assert!(validate_photo_id("_").is_ok());
+    }
+
+    #[test]
+    fn test_validate_photo_id_empty() {
+        assert!(validate_photo_id("").is_err());
+    }
+
+    #[test]
+    fn test_validate_photo_id_too_long() {
+        assert!(validate_photo_id(&"1".repeat(51)).is_err());
+        assert!(validate_photo_id(&"1".repeat(50)).is_ok()); // 边界 50 ok
+    }
+
+    #[test]
+    fn test_validate_photo_id_rejects_traversal() {
+        // 防路径穿越（../、字母、斜杠、点）
+        assert!(validate_photo_id("../etc/passwd").is_err());
+        assert!(validate_photo_id("abc").is_err());
+        assert!(validate_photo_id("photo-1").is_err());
+        assert!(validate_photo_id("a/b").is_err());
+        assert!(validate_photo_id("1.2").is_err());
+    }
+
+    // --- validate_file_id ---
+
+    #[test]
+    fn test_validate_file_id_valid() {
+        assert!(validate_file_id("AQADBAATYs8cA").is_ok());
+        assert!(validate_file_id("file-id_123").is_ok());
+        assert!(validate_file_id("BQACAgUAA").is_ok());
+    }
+
+    #[test]
+    fn test_validate_file_id_empty() {
+        assert!(validate_file_id("").is_err());
+    }
+
+    #[test]
+    fn test_validate_file_id_too_long() {
+        assert!(validate_file_id(&"a".repeat(201)).is_err());
+        assert!(validate_file_id(&"a".repeat(200)).is_ok()); // 边界 200 ok
+    }
+
+    #[test]
+    fn test_validate_file_id_rejects_traversal() {
+        assert!(validate_file_id("../secret").is_err());
+        assert!(validate_file_id("file/id").is_err()); // 含 /
+        assert!(validate_file_id("file.id").is_err()); // 含 .
+        assert!(validate_file_id("file id").is_err()); // 含空格
+    }
+
+    // --- compute_etag（缓存键，确定性 + 已知值）---
+
+    #[test]
+    fn test_compute_etag_deterministic() {
+        let data = b"hello world";
+        assert_eq!(compute_etag(data), compute_etag(data));
+    }
+
+    #[test]
+    fn test_compute_etag_known_value() {
+        // SHA256("hello world") 标准测试向量
+        assert_eq!(
+            compute_etag(b"hello world"),
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+    }
+
+    #[test]
+    fn test_compute_etag_different_inputs() {
+        assert_ne!(compute_etag(b"data1"), compute_etag(b"data2"));
+        assert_ne!(compute_etag(b""), compute_etag(b"a"));
+    }
+}
+
 /// 主入口：根据 photo_id 和可选 client_id 提供图片数据
 /// 新流程：本地缓存 → image_mappings 查 file_id → Bot API getFile 下载
 /// 返回 (图片二进制数据, content_type, etag)
