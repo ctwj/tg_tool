@@ -22,7 +22,10 @@ use tokio_util::sync::CancellationToken;
 pub struct ForwardSchedulerState {
     pub running: bool,
     pub interval_secs: u64,
+    /// 阶段1 worker（单 worker 模式 = 唯一 worker；双 worker 模式 = 阶段1 专用）
     pub handle: Option<tokio::task::JoinHandle<()>>,
+    /// 阶段2 worker（仅当群组A ≠ 群组B 时存在，独立 2s 节流处理 awaiting_bot）
+    pub handle_stage2: Option<tokio::task::JoinHandle<()>>,
     pub cancel: Option<CancellationToken>,
 }
 
@@ -33,11 +36,20 @@ pub fn create_forward_scheduler() -> ForwardSchedulerHandle {
         running: false,
         interval_secs: 2,
         handle: None,
+        handle_stage2: None,
         cancel: None,
     }))
 }
 
 /// 启动转发调度器
+///
+/// 根据 `ImageGroupChatId` 与 `ImageGroupChatId2` 的关系自动选择调度模式：
+/// - **单 worker 模式**（B 未配置 或 A == B）：一个 worker 串行处理 pending → awaiting_bot
+///   - 适用于阶段1/阶段2 写同一群组（共享 FLOOD_WAIT 频率）
+/// - **双 worker 模式**（A != B）：阶段1/阶段2 各自独立 worker，分别 2s 节流
+///   - 适用于阶段1 写群组A、阶段2 写群组B，两条流水线互不冲突，吞吐量翻倍
+///
+/// 启动后配置变化需重启服务才生效。
 pub async fn start_forward_scheduler(
     scheduler: ForwardSchedulerHandle,
     interval_secs: u64,
@@ -48,44 +60,103 @@ pub async fn start_forward_scheduler(
         return;
     }
 
+    // 判定调度模式
+    let use_dual_worker = {
+        let cache = state.option_cache.read().await;
+        let chat_id_a = cache.get("ImageGroupChatId").cloned().unwrap_or_default();
+        let chat_id_b = cache.get("ImageGroupChatId2").cloned().unwrap_or_default();
+        !chat_id_b.is_empty() && chat_id_a != chat_id_b
+    };
+
     let cancel = CancellationToken::new();
     sched.cancel = Some(cancel.clone());
     sched.running = true;
     sched.interval_secs = interval_secs;
 
-    let sched_clone = scheduler.clone();
-    let handle = tokio::spawn(async move {
-        let duration = std::time::Duration::from_secs(interval_secs);
+    let duration = std::time::Duration::from_secs(interval_secs);
+
+    // 阶段1 worker（始终启动）
+    // 单 worker 模式：调用 process_next_task 串行处理两阶段
+    // 双 worker 模式：调用 process_stage1_task 专门处理 pending
+    let state_a = state.clone();
+    let cancel_a = cancel.clone();
+    let sched_clone_a = scheduler.clone();
+    let handle_a = tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(duration) => {
-                    if let Err(e) = process_next_task(&state).await {
+                    let task_result = if use_dual_worker {
+                        process_stage1_task(&state_a).await
+                    } else {
+                        process_next_task(&state_a).await
+                    };
+                    if let Err(e) = task_result {
                         tracing::warn!("转发任务处理失败: {e}");
                     }
                 }
-                _ = cancel.cancelled() => {
-                    tracing::info!("转发调度器已停止");
+                _ = cancel_a.cancelled() => {
+                    tracing::info!("转发调度器 worker-A 已停止");
                     break;
                 }
             }
         }
-        let mut s = sched_clone.write().await;
+        let mut s = sched_clone_a.write().await;
         s.running = false;
         s.handle = None;
+        s.handle_stage2 = None;
         s.cancel = None;
     });
+    sched.handle = Some(handle_a);
 
-    sched.handle = Some(handle);
-    tracing::info!("转发调度器已启动，间隔 {interval_secs} 秒");
+    // 阶段2 worker（仅双 worker 模式启动）
+    if use_dual_worker {
+        let state_b = state.clone();
+        let cancel_b = cancel.clone();
+        let sched_clone_b = scheduler.clone();
+        let handle_b = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(duration) => {
+                        if let Err(e) = process_stage2_task(&state_b).await {
+                            tracing::warn!("阶段2 任务处理失败: {e}");
+                        }
+                    }
+                    _ = cancel_b.cancelled() => {
+                        tracing::info!("转发调度器 worker-B 已停止");
+                        break;
+                    }
+                }
+            }
+            // 注：状态清理由 worker-A 统一处理（同一调度器，最后退出者执行）
+            let mut s = sched_clone_b.write().await;
+            if s.handle.is_none() {
+                // worker-A 已退出并清理，这里只兜底
+                s.running = false;
+                s.handle_stage2 = None;
+                s.cancel = None;
+            }
+        });
+        sched.handle_stage2 = Some(handle_b);
+        tracing::info!(
+            "转发调度器已启动（双 worker 模式：群组A ≠ 群组B），间隔 {interval_secs} 秒"
+        );
+    } else {
+        tracing::info!(
+            "转发调度器已启动（单 worker 模式：群组A == 群组B 或群组B 未配置），间隔 {interval_secs} 秒"
+        );
+    }
 }
 
-/// 停止转发调度器
+/// 停止转发调度器（同时关闭阶段1 和阶段2 worker）
 pub async fn stop_forward_scheduler(scheduler: ForwardSchedulerHandle) {
     let mut state = scheduler.write().await;
     if let Some(cancel) = state.cancel.take() {
         cancel.cancel();
     }
     if let Some(handle) = state.handle.take() {
+        handle.abort();
+    }
+    if let Some(handle) = state.handle_stage2.take() {
         handle.abort();
     }
     state.running = false;
@@ -205,37 +276,122 @@ pub async fn enqueue(
     Ok(())
 }
 
-/// 处理下一个任务：优先取 pending（阶段1），无则取 awaiting_bot（阶段2）
-async fn process_next_task(state: &AppState) -> Result<(), AppError> {
-    // 读取配置
-    let (bot_token, chat_id_a, chat_id_b, delete_temp, proxy_url) = {
-        let cache = state.option_cache.read().await;
-        let bot_id = cache.get("ImageBotId").cloned().unwrap_or_default();
-        let chat_id_val = cache.get("ImageGroupChatId").cloned().unwrap_or_default();
+/// 读取阶段1+阶段2 全套配置（多入口共用）
+///
+/// 返回 `(bot_token, chat_id_a, chat_id_b, delete_temp, proxy_url)`
+/// 任一必填项缺失时返回 None，调用方应静默跳过本次 tick。
+async fn read_pipeline_config(
+    state: &AppState,
+) -> Option<(String, String, String, bool, Option<String>)> {
+    let cache = state.option_cache.read().await;
+    let bot_id = cache.get("ImageBotId").cloned().unwrap_or_default();
+    let chat_id_val = cache.get("ImageGroupChatId").cloned().unwrap_or_default();
 
-        if bot_id.is_empty() || chat_id_val.is_empty() {
-            return Ok(()); // 群组A/Bot 未配置，静默跳过
+    if bot_id.is_empty() || chat_id_val.is_empty() {
+        return None; // 群组A/Bot 未配置
+    }
+    let chat_id_a = chat_id_val;
+
+    let proxy = cache
+        .get("http_proxy_url")
+        .and_then(|v| if v.is_empty() { None } else { Some(v.clone()) })
+        .or_else(|| {
+            cache
+                .get("proxy_url")
+                .and_then(|v| if v.is_empty() { None } else { Some(v.clone()) })
+        });
+
+    let chat_id_b_val = cache.get("ImageGroupChatId2").cloned().unwrap_or_default();
+    let delete_temp = cache.get("delete_bot_forward_message").map(|v| v.as_str()) == Some("true");
+    drop(cache);
+
+    let token = get_bot_token(state, &bot_id).await.ok()?;
+    Some((token, chat_id_a, chat_id_b_val, delete_temp, proxy))
+}
+
+/// 执行单个任务的阶段1：客户端 copy_media 转存到群组A
+async fn execute_stage1(state: &AppState, task: &ForwardTask, chat_id_a: &str) {
+    match run_stage_1_client_forward(state, task, chat_id_a).await {
+        Ok(image_message_id) => {
+            if let Err(e) = mark_task_awaiting_bot(&state.db, task.id, image_message_id).await {
+                tracing::warn!("任务 {} 标记 awaiting_bot 失败: {e}", task.id);
+            }
+            tracing::info!(
+                "阶段1 成功: task={}, image_message_id={}",
+                task.id,
+                image_message_id
+            );
         }
+        Err(e) => {
+            // 文案修正：阶段1 失败不一定发生在 copy_media/send_album 调用环节
+            // （可能是更早的"源消息无图片媒体"），统一描述为"阶段1 失败"
+            let err_str = format!("阶段1 失败: {e}");
+            if let Err(db_err) = mark_task_failed(&state.db, task.id, &err_str).await {
+                tracing::warn!("任务 {} 标记 failed 失败: {db_err}", task.id);
+            }
+            tracing::warn!("任务 {} {err_str}", task.id);
+        }
+    }
+}
 
-        let token = match get_bot_token(state, &bot_id).await {
-            Ok(t) => t,
-            Err(_) => return Ok(()),
+/// 执行单个任务的阶段2：Bot forwardMessage 转发到群组B 取 file_id
+async fn execute_stage2(
+    state: &AppState,
+    task: &ForwardTask,
+    bot_token: &str,
+    chat_id_a: &str,
+    chat_id_b: &str,
+    delete_temp: bool,
+    proxy_url: Option<&str>,
+) {
+    match run_stage_2_bot_fetch_file_id(
+        task,
+        bot_token,
+        chat_id_a,
+        chat_id_b,
+        delete_temp,
+        proxy_url,
+    )
+    .await
+    {
+        Ok(file_id) => {
+            if let Err(e) = save_mapping(&state.db, &task.remote_id, &file_id).await {
+                tracing::warn!("任务 {} 保存映射失败: {e}", task.id);
+            }
+            if let Err(e) = mark_task_forwarded(&state.db, task.id, &file_id).await {
+                tracing::warn!("任务 {} 标记 forwarded 失败: {e}", task.id);
+            }
+            tracing::info!("阶段2 成功: task={}, file_id={}", task.id, file_id);
+        }
+        Err(e) => {
+            let err_str = e.to_string();
+            let is_flood = err_str.contains("FLOOD_WAIT");
+            if let Err(db_err) = mark_task_failed(&state.db, task.id, &err_str).await {
+                tracing::warn!("任务 {} 标记 failed 失败: {db_err}", task.id);
+            }
+            tracing::warn!("任务 {} 阶段2 失败: {err_str}", task.id);
+
+            if is_flood {
+                let wait_secs: u64 = err_str
+                    .split("等待")
+                    .nth(1)
+                    .and_then(|s| s.split(' ').next())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(5);
+                tracing::warn!("FLOOD_WAIT: 等待 {wait_secs} 秒");
+                tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+            }
+        }
+    }
+}
+
+/// 单 worker 模式入口：阶段1 优先，无则阶段2（保持旧行为，群组A==B 或 B 未配置时使用）
+async fn process_next_task(state: &AppState) -> Result<(), AppError> {
+    let (bot_token, chat_id_a, chat_id_b, delete_temp, proxy_url) =
+        match read_pipeline_config(state).await {
+            Some(cfg) => cfg,
+            None => return Ok(()), // 配置不全，静默跳过
         };
-        let proxy = cache
-            .get("http_proxy_url")
-            .and_then(|v| if v.is_empty() { None } else { Some(v.clone()) })
-            .or_else(|| {
-                cache
-                    .get("proxy_url")
-                    .and_then(|v| if v.is_empty() { None } else { Some(v.clone()) })
-            });
-
-        let chat_id_b_val = cache.get("ImageGroupChatId2").cloned().unwrap_or_default();
-        let delete_temp =
-            cache.get("delete_bot_forward_message").map(|v| v.as_str()) == Some("true");
-
-        (token, chat_id_val, chat_id_b_val, delete_temp, proxy)
-    };
 
     // 阶段1 优先：先取 pending 任务，无则取 awaiting_bot
     let task = match fetch_pending_task(&state.db).await? {
@@ -254,27 +410,10 @@ async fn process_next_task(state: &AppState) -> Result<(), AppError> {
     );
 
     match task.status.as_str() {
-        "pending" => {
-            // ── 阶段1：客户端 copy_media 转存到群组A ──
-            match run_stage_1_client_forward(state, &task, &chat_id_a).await {
-                Ok(image_message_id) => {
-                    mark_task_awaiting_bot(&state.db, task.id, image_message_id).await?;
-                    tracing::info!(
-                        "阶段1 成功: task={}, image_message_id={}",
-                        task.id,
-                        image_message_id
-                    );
-                }
-                Err(e) => {
-                    let err_str = format!("阶段1 copy_media/send_album 失败: {e}");
-                    mark_task_failed(&state.db, task.id, &err_str).await?;
-                    tracing::warn!("任务 {} {err_str}", task.id);
-                }
-            }
-        }
+        "pending" => execute_stage1(state, &task, &chat_id_a).await,
         "awaiting_bot" => {
-            // ── 阶段2：Bot forwardMessage 转发到群组B 取 file_id ──
-            match run_stage_2_bot_fetch_file_id(
+            execute_stage2(
+                state,
                 &task,
                 &bot_token,
                 &chat_id_a,
@@ -283,36 +422,65 @@ async fn process_next_task(state: &AppState) -> Result<(), AppError> {
                 proxy_url.as_deref(),
             )
             .await
-            {
-                Ok(file_id) => {
-                    save_mapping(&state.db, &task.remote_id, &file_id).await?;
-                    mark_task_forwarded(&state.db, task.id, &file_id).await?;
-                    tracing::info!("阶段2 成功: task={}, file_id={}", task.id, file_id);
-                }
-                Err(e) => {
-                    let err_str = e.to_string();
-                    let is_flood = err_str.contains("FLOOD_WAIT");
-                    mark_task_failed(&state.db, task.id, &err_str).await?;
-                    tracing::warn!("任务 {} 阶段2 失败: {err_str}", task.id);
-
-                    if is_flood {
-                        let wait_secs: u64 = err_str
-                            .split("等待")
-                            .nth(1)
-                            .and_then(|s| s.split(' ').next())
-                            .and_then(|s| s.parse().ok())
-                            .unwrap_or(5);
-                        tracing::warn!("FLOOD_WAIT: 等待 {wait_secs} 秒");
-                        tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
-                    }
-                }
-            }
         }
         other => {
             tracing::warn!("任务 {} 处于非预期状态: {other}", task.id);
         }
     }
 
+    Ok(())
+}
+
+/// 双 worker 模式入口：阶段1 worker 专用，只取 pending 任务
+async fn process_stage1_task(state: &AppState) -> Result<(), AppError> {
+    let (_bot_token, chat_id_a, _chat_id_b, _delete_temp, _proxy_url) =
+        match read_pipeline_config(state).await {
+            Some(cfg) => cfg,
+            None => return Ok(()),
+        };
+
+    let task = match fetch_pending_task(&state.db).await? {
+        Some(t) => t,
+        None => return Ok(()), // pending 队列空，让出本 tick
+    };
+
+    tracing::info!(
+        "[worker-A] 处理阶段1 任务: id={}, remote_id={}",
+        task.id,
+        task.remote_id
+    );
+    execute_stage1(state, &task, &chat_id_a).await;
+    Ok(())
+}
+
+/// 双 worker 模式入口：阶段2 worker 专用，只取 awaiting_bot 任务
+async fn process_stage2_task(state: &AppState) -> Result<(), AppError> {
+    let (bot_token, chat_id_a, chat_id_b, delete_temp, proxy_url) =
+        match read_pipeline_config(state).await {
+            Some(cfg) => cfg,
+            None => return Ok(()),
+        };
+
+    let task = match fetch_awaiting_bot_task(&state.db).await? {
+        Some(t) => t,
+        None => return Ok(()),
+    };
+
+    tracing::info!(
+        "[worker-B] 处理阶段2 任务: id={}, remote_id={}",
+        task.id,
+        task.remote_id
+    );
+    execute_stage2(
+        state,
+        &task,
+        &bot_token,
+        &chat_id_a,
+        &chat_id_b,
+        delete_temp,
+        proxy_url.as_deref(),
+    )
+    .await;
     Ok(())
 }
 
