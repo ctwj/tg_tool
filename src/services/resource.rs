@@ -223,7 +223,9 @@ async fn process_single_record_for_batch(
         }
         None => {
             // 无内容，标记已提取并跳过
-            let _ = mark_extracted(db, history_id).await;
+            if let Err(e) = mark_extracted(db, history_id).await {
+                tracing::error!("标记已提取失败 history={history_id}: {e}");
+            }
             result.skipped += 1;
             return result;
         }
@@ -481,7 +483,9 @@ pub async fn extract_single_record(
                 extra: None,
                 extract_mode: extract_mode.clone(),
             };
-            let _ = insert_resource(db, &new_resource).await;
+            if let Err(e) = insert_resource(db, &new_resource).await {
+                tracing::error!("资源插入失败（资源未持久化）: {e}");
+            }
         }
 
         results.push(json!({

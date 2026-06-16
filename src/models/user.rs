@@ -5,12 +5,16 @@ use serde::{Deserialize, Serialize};
 pub struct User {
     pub id: i64,
     pub username: String,
+    #[serde(skip_serializing)]
     pub password: String,
     pub display_name: Option<String>,
     pub email: Option<String>,
     pub role: i32,
     pub status: i32,
+    #[serde(skip_serializing)]
     pub access_token: Option<String>,
+    /// 是否需在下次登录强制改密（feature 027 SEC-002）：全新随机口令 root / 存量弱口令置位，改密后清位
+    pub must_change_password: bool,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
@@ -49,6 +53,7 @@ pub struct UserInfo {
     pub email: Option<String>,
     pub role: i32,
     pub status: i32,
+    #[serde(skip_serializing)]
     pub access_token: Option<String>,
     pub created_at: NaiveDateTime,
 }
@@ -102,9 +107,41 @@ mod tests {
             role,
             status,
             access_token: None,
+            must_change_password: false,
             created_at: naive_now(),
             updated_at: naive_now(),
         }
+    }
+
+    // --- feature 028 SEC-003：序列化脱敏 ---
+
+    #[test]
+    fn test_user_serialization_no_sensitive_fields() {
+        let user = make_user(1, 1);
+        let json = serde_json::to_string(&user).unwrap();
+        assert!(!json.contains("\"password\""), "password 字段不应出现: {json}");
+        assert!(!json.contains("\"access_token\""), "access_token 字段不应出现: {json}");
+    }
+
+    #[test]
+    fn test_user_info_serialization_no_access_token() {
+        let user = User {
+            id: 1,
+            username: "u".to_string(),
+            password: "secret_hash".to_string(),
+            display_name: None,
+            email: None,
+            role: 1,
+            status: 1,
+            access_token: Some("tok_secret".to_string()),
+            must_change_password: false,
+            created_at: naive_now(),
+            updated_at: naive_now(),
+        };
+        let info: UserInfo = user.into();
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(!json.contains("access_token"), "UserInfo 不应含 access_token: {json}");
+        assert!(!json.contains("tok_secret"), "token 值不应泄露: {json}");
     }
 
     // --- Role checks ---
@@ -175,6 +212,7 @@ mod tests {
             role: 10,
             status: 1,
             access_token: Some("tok123".to_string()),
+            must_change_password: false,
             created_at: naive_now(),
             updated_at: naive_now(),
         };

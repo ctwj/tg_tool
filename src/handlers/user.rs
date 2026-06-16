@@ -21,11 +21,11 @@ pub async fn list_users(
 ) -> Result<Json<Value>, AppError> {
     let users: Vec<crate::models::user::User> = match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
-            sqlx::query_as("SELECT id, username, password, display_name, email, role, status, access_token, created_at, updated_at FROM users ORDER BY id DESC")
+            sqlx::query_as("SELECT id, username, password, display_name, email, role, status, access_token, must_change_password, created_at, updated_at FROM users ORDER BY id DESC")
                 .fetch_all(pool).await?
         }
         crate::state::DbPool::Postgres(pool) => {
-            sqlx::query_as("SELECT id, username, password, display_name, email, role, status, access_token, created_at, updated_at FROM users ORDER BY id DESC")
+            sqlx::query_as("SELECT id, username, password, display_name, email, role, status, access_token, must_change_password, created_at, updated_at FROM users ORDER BY id DESC")
                 .fetch_all(pool).await?
         }
     };
@@ -71,11 +71,11 @@ pub async fn get_user(
 ) -> Result<Json<Value>, AppError> {
     let user: Option<crate::models::user::User> = match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
-            sqlx::query_as("SELECT id, username, password, display_name, email, role, status, access_token, created_at, updated_at FROM users WHERE id = ?")
+            sqlx::query_as("SELECT id, username, password, display_name, email, role, status, access_token, must_change_password, created_at, updated_at FROM users WHERE id = ?")
                 .bind(id).fetch_optional(pool).await?
         }
         crate::state::DbPool::Postgres(pool) => {
-            sqlx::query_as("SELECT id, username, password, display_name, email, role, status, access_token, created_at, updated_at FROM users WHERE id = $1")
+            sqlx::query_as("SELECT id, username, password, display_name, email, role, status, access_token, must_change_password, created_at, updated_at FROM users WHERE id = $1")
                 .bind(id).fetch_optional(pool).await?
         }
     };

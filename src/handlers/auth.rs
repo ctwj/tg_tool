@@ -174,7 +174,14 @@ pub async fn login(
         user.role,
         &state.config.session_secret,
     )?;
-    Ok(Json(json!({ "success": true, "data": { "token": token } })))
+    Ok(Json(json!({
+        "success": true,
+        "data": {
+            "token": token,
+            // feature 027 SEC-002：true 表示该账号需先改密（前端引导改密页）
+            "must_change": user.must_change_password,
+        }
+    })))
 }
 
 pub async fn logout() -> Result<Json<Value>, AppError> {
@@ -311,6 +318,7 @@ pub async fn update_me(
             }
             if hashed.is_some() {
                 sets.push("password = ?");
+                sets.push("must_change_password = 0"); // feature 027：改密清除强制改密标志
             }
             sets.push("updated_at = CURRENT_TIMESTAMP");
             let sql = format!("UPDATE users SET {} WHERE id = ?", sets.join(", "));
@@ -341,6 +349,7 @@ pub async fn update_me(
             if hashed.is_some() {
                 pg_parts.push(format!("password = ${pg_idx}"));
                 pg_idx += 1;
+                pg_parts.push("must_change_password = FALSE".to_string()); // feature 027
             }
             pg_parts.push("updated_at = CURRENT_TIMESTAMP".to_string());
             let sql = format!(

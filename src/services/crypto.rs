@@ -61,21 +61,84 @@ pub fn verify_token_with_secret(token: &str, secret: &str) -> Result<TokenClaims
     Ok(token_data.claims)
 }
 
-/// Verify and decode a JWT token (reads secret from env)
-pub fn verify_token(token: &str) -> Result<TokenClaims, AppError> {
-    let secret = std::env::var("SESSION_SECRET")
-        .unwrap_or_else(|_| "change-me-to-a-random-string".to_string());
-    verify_token_with_secret(token, &secret)
-}
-
 /// Generate a random API token (UUID-based)
 pub fn generate_api_token() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+/// 校验 SESSION_SECRET 强度（feature 027 SEC-001，纯函数便于 TDD 单测）
+///
+/// 返回 `Err(指引提示)` 表示不合规。提示信息**不含密钥值**（FR-009）。
+/// 规则：非空 + 不等于公开默认值 + 长度 ≥ 32 字符。
+pub fn validate_session_secret(secret: &str) -> Result<(), String> {
+    const DEFAULT_VALUE: &str = "change-me-to-a-random-string";
+    const MIN_LEN: usize = 32;
+    if secret.is_empty() {
+        return Err(
+            "SESSION_SECRET 未配置：请设置环境变量 SESSION_SECRET（≥32 字符的随机字符串）".into(),
+        );
+    }
+    if secret == DEFAULT_VALUE {
+        return Err("SESSION_SECRET 仍为公开默认值：请更换为随机强密钥（≥32 字符）".into());
+    }
+    if secret.chars().count() < MIN_LEN {
+        return Err(format!("SESSION_SECRET 过短：需 ≥{MIN_LEN} 字符的随机强密钥"));
+    }
+    Ok(())
+}
+
+/// 生成密码学安全随机强口令（feature 027 SEC-002，复用 uuid v4，无新依赖）
+///
+/// uuid v4 内部使用 CSPRNG；`simple()` 为 32 位 hex，满足 ≥24 字符且不可爆破。
+pub fn generate_random_password() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_validate_session_secret_default_rejected() {
+        assert!(validate_session_secret("change-me-to-a-random-string").is_err());
+    }
+
+    #[test]
+    fn test_validate_session_secret_empty_rejected() {
+        assert!(validate_session_secret("").is_err());
+    }
+
+    #[test]
+    fn test_validate_session_secret_short_rejected() {
+        assert!(validate_session_secret("short-secret").is_err());
+    }
+
+    #[test]
+    fn test_validate_session_secret_valid_accepted() {
+        let ok = "a".repeat(40);
+        assert!(validate_session_secret(&ok).is_ok());
+    }
+
+    #[test]
+    fn test_validate_session_secret_error_no_leak() {
+        // 错误信息不得包含密钥值（FR-009）—— 用不合规 secret 触发 Err
+        let secret = "weak-short-secret";
+        let err = validate_session_secret(secret).unwrap_err();
+        assert!(!err.contains(secret));
+    }
+
+    #[test]
+    fn test_generate_random_password_not_fixed() {
+        let p = generate_random_password();
+        assert_ne!(p, "123456");
+        assert!(p.chars().count() >= 24);
+    }
+
+    #[test]
+    fn test_generate_random_password_random() {
+        // 两次生成应不同（uuid v4 CSPRNG，碰撞概率可忽略）
+        assert_ne!(generate_random_password(), generate_random_password());
+    }
 
     #[test]
     fn test_hash_password_success() {

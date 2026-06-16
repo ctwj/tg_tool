@@ -10,6 +10,42 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+/// 文件上传/下载根目录（feature 028 SEC-004 限定目录）
+const UPLOAD_DIR: &str = "./uploads";
+
+/// 校验 filename 规范化后位于 UPLOAD_DIR 内，返回安全路径（feature 028 SEC-004）。
+/// 拒绝 `..`、绝对路径、符号链接逃逸、空字节 → Err；合法文件 → Ok(规范路径)。
+pub fn ensure_within_upload_dir(filename: &str) -> Result<std::path::PathBuf, AppError> {
+    // 空字节注入防护
+    if filename.contains('\0') {
+        return Err(AppError::BadRequest("非法文件名".into()));
+    }
+    let upload_dir = std::path::Path::new(UPLOAD_DIR);
+    let canon_upload = upload_dir
+        .canonicalize()
+        .map_err(|_| AppError::Internal("上传目录不可用".into()))?;
+    let filepath = upload_dir.join(filename);
+    // canonicalize 解析 ..、符号链接、绝对路径；文件不存在时用 components 过滤兜底
+    let resolved = match filepath.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            let mut clean = std::path::PathBuf::new();
+            for comp in filepath.components() {
+                match comp {
+                    std::path::Component::Normal(n) => clean.push(n),
+                    std::path::Component::CurDir => {}
+                    _ => return Err(AppError::Forbidden("非法文件路径".into())),
+                }
+            }
+            canon_upload.join(clean)
+        }
+    };
+    if !resolved.starts_with(&canon_upload) {
+        return Err(AppError::Forbidden("非法文件路径".into()));
+    }
+    Ok(resolved)
+}
+
 #[derive(Deserialize)]
 pub struct PaginationParams {
     pub page: Option<i64>,
@@ -63,9 +99,16 @@ pub async fn upload_file(
             .await
             .map_err(|e| AppError::BadRequest(format!("读取文件内容失败: {e}")))?;
 
+        // feature 028 SEC-004：清洗 filename（剥离目录/..），杜绝穿越进入 unique_name
+        let safe_name = std::path::Path::new(&filename)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unnamed".to_string());
         // Generate unique filename to avoid collision
-        let unique_name = format!("{}_{}", &uuid::Uuid::new_v4().to_string()[..8], filename);
+        let unique_name = format!("{}_{}", &uuid::Uuid::new_v4().to_string()[..8], safe_name);
         let filepath = upload_dir.join(&unique_name);
+        // 校验存储路径在 uploads 内
+        ensure_within_upload_dir(&unique_name)?;
 
         std::fs::write(&filepath, &data)
             .map_err(|e| AppError::Internal(format!("保存文件失败: {e}")))?;
@@ -126,8 +169,10 @@ pub async fn delete_file(
     // Try to delete from disk (ignore error if file not found on disk)
     if let Some(link) = &file.link {
         let disk_name = link.strip_prefix("/files/download/").unwrap_or(link);
-        let filepath = std::path::Path::new("./uploads").join(disk_name);
-        let _ = std::fs::remove_file(filepath);
+        // feature 028 SEC-004：校验路径在 uploads 内（防 link 含 ../ 逃逸）
+        if let Ok(filepath) = ensure_within_upload_dir(disk_name) {
+            let _ = std::fs::remove_file(filepath);
+        }
     }
 
     // Delete from database
@@ -149,7 +194,8 @@ pub async fn delete_file(
 }
 
 pub async fn download_file(Path(filename): Path<String>) -> Result<Response, AppError> {
-    let filepath = std::path::Path::new("./uploads").join(&filename);
+    // feature 028 SEC-004：校验路径在 uploads 内，拒穿越（../、绝对路径、符号链接、空字节）
+    let filepath = ensure_within_upload_dir(&filename)?;
     if !filepath.exists() {
         return Err(AppError::NotFound("文件不存在".into()));
     }
@@ -173,4 +219,44 @@ pub async fn download_file(Path(filename): Path<String>) -> Result<Response, App
         Body::from(data),
     )
         .into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ensure_upload_dir_exists() {
+        std::fs::create_dir_all(UPLOAD_DIR).ok();
+    }
+
+    /// feature 028 SEC-004：各类路径穿越必须被拒
+    #[test]
+    fn test_traversal_dotdot_rejected() {
+        ensure_upload_dir_exists();
+        assert!(ensure_within_upload_dir("../secret.txt").is_err());
+        assert!(ensure_within_upload_dir("../../etc/passwd").is_err());
+        assert!(ensure_within_upload_dir("../../.env").is_err());
+        assert!(ensure_within_upload_dir("../data.db").is_err());
+    }
+
+    #[test]
+    fn test_absolute_path_rejected() {
+        ensure_upload_dir_exists();
+        assert!(ensure_within_upload_dir("/etc/passwd").is_err());
+        assert!(ensure_within_upload_dir("/Windows/system32/config/sam").is_err());
+    }
+
+    #[test]
+    fn test_null_byte_rejected() {
+        ensure_upload_dir_exists();
+        assert!(ensure_within_upload_dir("file\0.txt").is_err());
+    }
+
+    /// 合法文件名（uploads 内）须通过（回归，SC-004）
+    #[test]
+    fn test_legitimate_filename_accepted() {
+        ensure_upload_dir_exists();
+        assert!(ensure_within_upload_dir("legit_file.txt").is_ok());
+        assert!(ensure_within_upload_dir("sub/legit.txt").is_ok());
+    }
 }

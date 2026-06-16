@@ -227,7 +227,7 @@ impl TgManager {
                         consecutive_errors = 0;
                         if let grammers_client::Update::NewMessage(msg) = &update {
                             let outgoing = msg.outgoing();
-                            let _ = crate::services::message_handler::handle_new_message(
+                            if let Err(e) = crate::services::message_handler::handle_new_message(
                                 &client_id_for_listener,
                                 msg,
                                 outgoing,
@@ -235,7 +235,12 @@ impl TgManager {
                                 &clients,
                                 &peer_cache,
                             )
-                            .await;
+                            .await
+                            {
+                                tracing::error!(
+                                    "消息处理失败 client={client_id_for_listener}: {e}"
+                                );
+                            }
                         }
                     }
                     Ok(Err(e)) => {

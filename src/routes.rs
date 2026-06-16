@@ -41,6 +41,17 @@ async fn auth_guard(req: Request, next: Next) -> Response {
     let mut req = req;
     match auth_result {
         Ok(user) => {
+            // feature 027 SEC-002：must_change 用户仅放行改密相关端点（/auth/me），其余受保护端点拒绝
+            if user.must_change_password {
+                let path = req.uri().path();
+                let allow_change_password = path.ends_with("/auth/me");
+                if !allow_change_password {
+                    return crate::errors::AppError::Forbidden(
+                        "账号需先修改默认密码后才能进行此操作".into(),
+                    )
+                    .into_response();
+                }
+            }
             req.extensions_mut().insert(user);
             next.run(req).await
         }
