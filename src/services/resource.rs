@@ -1232,9 +1232,8 @@ pub async fn push_resources(
     match result {
         Ok((status_code, body, is_success, _request_info)) => {
             if is_success {
-                for r in valid {
-                    mark_resource_pushed(db, r.id).await?;
-                }
+                let pushed_ids: Vec<i64> = valid.iter().map(|r| r.id).collect();
+                batch_mark_pushed(db, &pushed_ids).await?;
                 record_push_history_with_skips(
                     db,
                     &batch_id,
@@ -1553,6 +1552,41 @@ pub async fn mark_resource_pushed(db: &DbPool, id: i64) -> Result<(), AppError> 
             .bind(id)
             .execute(pool)
             .await?;
+        }
+    }
+    Ok(())
+}
+
+/// 批量标记资源为已推送（feature 031 PERF-002：消除逐条 UPDATE 的 N+1）
+pub async fn batch_mark_pushed(db: &DbPool, ids: &[i64]) -> Result<(), AppError> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    match db {
+        DbPool::Sqlite(pool) => {
+            let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "UPDATE extracted_resources SET is_pushed = 1, updated_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders})"
+            );
+            let mut q = sqlx::query(&sql);
+            for id in ids {
+                q = q.bind(id);
+            }
+            q.execute(pool).await?;
+        }
+        DbPool::Postgres(pool) => {
+            let placeholders = (1..=ids.len())
+                .map(|i| format!("${i}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "UPDATE extracted_resources SET is_pushed = TRUE, updated_at = NOW() WHERE id IN ({placeholders})"
+            );
+            let mut q = sqlx::query(&sql);
+            for id in ids {
+                q = q.bind(id);
+            }
+            q.execute(pool).await?;
         }
     }
     Ok(())

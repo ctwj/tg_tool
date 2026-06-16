@@ -680,9 +680,8 @@ pub async fn push_for_config(
     match result {
         Ok((status_code, body, is_success, _request_info)) => {
             if is_success {
-                for r in valid {
-                    crate::services::resource::mark_resource_pushed(db, r.id).await?;
-                }
+                let pushed_ids: Vec<i64> = valid.iter().map(|r| r.id).collect();
+                crate::services::resource::batch_mark_pushed(db, &pushed_ids).await?;
                 insert_push_status_batch(db, valid, config_id, "pushed").await?;
 
                 crate::services::resource::record_push_history_with_skips(
