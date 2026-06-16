@@ -113,7 +113,12 @@ async fn run_push_tick(
         let interval_secs = (config.push_interval as u64) * 60;
         let should_run = match last {
             Some(t) => now.duration_since(t).as_secs() >= interval_secs,
-            None => true, // 从未运行过，立即执行
+            // LOGIC-015：重启后首次（config_last_run 内存态丢失）不立即执行——记录 now 等下个
+            // interval，防止重启后首 tick 全配置立即执行（推送风暴）
+            None => {
+                config_last_run.insert(config.id, now);
+                false
+            }
         };
 
         if !should_run {
