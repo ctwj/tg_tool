@@ -91,10 +91,6 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/images/file/{file_id}",
             get(handlers::image::get_image_by_file_id),
-        )
-        .route(
-            "/images/{client_id}/{photo_id}",
-            get(handlers::image::get_image_with_client),
         );
 
     // User-level routes — require login (role >= 1)

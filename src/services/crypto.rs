@@ -82,7 +82,9 @@ pub fn validate_session_secret(secret: &str) -> Result<(), String> {
         return Err("SESSION_SECRET 仍为公开默认值：请更换为随机强密钥（≥32 字符）".into());
     }
     if secret.chars().count() < MIN_LEN {
-        return Err(format!("SESSION_SECRET 过短：需 ≥{MIN_LEN} 字符的随机强密钥"));
+        return Err(format!(
+            "SESSION_SECRET 过短：需 ≥{MIN_LEN} 字符的随机强密钥"
+        ));
     }
     Ok(())
 }

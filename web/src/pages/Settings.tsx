@@ -40,7 +40,7 @@ const Settings: React.FC = () => {
 
   // ─── 图床配置 ───
   const [imageSaving, setImageSaving] = useState(false)
-  const [testPhotoId, setTestPhotoId] = useState('')
+  const [testFileId, setTestFileId] = useState('')
 
   // ─── 网盘链接检测配置 ───
   const [linkCheckSaving, setLinkCheckSaving] = useState(false)
@@ -620,10 +620,15 @@ const Settings: React.FC = () => {
                         filterOption={(input, option) =>
                           (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
                         }
-                        options={botClients.map((c: any) => ({
-                          value: c.id,
-                          label: `${c.phone || c.id}${c.status === 'active' ? '' : ' (离线)'}`,
-                        }))}
+                        options={botClients.map((c: any) => {
+                          const main = c.name
+                            ? (c.username ? `${c.name} (@${c.username})` : c.name)
+                            : (c.username ? `@${c.username}` : c.id)
+                          return {
+                            value: c.id,
+                            label: c.status === 'active' ? main : `${main} (离线)`,
+                          }
+                        })}
                         onChange={(value: string | undefined) => {
                           // 切换 Bot 时清空群组选择并重新加载群组列表
                           setChatIdValue('')
@@ -682,7 +687,7 @@ const Settings: React.FC = () => {
                               const data = res.data.data
                               setChatValidResult({ success: true, msg: `验证成功: ${data.title} (${data.type}, ID: ${data.id})` })
                             } catch (e: any) {
-                              const msg = e.response?.data?.message || '验证失败，请检查 Chat ID 和 Bot 权限'
+                              const msg = e?.message || e?.response?.data?.message || '验证失败，请检查 Chat ID 和 Bot 权限'
                               setChatValidResult({ success: false, msg })
                             } finally {
                               setChatValidating(false)
@@ -751,15 +756,15 @@ const Settings: React.FC = () => {
                 <Card title="链接测试" style={{ borderRadius: 12 }}>
                   <Space direction="vertical" style={{ width: '100%' }} size={12}>
                     <Input
-                      placeholder="输入文件 ID（photo_id）"
-                      value={testPhotoId}
-                      onChange={e => setTestPhotoId(e.target.value)}
+                      placeholder="输入 Bot file_id"
+                      value={testFileId}
+                      onChange={e => setTestFileId(e.target.value)}
                       style={{ maxWidth: 400 }}
                     />
-                    {testPhotoId && (() => {
+                    {testFileId && (() => {
                       const domain = form.getFieldValue('TelegramImageDomain')?.replace(/\/+$/, '')
-                      const apiUrl = `${window.location.origin}/api/images/${testPhotoId}`
-                      const imgUrl = domain ? `${domain}/${testPhotoId}` : null
+                      const apiUrl = `${window.location.origin}/api/images/${testFileId}`
+                      const imgUrl = domain ? `${domain}/${testFileId}` : null
                       return (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 0' }}>
                           <div>
@@ -787,9 +792,8 @@ const Settings: React.FC = () => {
                 >
                   <Paragraph type="secondary" style={{ marginBottom: 16 }}>
                     配置 Nginx 反向代理后，可以通过独立域名直接访问图片，无需暴露 API 端口。
-                    URL 支持两种格式：
-                    <Text code>https://img.example.com/{'{'}photo_id{'}'}</Text>（自动选择客户端）或
-                    <Text code>https://img.example.com/{'{'}client_id{'}'}/{'{'}photo_id{'}'}</Text>（指定客户端）。
+                    推荐格式（Bot file_id 直接下载，资源封面与推送 img 均使用此格式）：
+                    <Text code>https://img.example.com/file/{'{'}file_id{'}'}</Text>。
                   </Paragraph>
                   <Collapse
                     ghost
@@ -931,11 +935,11 @@ certbot renew --dry-run`}</div>
                           <>
                             <Paragraph>配置完成后使用 curl 验证：</Paragraph>
                             <div style={codeStyle}>{`# 首次访问
-curl -I https://img.example.com/{photo_id}
+curl -I https://img.example.com/file/{file_id}
 # → CF-Cache-Status: MISS
 
 # 第二次访问
-curl -I https://img.example.com/{photo_id}
+curl -I https://img.example.com/file/{file_id}
 # → CF-Cache-Status: HIT`}</div>
                             <Paragraph style={{ marginTop: 16 }}><Text strong>CF-Cache-Status 含义：</Text></Paragraph>
                             <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 16px', fontSize: 13 }}>

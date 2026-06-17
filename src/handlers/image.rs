@@ -5,24 +5,13 @@ use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::Response;
 
-/// GET /api/images/{photo_id}
-/// 使用第一个活跃客户端下载图片
+/// GET /api/images/{id}
+/// 按 Bot file_id 直接下载图片（photo_id 路由已移除，统一走 file_id）
 pub async fn get_image(
-    Path(photo_id): Path<String>,
+    Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Response, AppError> {
-    let (data, content_type, etag) = image_proxy::serve_image(None, &photo_id, &state).await?;
-    build_image_response(data, content_type, etag)
-}
-
-/// GET /api/images/{client_id}/{photo_id}
-/// 使用指定客户端下载图片
-pub async fn get_image_with_client(
-    Path((client_id, photo_id)): Path<(String, String)>,
-    State(state): State<AppState>,
-) -> Result<Response, AppError> {
-    let (data, content_type, etag) =
-        image_proxy::serve_image(Some(&client_id), &photo_id, &state).await?;
+    let (data, content_type, etag) = image_proxy::serve_image_by_file_id(&id, &state).await?;
     build_image_response(data, content_type, etag)
 }
 

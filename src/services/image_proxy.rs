@@ -4,17 +4,6 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::time::Instant;
 
-/// 校验 photo_id 格式：仅允许数字和下划线，长度 1-50，防止路径遍历
-pub fn validate_photo_id(id: &str) -> Result<(), AppError> {
-    if id.is_empty() || id.len() > 50 {
-        return Err(AppError::BadRequest("无效的图片 ID".into()));
-    }
-    if !id.chars().all(|c| c.is_ascii_digit() || c == '_') {
-        return Err(AppError::BadRequest("无效的图片 ID".into()));
-    }
-    Ok(())
-}
-
 /// 校验 Bot file_id 格式：允许字母、数字、`-`、`_`，长度 1-200
 pub fn validate_file_id(id: &str) -> Result<(), AppError> {
     if id.is_empty() || id.len() > 200 {
@@ -63,36 +52,6 @@ fn compute_etag(data: &[u8]) -> String {
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
-
-    // --- validate_photo_id（防路径穿越，与 feature 028 协同）---
-
-    #[test]
-    fn test_validate_photo_id_valid() {
-        assert!(validate_photo_id("123456789").is_ok());
-        assert!(validate_photo_id("123_456").is_ok());
-        assert!(validate_photo_id("_").is_ok());
-    }
-
-    #[test]
-    fn test_validate_photo_id_empty() {
-        assert!(validate_photo_id("").is_err());
-    }
-
-    #[test]
-    fn test_validate_photo_id_too_long() {
-        assert!(validate_photo_id(&"1".repeat(51)).is_err());
-        assert!(validate_photo_id(&"1".repeat(50)).is_ok()); // 边界 50 ok
-    }
-
-    #[test]
-    fn test_validate_photo_id_rejects_traversal() {
-        // 防路径穿越（../、字母、斜杠、点）
-        assert!(validate_photo_id("../etc/passwd").is_err());
-        assert!(validate_photo_id("abc").is_err());
-        assert!(validate_photo_id("photo-1").is_err());
-        assert!(validate_photo_id("a/b").is_err());
-        assert!(validate_photo_id("1.2").is_err());
-    }
 
     // --- validate_file_id ---
 
@@ -144,72 +103,6 @@ mod tests {
         assert_ne!(compute_etag(b"data1"), compute_etag(b"data2"));
         assert_ne!(compute_etag(b""), compute_etag(b"a"));
     }
-}
-
-/// 主入口：根据 photo_id 和可选 client_id 提供图片数据
-/// 新流程：本地缓存 → image_mappings 查 file_id → Bot API getFile 下载
-/// 返回 (图片二进制数据, content_type, etag)
-pub async fn serve_image(
-    _client_id: Option<&str>,
-    photo_id: &str,
-    state: &AppState,
-) -> Result<(Vec<u8>, String, String), AppError> {
-    // 1. 校验 photo_id
-    validate_photo_id(photo_id)?;
-
-    let ttl_days = get_cache_ttl(state).await;
-    let cache_dir = &state.image_cache_dir;
-    let cache_path = cache_dir.join(format!("{}.jpg", photo_id));
-
-    // 2. 检查本地缓存
-    if cache_path.exists() && is_cache_valid(&cache_path, ttl_days) {
-        let data = tokio::fs::read(&cache_path)
-            .await
-            .map_err(|e| AppError::Internal(format!("读取缓存失败: {e}")))?;
-        let etag = compute_etag(&data);
-        tracing::debug!("缓存命中: {}", photo_id);
-        return Ok((data, "image/jpeg".to_string(), etag));
-    }
-
-    // 3. 检查是否已有下载任务进行中（防重复下载）
-    if state.inflight_downloads.contains_key(photo_id) {
-        for _ in 0..60 {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            if cache_path.exists() {
-                let data = tokio::fs::read(&cache_path)
-                    .await
-                    .map_err(|e| AppError::Internal(format!("读取缓存失败: {e}")))?;
-                let etag = compute_etag(&data);
-                return Ok((data, "image/jpeg".to_string(), etag));
-            }
-        }
-        return Err(AppError::Internal("图片下载超时".into()));
-    }
-
-    // 4. 标记为下载中
-    state
-        .inflight_downloads
-        .insert(photo_id.to_string(), Instant::now());
-
-    // 5. 通过 Bot API 下载（先查 file_id）
-    let result = {
-        let file_id = get_file_id_for_remote_id(&state.db, photo_id).await?;
-        let file_id = match file_id {
-            Some(fid) => fid,
-            None => {
-                state.inflight_downloads.remove(photo_id);
-                return Err(AppError::NotFound(
-                    "图片尚未转发到图床，请等待转发队列处理".to_string(),
-                ));
-            }
-        };
-        download_via_bot_api(state, &file_id, &cache_path).await
-    };
-
-    // 6. 移除下载标记
-    state.inflight_downloads.remove(photo_id);
-
-    result
 }
 
 /// 按 Bot file_id 直接提供图片数据（跳过 image_mappings 查询）。
@@ -333,29 +226,4 @@ async fn get_bot_token(state: &AppState, bot_id: &str) -> Result<String, AppErro
         }
     }
     .ok_or_else(|| AppError::NotFound(format!("Bot 客户端不存在: {bot_id}")))
-}
-
-/// 查询 image_mappings 表获取 file_id
-async fn get_file_id_for_remote_id(
-    db: &crate::state::DbPool,
-    remote_id: &str,
-) -> Result<Option<String>, AppError> {
-    match db {
-        crate::state::DbPool::Sqlite(pool) => {
-            let row: Option<(String,)> =
-                sqlx::query_as("SELECT file_id FROM image_mappings WHERE remote_id = ?")
-                    .bind(remote_id)
-                    .fetch_optional(pool)
-                    .await?;
-            Ok(row.map(|r| r.0))
-        }
-        crate::state::DbPool::Postgres(pool) => {
-            let row: Option<(String,)> =
-                sqlx::query_as("SELECT file_id FROM image_mappings WHERE remote_id = $1")
-                    .bind(remote_id)
-                    .fetch_optional(pool)
-                    .await?;
-            Ok(row.map(|r| r.0))
-        }
-    }
 }

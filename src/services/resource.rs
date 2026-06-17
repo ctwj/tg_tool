@@ -802,8 +802,9 @@ pub async fn get_resource(db: &DbPool, id: i64) -> Result<ExtractedResource, App
     match db {
         DbPool::Sqlite(pool) => {
             sqlx::query_as(
-                "SELECT id, collector_history_id, title, url, description, category, tags, img, source, extra, extract_mode, is_pushed, is_edited, created_at, updated_at \
-                 FROM extracted_resources WHERE id = ?"
+                "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
+                 (SELECT ft.file_id FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS file_id \
+                 FROM extracted_resources er WHERE er.id = ?"
             )
             .bind(id)
             .fetch_optional(pool)
@@ -811,8 +812,9 @@ pub async fn get_resource(db: &DbPool, id: i64) -> Result<ExtractedResource, App
         }
         DbPool::Postgres(pool) => {
             sqlx::query_as(
-                "SELECT id, collector_history_id, title, url, description, category, tags, img, source, extra, extract_mode, is_pushed, is_edited, created_at, updated_at \
-                 FROM extracted_resources WHERE id = $1"
+                "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
+                 (SELECT ft.file_id FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS file_id \
+                 FROM extracted_resources er WHERE er.id = $1"
             )
             .bind(id)
             .fetch_optional(pool)
@@ -1144,7 +1146,8 @@ pub async fn push_resources(
         DbPool::Sqlite(pool) => {
             sqlx::query_as(
                 "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
-                 (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status \
+                 (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status, \
+                 (SELECT ft.file_id FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS file_id \
                  FROM extracted_resources er \
                  WHERE er.is_pushed = 0 \
                  LIMIT ?"
@@ -1156,7 +1159,8 @@ pub async fn push_resources(
         DbPool::Postgres(pool) => {
             sqlx::query_as(
                 "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
-                 (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status \
+                 (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status, \
+                 (SELECT ft.file_id FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS file_id \
                  FROM extracted_resources er \
                  WHERE er.is_pushed = FALSE \
                  LIMIT $1"
@@ -1343,8 +1347,8 @@ async fn build_and_send_push_request(
 /// 构建并发送推送请求 — 接受直接参数（供 push_config 按配置推送使用）
 /// 返回 (http_status, response_body, is_success, request_info)
 ///
-/// `image_domain`：图床域名（如 `https://img.example.com`），配置后 img 字段会从 photo_id
-/// 拼接为完整 URL `{domain}/{photo_id}`；未配置（None 或空）时 img 保留原 photo_id。
+/// `image_domain`：图床域名（如 `https://img.example.com`），配置后 img 字段会从 file_id
+/// 拼接为完整 URL `{domain}/file/{file_id}`；未配置（None 或空）时 img 保留裸 file_id。
 #[allow(clippy::too_many_arguments)]
 pub async fn build_and_send_push_with_params(
     resources: &[ExtractedResource],
@@ -1372,15 +1376,16 @@ pub async fn build_and_send_push_with_params(
                 .as_deref()
                 .map(|u| u.split(',').map(|s| s.trim()).collect())
                 .unwrap_or_default();
-            // img 字段：配置了图床域名时拼接为完整 URL，否则保留原 photo_id
-            let img_value = r.img.as_deref().and_then(|raw| {
-                let raw = raw.trim();
-                if raw.is_empty() {
+            // img 字段：按 Bot file_id 拼接完整图床 URL（{domain}/{file_id}，后端智能路由识别）；
+            // file_id 来自两阶段转存（未转存资源为空 → img 为 None）；未配域名则保留裸 file_id
+            let img_value = r.file_id.as_deref().and_then(|fid| {
+                let fid = fid.trim();
+                if fid.is_empty() {
                     return None;
                 }
                 match domain_norm {
-                    Some(d) => Some(format!("{d}/{raw}")),
-                    None => Some(raw.to_string()),
+                    Some(d) => Some(format!("{d}/{fid}")),
+                    None => Some(fid.to_string()),
                 }
             });
             json!({

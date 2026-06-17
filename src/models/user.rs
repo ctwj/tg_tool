@@ -119,8 +119,14 @@ mod tests {
     fn test_user_serialization_no_sensitive_fields() {
         let user = make_user(1, 1);
         let json = serde_json::to_string(&user).unwrap();
-        assert!(!json.contains("\"password\""), "password 字段不应出现: {json}");
-        assert!(!json.contains("\"access_token\""), "access_token 字段不应出现: {json}");
+        assert!(
+            !json.contains("\"password\""),
+            "password 字段不应出现: {json}"
+        );
+        assert!(
+            !json.contains("\"access_token\""),
+            "access_token 字段不应出现: {json}"
+        );
     }
 
     #[test]
@@ -140,7 +146,10 @@ mod tests {
         };
         let info: UserInfo = user.into();
         let json = serde_json::to_string(&info).unwrap();
-        assert!(!json.contains("access_token"), "UserInfo 不应含 access_token: {json}");
+        assert!(
+            !json.contains("access_token"),
+            "UserInfo 不应含 access_token: {json}"
+        );
         assert!(!json.contains("tok_secret"), "token 值不应泄露: {json}");
     }
 

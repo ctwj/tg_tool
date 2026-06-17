@@ -631,6 +631,19 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::info!("SQLite migration 016 applied");
                 }
             }
+            // Migration 017: clients 加 name/username（客户端列表显示账号名）
+            {
+                let m17 = include_str!("../migrations/017_client_name_username_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m17).execute(pool).await {
+                    let msg = e.to_string();
+                    if !msg.contains("duplicate column") && !msg.contains("already exists") {
+                        panic!("Failed to run SQLite migration 017: {e}");
+                    }
+                    tracing::debug!("SQLite migration 017 skipped (already applied)");
+                } else {
+                    tracing::info!("SQLite migration 017 applied");
+                }
+            }
         }
         DbPool::Postgres(pool) => {
             let migration_sql = include_str!("../migrations/001_init_postgres.sql");
@@ -864,6 +877,19 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::debug!("PostgreSQL migration 016 skipped (already applied)");
                 } else {
                     tracing::info!("PostgreSQL migration 016 applied");
+                }
+            }
+            // Migration 017: clients 加 name/username（客户端列表显示账号名）
+            {
+                let m17 = include_str!("../migrations/017_client_name_username_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m17).execute(pool).await {
+                    let msg = e.to_string();
+                    if !msg.contains("already exists") && !msg.contains("duplicate") {
+                        panic!("Failed to run PostgreSQL migration 017: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 017 skipped (already applied)");
+                } else {
+                    tracing::info!("PostgreSQL migration 017 applied");
                 }
             }
         }

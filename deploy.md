@@ -148,7 +148,7 @@ sudo vim /etc/nginx/sites-available/tgtool
 
 图床使用独立子域名（如 `img.example.com`），Nginx 将子域名根路径直接代理到后端 `/api/images/`，从而隐藏路径前缀。
 
-图片访问效果：`https://img.example.com/{photo_id}` → 后端 `/api/images/{photo_id}`
+图片访问效果：`https://img.example.com/file/{file_id}` → 后端 `/api/images/file/{file_id}`（推荐，按 Bot file_id 直接下载）
 
 ```nginx
 # 主站
@@ -165,7 +165,7 @@ server {
     }
 }
 
-# 图床子域名 — 将 /{photo_id} 代理到后端 /api/images/{photo_id}
+# 图床子域名 — 将 /file/{file_id} 代理到后端 /api/images/file/{file_id}
 server {
     listen 80;
     server_name img.example.com;
@@ -206,8 +206,9 @@ Nginx 配置完成后，登录管理后台进行图床配置：
 4. 设置 **图片缓存过期天数**（默认 7 天）
 5. 点击 **保存图床配置**
 
-配置完成后，图片 URL 拼接规则为 `${图床域名}/${photo_id}`，即 `https://img.example.com/{photo_id}`。
-可在页面下方的图片预览区域输入 photo_id 测试是否生效。
+配置完成后，图片 URL 拼接规则为 `${图床域名}/file/${file_id}`，即 `https://img.example.com/file/{file_id}`。
+其中 `file_id` 为图片两阶段转存后由 Bot 获取（未开启转存或转存未完成的资源无 file_id，其图片 URL 为空）。
+可在页面下方的图片预览区域输入 file_id 测试是否生效。
 
 ## 6. 验证
 

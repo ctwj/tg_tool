@@ -80,6 +80,10 @@ async fn setup_test_db() -> DbPool {
     let m16 = include_str!("../migrations/016_users_must_change_password_sqlite.sql");
     let _ = sqlx::raw_sql(m16).execute(&pool).await;
 
+    // Migration 017: clients 加 name/username（客户端列表显示账号名）
+    let m17 = include_str!("../migrations/017_client_name_username_sqlite.sql");
+    let _ = sqlx::raw_sql(m17).execute(&pool).await;
+
     // 插入 root 用户（使用当前 bcrypt 版本生成 hash）
     let hash = crypto::hash_password("123456").expect("Failed to hash root password");
     sqlx::query("INSERT INTO users (username, password, role, status) VALUES ('root', ?, 100, 1)")

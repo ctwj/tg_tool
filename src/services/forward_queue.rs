@@ -442,7 +442,10 @@ async fn execute_stage2(
             }
             // D2 步骤2：save_mapping 优先（去重核心，UNIQUE remote_id；失败由 recover 补全）
             if let Err(e) = save_mapping(&state.db, &task.remote_id, &file_id).await {
-                tracing::warn!("任务 {} save_mapping 失败（将由 recover_stuck_tasks 补全）: {e}", task.id);
+                tracing::warn!(
+                    "任务 {} save_mapping 失败（将由 recover_stuck_tasks 补全）: {e}",
+                    task.id
+                );
             }
             // D2 步骤3：finalize 转 forwarded（失败由 recover 兜底：stage2_running+file_id 非空→forwarded）
             if let Err(e) = mark_task_forwarded(&state.db, task.id, &file_id).await {
@@ -477,11 +480,7 @@ async fn execute_stage2(
 
 /// D2：阶段2 副作用标记优先持久化——写 `file_id`，**保持 `stage2_running`**
 /// （仅记录「已转」凭证，不转移状态）。崩溃恢复据此判定并补全映射。
-async fn persist_stage2_marker(
-    db: &DbPool,
-    task_id: i64,
-    file_id: &str,
-) -> Result<(), AppError> {
+async fn persist_stage2_marker(db: &DbPool, task_id: i64, file_id: &str) -> Result<(), AppError> {
     match db {
         DbPool::Sqlite(pool) => {
             sqlx::query(
@@ -549,7 +548,10 @@ async fn process_next_task(state: &AppState) -> Result<(), AppError> {
             .await
         }
         other => {
-            tracing::warn!("任务 {} 处于非预期状态: {other}（应为 stage1/stage2_running）", task.id);
+            tracing::warn!(
+                "任务 {} 处于非预期状态: {other}（应为 stage1/stage2_running）",
+                task.id
+            );
         }
     }
 
@@ -1403,12 +1405,14 @@ mod tests {
         let cutoff = format!("-{} seconds", secs_ago);
         match db {
             DbPool::Sqlite(pool) => {
-                sqlx::query("UPDATE forward_tasks SET updated_at = datetime('now', ?) WHERE id = ?")
-                    .bind(&cutoff)
-                    .bind(id)
-                    .execute(pool)
-                    .await
-                    .expect("set updated_at");
+                sqlx::query(
+                    "UPDATE forward_tasks SET updated_at = datetime('now', ?) WHERE id = ?",
+                )
+                .bind(&cutoff)
+                .bind(id)
+                .execute(pool)
+                .await
+                .expect("set updated_at");
             }
             _ => unreachable!(),
         }

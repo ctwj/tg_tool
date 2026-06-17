@@ -399,9 +399,11 @@ const Resources: React.FC = () => {
           : '封面未转发'
 
         // 点击 URL：基于 Bot file_id 的图片代理（无 file_id 则不可点击）
+        // 配置了图床域名 → {domain}/{fileId}（后端 /api/images/{id} 智能路由识别 file_id）；
+        // 未配置 → 走主站相对路径 /api/images/{fileId}
         const domain = imageDomain ? imageDomain.replace(/\/+$/, '') : ''
         const fileUrl = fileId
-          ? `${domain}/api/images/file/${fileId}`
+          ? (domain ? `${domain}/${fileId}` : `/api/images/${fileId}`)
           : null
 
         const msgTooltip = msgId != null

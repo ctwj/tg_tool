@@ -115,7 +115,27 @@ impl TgManager {
             .await
             .map_err(|e| AppError::Internal(format!("检查认证状态失败: {e}")))?;
 
+        let mut user_info: Option<crate::state::UserInfo> = None;
         let status = if is_auth {
+            // 启动时拉取最新自身用户信息并写 DB（每次刷新 name/username）
+            match client.get_me().await {
+                Ok(me) => {
+                    let info = crate::services::tg_auth::extract_user_info(&me);
+                    if let Err(e) = crate::services::tg_auth::update_client_profile(
+                        client_id,
+                        info.first_name.as_deref(),
+                        info.username.as_deref(),
+                        &self.db,
+                    )
+                    .await
+                    {
+                        tracing::warn!("写入客户端 {} 用户信息失败: {e}", client_id);
+                    }
+                    user_info = Some(info);
+                }
+                Err(e) => tracing::warn!("获取客户端 {} 用户信息失败: {e}", client_id),
+            }
+
             // Sync dialogs to populate chat_hashes (required for supergroup/channel tracking)
             // Without this, get_channel_difference cannot work for megagroups/supergroups
             let mut dialogs = client.iter_dialogs();
@@ -143,7 +163,7 @@ impl TgManager {
                 login_token: None,
                 password_token: None,
                 session_path,
-                user_info: None,
+                user_info,
             },
         );
 
