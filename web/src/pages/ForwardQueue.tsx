@@ -143,8 +143,18 @@ const ForwardQueue: React.FC = () => {
     {
       title: '重试次数',
       dataIndex: 'retry_count',
-      width: 90,
-      render: (n: number) => <Badge count={n} style={{ backgroundColor: n >= 3 ? '#ef4444' : '#f59e0b' }} />,
+      width: 110,
+      render: (n: number) =>
+        n >= 5 ? (
+          <Tooltip title="已达最大重试次数（5），不再自动重试，需人工处理">
+            <Badge count={n} style={{ backgroundColor: '#7f1d1d' }} />
+            <span style={{ marginLeft: 6, fontSize: 11, color: '#7f1d1d' }}>死信</span>
+          </Tooltip>
+        ) : (
+          <Tooltip title={`退避 ${Math.pow(2, n)}s 后自动重试`}>
+            <Badge count={n} style={{ backgroundColor: n >= 3 ? '#ef4444' : '#f59e0b' }} />
+          </Tooltip>
+        ),
     },
     {
       title: '更新时间',
@@ -178,6 +188,8 @@ const ForwardQueue: React.FC = () => {
   const pending = queue?.pending ?? 0
   const forwarded = queue?.forwarded ?? 0
   const failed = queue?.failed ?? 0
+  const dead = queue?.dead ?? 0
+  const retrying = failed - dead // 失败但仍在自动退避重试中
 
   return (
     <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
@@ -237,11 +249,26 @@ const ForwardQueue: React.FC = () => {
         <Col xs={24} sm={8}>
           <Card loading={loading && !queue} style={{ borderRadius: 12 }}>
             <Statistic
-              title="失败"
+              title={
+                <Tooltip
+                  title={
+                    dead > 0
+                      ? `失败 ${failed} = 重试中 ${retrying} + 死信 ${dead}（已达 5 次重试上限，不再自动恢复）`
+                      : '失败任务，调度器会按指数退避自动重试'
+                  }
+                >
+                  <span>失败 {dead > 0 && <span style={{ fontSize: 11, color: '#7f1d1d' }}>（含死信 {dead}）</span>}</span>
+                </Tooltip>
+              }
               value={failed}
-              prefix={<WarningOutlined style={{ color: '#ef4444' }} />}
+              prefix={<WarningOutlined style={{ color: failed > 0 ? '#ef4444' : undefined }} />}
               valueStyle={{ color: failed > 0 ? '#ef4444' : undefined }}
             />
+            {dead > 0 && (
+              <div style={{ fontSize: 11, color: '#7f1d1d', marginTop: 4 }}>
+                死信 {dead} 条需人工重试
+              </div>
+            )}
           </Card>
         </Col>
       </Row>

@@ -245,6 +245,43 @@ async fn main() {
         }
     }
 
+    // Start push scheduler if any push_config has auto_push enabled
+    // 修复：以前重启后 push scheduler 不自动启动，导致调度监控显示"已停止"
+    {
+        let has_active: bool = match &state.db {
+            tgTool::state::DbPool::Sqlite(pool) => {
+                sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM push_configs WHERE is_active = 1 AND auto_push = 1",
+                )
+                .fetch_one(pool)
+                .await
+                .unwrap_or(0)
+                    > 0
+            }
+            tgTool::state::DbPool::Postgres(pool) => {
+                sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM push_configs WHERE is_active = TRUE AND auto_push = TRUE",
+                )
+                .fetch_one(pool)
+                .await
+                .unwrap_or(0)
+                    > 0
+            }
+        };
+        if has_active {
+            tracing::info!("Active push config detected, starting push scheduler");
+            tgTool::services::scheduler::start_scheduler(
+                state.scheduler.clone(),
+                1,
+                state.db.clone(),
+                state.option_cache.clone(),
+            )
+            .await;
+        } else {
+            tracing::info!("No active push config, push scheduler stays stopped");
+        }
+    }
+
     // Start forward scheduler if image hosting is configured
     {
         let cache = state.option_cache.read().await;
@@ -644,6 +681,19 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::info!("SQLite migration 017 applied");
                 }
             }
+            // Migration 018: forward_tasks 加 (remote_id, id DESC) 索引（修复资源分页慢）
+            {
+                let m18 = include_str!("../migrations/018_forward_tasks_remote_id_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m18).execute(pool).await {
+                    let msg = e.to_string();
+                    if !msg.contains("already exists") {
+                        panic!("Failed to run SQLite migration 018: {e}");
+                    }
+                    tracing::debug!("SQLite migration 018 skipped (already applied)");
+                } else {
+                    tracing::info!("SQLite migration 018 applied");
+                }
+            }
         }
         DbPool::Postgres(pool) => {
             let migration_sql = include_str!("../migrations/001_init_postgres.sql");
@@ -890,6 +940,19 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::debug!("PostgreSQL migration 017 skipped (already applied)");
                 } else {
                     tracing::info!("PostgreSQL migration 017 applied");
+                }
+            }
+            // Migration 018: forward_tasks 加 (remote_id, id DESC) 索引（修复资源分页慢）
+            {
+                let m18 = include_str!("../migrations/018_forward_tasks_remote_id_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m18).execute(pool).await {
+                    let msg = e.to_string();
+                    if !msg.contains("already exists") {
+                        panic!("Failed to run PostgreSQL migration 018: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 018 skipped (already applied)");
+                } else {
+                    tracing::info!("PostgreSQL migration 018 applied");
                 }
             }
         }

@@ -369,6 +369,8 @@ export interface QueueStatusResponse {
   pending: number
   forwarded: number
   failed: number
+  // 死信数（failed 且 retry_count >= 5，不再自动重试，需人工处理）
+  dead?: number
   tasks: ForwardTask[]
   failed_tasks: ForwardTask[]
 }

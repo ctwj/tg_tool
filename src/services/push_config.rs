@@ -594,10 +594,33 @@ pub async fn push_for_config(
     };
 
     if resources.is_empty() {
+        // 修复：以前静默返回导致调度监控看不到"调度器在跑但无资源可推"
+        // 写一条空 history 让用户在推送历史页能看到本次 tick 触发过
+        let target_label = if config.target.is_empty() {
+            "default"
+        } else {
+            &config.target
+        };
+        let batch_id = format!("batch_{}_{}", target_label, chrono::Utc::now().timestamp());
+        let _ = crate::services::resource::record_push_history_with_skips(
+            db,
+            &batch_id,
+            &config.target,
+            "success",
+            0,
+            0,
+            0,
+            "没有需要推送的资源（全部已推送或暂无新资源）",
+            None,
+            Some(config_id),
+            &[],
+        )
+        .await;
         return Ok(serde_json::json!({
             "status": "success",
             "message": "没有需要推送的资源",
-            "processed_count": 0
+            "processed_count": 0,
+            "batch_id": batch_id,
         }));
     }
 
