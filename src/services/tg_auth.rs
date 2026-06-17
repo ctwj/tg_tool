@@ -85,12 +85,21 @@ pub async fn submit_code(
             save_session(client_id, tg_clients).await?;
             update_client_status(client_id, "active", db).await?;
 
+            let info = extract_user_info(&user);
+            update_client_profile(
+                client_id,
+                info.first_name.as_deref(),
+                info.username.as_deref(),
+                db,
+            )
+            .await?;
+
             // Update in-memory status, cache user info, and start update listener
             let mut clients = tg_clients.write().await;
             if let Some(e) = clients.get_mut(client_id) {
                 e.status = "active".to_string();
                 e.login_token = None;
-                e.user_info = Some(extract_user_info(&user));
+                e.user_info = Some(info);
             }
 
             // Start update listener
@@ -161,11 +170,20 @@ pub async fn submit_password(
             save_session(client_id, tg_clients).await?;
             update_client_status(client_id, "active", db).await?;
 
+            let info = extract_user_info(&user);
+            update_client_profile(
+                client_id,
+                info.first_name.as_deref(),
+                info.username.as_deref(),
+                db,
+            )
+            .await?;
+
             let mut clients = tg_clients.write().await;
             if let Some(e) = clients.get_mut(client_id) {
                 e.status = "active".to_string();
                 e.password_token = None;
-                e.user_info = Some(extract_user_info(&user));
+                e.user_info = Some(info);
             }
 
             tg_manager.spawn_update_listener(client_id.to_string(), client);
@@ -211,10 +229,19 @@ pub async fn bot_sign_in(
             save_session(client_id, tg_clients).await?;
             update_client_status(client_id, "active", db).await?;
 
+            let info = extract_user_info(&user);
+            update_client_profile(
+                client_id,
+                info.first_name.as_deref(),
+                info.username.as_deref(),
+                db,
+            )
+            .await?;
+
             let mut clients = tg_clients.write().await;
             if let Some(e) = clients.get_mut(client_id) {
                 e.status = "active".to_string();
-                e.user_info = Some(extract_user_info(&user));
+                e.user_info = Some(info);
             }
 
             tg_manager.spawn_update_listener(client_id.to_string(), client);
@@ -227,7 +254,7 @@ pub async fn bot_sign_in(
 }
 
 /// Extract UserInfo from a grammers User object
-fn extract_user_info(user: &grammers_client::types::User) -> UserInfo {
+pub(crate) fn extract_user_info(user: &grammers_client::types::User) -> UserInfo {
     UserInfo {
         user_id: user.id(),
         username: user.username().map(|s| s.to_string()),
@@ -270,6 +297,38 @@ async fn update_client_status(client_id: &str, status: &str, db: &DbPool) -> Res
                 "UPDATE clients SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
             )
             .bind(status)
+            .bind(client_id)
+            .execute(pool)
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Update client profile (name/username) in database — 认证成功 / 添加 Bot 后写入
+pub(crate) async fn update_client_profile(
+    client_id: &str,
+    name: Option<&str>,
+    username: Option<&str>,
+    db: &DbPool,
+) -> Result<(), AppError> {
+    match db {
+        crate::state::DbPool::Sqlite(pool) => {
+            sqlx::query(
+                "UPDATE clients SET name = ?, username = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            )
+            .bind(name)
+            .bind(username)
+            .bind(client_id)
+            .execute(pool)
+            .await?;
+        }
+        crate::state::DbPool::Postgres(pool) => {
+            sqlx::query(
+                "UPDATE clients SET name = $1, username = $2, updated_at = NOW() WHERE id = $3",
+            )
+            .bind(name)
+            .bind(username)
             .bind(client_id)
             .execute(pool)
             .await?;

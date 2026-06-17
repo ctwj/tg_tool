@@ -148,4 +148,10 @@ shell commands, and other important information, read the current plan:
 - [推送管理多 API 配置](specs/021-multi-push-config/plan.md) — 多推送配置(CRUD+复制)、数据源采集器选择、独立推送状态追踪、多配置串行调度
 - [推送资源链接有效性检测](specs/022-resource-link-check/plan.md) — 推送前图片转存+网盘链接双维过滤、可插拔 LinkChecker(PanCheck)、URL 键缓存(TTL 24h)、双通道检测(内联兜底+按配置批量)、跳过统计与明细
 - [图片转存功能改进（双群组两阶段 + 开关） Plan](specs/023-two-stage-image-storage/plan.md) — 客户端 copy_media 转存到群组A、Bot forwardMessage 转发到群组B 取 file_id、转存开关、awaiting_bot 状态机、智能重试
+- [系统审计 Plan](specs/025-system-audit/plan.md) — 只读系统审计（架构/逻辑/性能/可维护性/安全 5 维度），三层验证（静态阅读+逻辑推演+工具确证），结构化发现报告 + 改进路线图，不修改生产代码
+- [两阶段转存状态机原子性修复 Plan](specs/026-fix-stage-atomicity/plan.md) — 修复审计 LOGIC-001/002/003：引入 stage1/stage2_running 中间态 + fetch 原子转移 + 副作用标记优先持久化 + 崩溃恢复扫描 + 单 worker 公平调度，实现 exactly-once 与不饥饿（TDD 先行）
+- [部署安全默认硬化 Plan](specs/027-harden-default-secrets/plan.md) — 修复审计 SEC-001/002：启动期拒绝默认/弱 SESSION_SECRET + root 随机强口令 + must_change_password 强制改密 + 存量弱口令迁移（TDD）
+- [数据泄露与路径穿越修复 Plan](specs/028-fix-data-leak-pathtraversal/plan.md) — 修复审计 SEC-003/004/015：用户响应脱敏 password/access_token + 文件接口 canonicalize 限定 uploads + DB 物理隔离（接管链最后入口）（TDD）
+- [吞错链与失败重试修复 Plan](specs/029-fix-error-swallow-retry/plan.md) — 修复审计 LOGIC-004~007：6 处 let _ = 吞错改传播/记录 + failed 指数退避自动重试 + 死信 + retry_all_failed 防风暴（TDD）
+- [优雅关闭 + bind 可读错误 Plan](specs/030-graceful-shutdown-bind/plan.md) — 修复审计 LOGIC-008/SEC-008/014：bind 可读 panic + axum with_graceful_shutdown drain + 后台任务 CancellationToken/JoinSet 收尾（TDD，立即修复档 IMP-005 完成）
 <!-- SPECKIT END -->

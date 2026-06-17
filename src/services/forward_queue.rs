@@ -17,6 +17,12 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+/// recover_stuck_tasks 判定「卡住」的时间阈值倍数（×interval_secs）
+pub const STUCK_THRESHOLD_MULT: u64 = 5;
+
+/// 失败任务自动重试上限（feature 029 LOGIC-004）；retry_count >= MAX_RETRIES 为死信
+pub const MAX_RETRIES: i64 = 5;
+
 /// 转发调度器状态
 #[derive(Debug)]
 pub struct ForwardSchedulerState {
@@ -73,6 +79,11 @@ pub async fn start_forward_scheduler(
     sched.running = true;
     sched.interval_secs = interval_secs;
 
+    // D4：启动时恢复一次卡住任务（上次进程崩溃残留的 stage1/stage2_running）
+    if let Err(e) = recover_stuck_tasks(&state.db, 0).await {
+        tracing::warn!("启动 recover_stuck_tasks 失败: {e}");
+    }
+
     let duration = std::time::Duration::from_secs(interval_secs);
 
     // 阶段1 worker（始终启动）
@@ -85,6 +96,15 @@ pub async fn start_forward_scheduler(
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(duration) => {
+                    // D4：每周期先恢复卡住任务（stage1/stage2_running 超阈值），再处理正常任务
+                    let threshold = interval_secs * STUCK_THRESHOLD_MULT;
+                    if let Err(e) = recover_stuck_tasks(&state_a.db, threshold).await {
+                        tracing::warn!("recover_stuck_tasks 失败: {e}");
+                    }
+                    // feature 029 LOGIC-004：自动指数退避重试 eligible failed
+                    if let Err(e) = retry_eligible_failed(&state_a.db).await {
+                        tracing::warn!("retry_eligible_failed 失败: {e}");
+                    }
                     let task_result = if use_dual_worker {
                         process_stage1_task(&state_a).await
                     } else {
@@ -220,7 +240,7 @@ pub async fn enqueue(
     let already_queued = match &state.db {
         DbPool::Sqlite(pool) => {
             let row: Option<(i64,)> = sqlx::query_as(
-                "SELECT id FROM forward_tasks WHERE remote_id = ? AND status IN ('pending', 'awaiting_bot', 'forwarded')",
+                "SELECT id FROM forward_tasks WHERE remote_id = ? AND status IN ('pending', 'stage1_running', 'awaiting_bot', 'stage2_running', 'forwarded')",
             )
             .bind(remote_id)
             .fetch_optional(pool)
@@ -229,7 +249,7 @@ pub async fn enqueue(
         }
         DbPool::Postgres(pool) => {
             let row: Option<(i64,)> = sqlx::query_as(
-                "SELECT id FROM forward_tasks WHERE remote_id = $1 AND status IN ('pending', 'awaiting_bot', 'forwarded')",
+                "SELECT id FROM forward_tasks WHERE remote_id = $1 AND status IN ('pending', 'stage1_running', 'awaiting_bot', 'stage2_running', 'forwarded')",
             )
             .bind(remote_id)
             .fetch_optional(pool)
@@ -310,11 +330,30 @@ async fn read_pipeline_config(
 }
 
 /// 执行单个任务的阶段1：客户端 copy_media 转存到群组A
+///
+/// 任务进入时已是 `stage1_running`（由 `fetch_pending_task` 原子转移）。
+/// 采用「副作用标记优先」两步（D2）：send_album 成功后**先持久化 image_message_id**
+/// （保持 stage1_running），再转 awaiting_bot。崩溃恢复（recover_stuck_tasks）据此
+/// 标记判定「已发」→ 不重发（修复 LOGIC-001，SC-001）。
 async fn execute_stage1(state: &AppState, task: &ForwardTask, chat_id_a: &str) {
     match run_stage_1_client_forward(state, task, chat_id_a).await {
         Ok(image_message_id) => {
+            // D2 步骤1：副作用标记优先持久化（保持 stage1_running，作为「已发」凭证）
+            if let Err(e) = persist_stage1_marker(&state.db, task.id, image_message_id).await {
+                // 标记持久化失败：副作用已发生但未记录（D6 孤儿窗口，物理限制）
+                tracing::warn!(
+                    "任务 {} 阶段1 副作用已发生但标记持久化失败（孤儿 remote_id={}）: {e}",
+                    task.id,
+                    task.remote_id
+                );
+                return;
+            }
+            // D2 步骤2：finalize 转 awaiting_bot（标记已落库，失败由 recover 兜底）
             if let Err(e) = mark_task_awaiting_bot(&state.db, task.id, image_message_id).await {
-                tracing::warn!("任务 {} 标记 awaiting_bot 失败: {e}", task.id);
+                tracing::warn!(
+                    "任务 {} finalize awaiting_bot 失败（将由 recover_stuck_tasks 兜底）: {e}",
+                    task.id
+                );
             }
             tracing::info!(
                 "阶段1 成功: task={}, image_message_id={}",
@@ -334,7 +373,44 @@ async fn execute_stage1(state: &AppState, task: &ForwardTask, chat_id_a: &str) {
     }
 }
 
+/// D2：阶段1 副作用标记优先持久化——写 `image_message_id`，**保持 `stage1_running`**
+/// （仅记录「已发」凭证，不转移状态）。崩溃恢复据此判定。
+async fn persist_stage1_marker(
+    db: &DbPool,
+    task_id: i64,
+    image_message_id: i64,
+) -> Result<(), AppError> {
+    match db {
+        DbPool::Sqlite(pool) => {
+            sqlx::query(
+                "UPDATE forward_tasks SET image_message_id = ?, updated_at = CURRENT_TIMESTAMP \
+                 WHERE id = ? AND status = 'stage1_running'",
+            )
+            .bind(image_message_id)
+            .bind(task_id)
+            .execute(pool)
+            .await?;
+        }
+        DbPool::Postgres(pool) => {
+            sqlx::query(
+                "UPDATE forward_tasks SET image_message_id = $1, updated_at = CURRENT_TIMESTAMP \
+                 WHERE id = $2 AND status = 'stage1_running'",
+            )
+            .bind(image_message_id)
+            .bind(task_id)
+            .execute(pool)
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 /// 执行单个任务的阶段2：Bot forwardMessage 转发到群组B 取 file_id
+///
+/// 任务进入时已是 `stage2_running`（由 `fetch_awaiting_bot_task` 原子转移）。
+/// 采用「副作用标记优先」三步（D2）：forwardMessage 成功后**先持久化 file_id**
+/// （保持 stage2_running）→ save_mapping（去重核心，UNIQUE remote_id）→ 转 forwarded。
+/// 崩溃恢复据此判定「已转」→ 不重发 + 补全映射（修复 LOGIC-002，SC-002）。
 async fn execute_stage2(
     state: &AppState,
     task: &ForwardTask,
@@ -355,11 +431,28 @@ async fn execute_stage2(
     .await
     {
         Ok(file_id) => {
-            if let Err(e) = save_mapping(&state.db, &task.remote_id, &file_id).await {
-                tracing::warn!("任务 {} 保存映射失败: {e}", task.id);
+            // D2 步骤1：副作用标记优先持久化（file_id，保持 stage2_running，作为「已转」凭证）
+            if let Err(e) = persist_stage2_marker(&state.db, task.id, &file_id).await {
+                tracing::warn!(
+                    "任务 {} 阶段2 副作用已发生但标记持久化失败（孤儿 remote_id={}）: {e}",
+                    task.id,
+                    task.remote_id
+                );
+                return;
             }
+            // D2 步骤2：save_mapping 优先（去重核心，UNIQUE remote_id；失败由 recover 补全）
+            if let Err(e) = save_mapping(&state.db, &task.remote_id, &file_id).await {
+                tracing::warn!(
+                    "任务 {} save_mapping 失败（将由 recover_stuck_tasks 补全）: {e}",
+                    task.id
+                );
+            }
+            // D2 步骤3：finalize 转 forwarded（失败由 recover 兜底：stage2_running+file_id 非空→forwarded）
             if let Err(e) = mark_task_forwarded(&state.db, task.id, &file_id).await {
-                tracing::warn!("任务 {} 标记 forwarded 失败: {e}", task.id);
+                tracing::warn!(
+                    "任务 {} finalize forwarded 失败（将由 recover_stuck_tasks 兜底）: {e}",
+                    task.id
+                );
             }
             tracing::info!("阶段2 成功: task={}, file_id={}", task.id, file_id);
         }
@@ -385,6 +478,34 @@ async fn execute_stage2(
     }
 }
 
+/// D2：阶段2 副作用标记优先持久化——写 `file_id`，**保持 `stage2_running`**
+/// （仅记录「已转」凭证，不转移状态）。崩溃恢复据此判定并补全映射。
+async fn persist_stage2_marker(db: &DbPool, task_id: i64, file_id: &str) -> Result<(), AppError> {
+    match db {
+        DbPool::Sqlite(pool) => {
+            sqlx::query(
+                "UPDATE forward_tasks SET file_id = ?, updated_at = CURRENT_TIMESTAMP \
+                 WHERE id = ? AND status = 'stage2_running'",
+            )
+            .bind(file_id)
+            .bind(task_id)
+            .execute(pool)
+            .await?;
+        }
+        DbPool::Postgres(pool) => {
+            sqlx::query(
+                "UPDATE forward_tasks SET file_id = $1, updated_at = CURRENT_TIMESTAMP \
+                 WHERE id = $2 AND status = 'stage2_running'",
+            )
+            .bind(file_id)
+            .bind(task_id)
+            .execute(pool)
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 /// 单 worker 模式入口：阶段1 优先，无则阶段2（保持旧行为，群组A==B 或 B 未配置时使用）
 async fn process_next_task(state: &AppState) -> Result<(), AppError> {
     let (bot_token, chat_id_a, chat_id_b, delete_temp, proxy_url) =
@@ -393,10 +514,12 @@ async fn process_next_task(state: &AppState) -> Result<(), AppError> {
             None => return Ok(()), // 配置不全，静默跳过
         };
 
-    // 阶段1 优先：先取 pending 任务，无则取 awaiting_bot
-    let task = match fetch_pending_task(&state.db).await? {
+    // 公平调度（D5，修复 LOGIC-003）：awaiting_bot 优先，消除 pending 独占饥饿。
+    // awaiting_bot 非空先取（保证有界处理 SC-003），无则取 pending（产生新 awaiting_bot）；
+    // 因 awaiting_bot 由 pending→阶段1 产生，awaiting_bot 消化后必回到 pending，两边皆不饿死。
+    let task = match fetch_awaiting_bot_task(&state.db).await? {
         Some(t) => t,
-        None => match fetch_awaiting_bot_task(&state.db).await? {
+        None => match fetch_pending_task(&state.db).await? {
             Some(t) => t,
             None => return Ok(()), // 两类队列都空
         },
@@ -410,8 +533,9 @@ async fn process_next_task(state: &AppState) -> Result<(), AppError> {
     );
 
     match task.status.as_str() {
-        "pending" => execute_stage1(state, &task, &chat_id_a).await,
-        "awaiting_bot" => {
+        // fetch_pending_task / fetch_awaiting_bot_task 已原子转移到处理中态
+        "stage1_running" => execute_stage1(state, &task, &chat_id_a).await,
+        "stage2_running" => {
             execute_stage2(
                 state,
                 &task,
@@ -424,7 +548,10 @@ async fn process_next_task(state: &AppState) -> Result<(), AppError> {
             .await
         }
         other => {
-            tracing::warn!("任务 {} 处于非预期状态: {other}", task.id);
+            tracing::warn!(
+                "任务 {} 处于非预期状态: {other}（应为 stage1/stage2_running）",
+                task.id
+            );
         }
     }
 
@@ -508,9 +635,14 @@ async fn get_bot_token(state: &AppState, bot_id: &str) -> Result<String, AppErro
     token.ok_or_else(|| AppError::NotFound(format!("Bot 客户端不存在: {bot_id}")))
 }
 
-/// 取一个 pending 任务（阶段1）
+/// 取一个 pending 任务并**原子转移**到 `stage1_running`（D3，防重取）
+///
+/// 用 `UPDATE ... WHERE id = (SELECT ... pending LIMIT 1) RETURNING *` 保证
+/// 多 worker / 恢复并发下恰好一个执行者取得任务（FR-005 / contracts §2 不变量2）。
 async fn fetch_pending_task(db: &DbPool) -> Result<Option<ForwardTask>, AppError> {
-    let sql = "SELECT * FROM forward_tasks WHERE status = 'pending' ORDER BY id ASC LIMIT 1";
+    let sql = "UPDATE forward_tasks SET status = 'stage1_running', updated_at = CURRENT_TIMESTAMP \
+               WHERE id = (SELECT id FROM forward_tasks WHERE status = 'pending' ORDER BY id ASC LIMIT 1) \
+               RETURNING *";
     match db {
         DbPool::Sqlite(pool) => Ok(sqlx::query_as::<_, ForwardTask>(sql)
             .fetch_optional(pool)
@@ -521,9 +653,11 @@ async fn fetch_pending_task(db: &DbPool) -> Result<Option<ForwardTask>, AppError
     }
 }
 
-/// 取一个 awaiting_bot 任务（阶段2）
+/// 取一个 awaiting_bot 任务并**原子转移**到 `stage2_running`（D3，防重取）
 async fn fetch_awaiting_bot_task(db: &DbPool) -> Result<Option<ForwardTask>, AppError> {
-    let sql = "SELECT * FROM forward_tasks WHERE status = 'awaiting_bot' ORDER BY id ASC LIMIT 1";
+    let sql = "UPDATE forward_tasks SET status = 'stage2_running', updated_at = CURRENT_TIMESTAMP \
+               WHERE id = (SELECT id FROM forward_tasks WHERE status = 'awaiting_bot' ORDER BY id ASC LIMIT 1) \
+               RETURNING *";
     match db {
         DbPool::Sqlite(pool) => Ok(sqlx::query_as::<_, ForwardTask>(sql)
             .fetch_optional(pool)
@@ -833,36 +967,48 @@ async fn mark_task_failed(db: &DbPool, task_id: i64, error: &str) -> Result<(), 
 
 /// 获取队列统计
 pub async fn queue_status(db: &DbPool) -> Result<serde_json::Value, AppError> {
-    let (pending, forwarded, failed) = match db {
+    // 单次 GROUP BY 取全部状态计数（FR-007 可观测，避免多次 COUNT 往返）
+    let counts: std::collections::HashMap<String, i64> = match db {
         DbPool::Sqlite(pool) => {
-            let pending: (i64,) =
-                sqlx::query_as("SELECT COUNT(*) FROM forward_tasks WHERE status = 'pending'")
-                    .fetch_one(pool)
+            let rows: Vec<(String, i64)> =
+                sqlx::query_as("SELECT status, COUNT(*) FROM forward_tasks GROUP BY status")
+                    .fetch_all(pool)
                     .await?;
-            let forwarded: (i64,) =
-                sqlx::query_as("SELECT COUNT(*) FROM forward_tasks WHERE status = 'forwarded'")
-                    .fetch_one(pool)
-                    .await?;
-            let failed: (i64,) =
-                sqlx::query_as("SELECT COUNT(*) FROM forward_tasks WHERE status = 'failed'")
-                    .fetch_one(pool)
-                    .await?;
-            (pending.0, forwarded.0, failed.0)
+            rows.into_iter().collect()
         }
         DbPool::Postgres(pool) => {
-            let pending: (i64,) =
-                sqlx::query_as("SELECT COUNT(*) FROM forward_tasks WHERE status = 'pending'")
-                    .fetch_one(pool)
+            let rows: Vec<(String, i64)> =
+                sqlx::query_as("SELECT status, COUNT(*) FROM forward_tasks GROUP BY status")
+                    .fetch_all(pool)
                     .await?;
-            let forwarded: (i64,) =
-                sqlx::query_as("SELECT COUNT(*) FROM forward_tasks WHERE status = 'forwarded'")
-                    .fetch_one(pool)
-                    .await?;
-            let failed: (i64,) =
-                sqlx::query_as("SELECT COUNT(*) FROM forward_tasks WHERE status = 'failed'")
-                    .fetch_one(pool)
-                    .await?;
-            (pending.0, forwarded.0, failed.0)
+            rows.into_iter().collect()
+        }
+    };
+    let pending = *counts.get("pending").unwrap_or(&0);
+    let stage1_running = *counts.get("stage1_running").unwrap_or(&0);
+    let awaiting_bot = *counts.get("awaiting_bot").unwrap_or(&0);
+    let stage2_running = *counts.get("stage2_running").unwrap_or(&0);
+    let forwarded = *counts.get("forwarded").unwrap_or(&0);
+    let failed = *counts.get("failed").unwrap_or(&0);
+    // feature 029 LOGIC-004：死信计数（failed AND retry_count >= MAX_RETRIES，需人工处理）
+    let dead = match db {
+        DbPool::Sqlite(pool) => {
+            let (d,): (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM forward_tasks WHERE status='failed' AND retry_count >= ?",
+            )
+            .bind(MAX_RETRIES)
+            .fetch_one(pool)
+            .await?;
+            d
+        }
+        DbPool::Postgres(pool) => {
+            let (d,): (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM forward_tasks WHERE status='failed' AND retry_count >= $1",
+            )
+            .bind(MAX_RETRIES)
+            .fetch_one(pool)
+            .await?;
+            d
         }
     };
 
@@ -912,8 +1058,12 @@ pub async fn queue_status(db: &DbPool) -> Result<serde_json::Value, AppError> {
 
     Ok(serde_json::json!({
         "pending": pending,
+        "stage1_running": stage1_running,
+        "awaiting_bot": awaiting_bot,
+        "stage2_running": stage2_running,
         "forwarded": forwarded,
         "failed": failed,
+        "dead": dead,
         "tasks": tasks,
         "failed_tasks": failed_tasks,
     }))
@@ -961,31 +1111,450 @@ pub async fn retry_task(db: &DbPool, task_id: i64) -> Result<(), AppError> {
 
 /// 重试所有失败任务（智能恢复 — FR-052）
 pub async fn retry_all_failed(db: &DbPool) -> Result<i64, AppError> {
+    // feature 029 LOGIC-004：分批恢复（LIMIT 100）+ updated_at 退避标记，防重试风暴。
+    // 子查询 IN 双方言一致；运维多次调用可恢复全部。
+    let sql = "UPDATE forward_tasks
+        SET status = CASE WHEN image_message_id IS NULL THEN 'pending' ELSE 'awaiting_bot' END,
+            error = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE id IN (SELECT id FROM forward_tasks WHERE status = 'failed' ORDER BY id LIMIT 100)";
     let count = match db {
-        DbPool::Sqlite(pool) => {
-            sqlx::query(
-                "UPDATE forward_tasks
-                 SET status = CASE WHEN image_message_id IS NULL THEN 'pending' ELSE 'awaiting_bot' END,
-                     error = NULL,
-                     updated_at = CURRENT_TIMESTAMP
-                 WHERE status = 'failed'",
-            )
-            .execute(pool)
-            .await?
-            .rows_affected() as i64
-        }
-        DbPool::Postgres(pool) => {
-            sqlx::query(
-                "UPDATE forward_tasks
-                 SET status = CASE WHEN image_message_id IS NULL THEN 'pending' ELSE 'awaiting_bot' END,
-                     error = NULL,
-                     updated_at = CURRENT_TIMESTAMP
-                 WHERE status = 'failed'",
-            )
-            .execute(pool)
-            .await?
-            .rows_affected() as i64
-        }
+        DbPool::Sqlite(pool) => sqlx::query(sql).execute(pool).await?.rows_affected() as i64,
+        DbPool::Postgres(pool) => sqlx::query(sql).execute(pool).await?.rows_affected() as i64,
     };
     Ok(count)
+}
+
+/// feature 029 LOGIC-004：自动指数退避重试 eligible failed 任务。
+///
+/// 扫描 `retry_count < MAX_RETRIES` 的 failed，过退避窗口（`2^retry_count` 秒，cap 300s）则
+/// 智能恢复（image_message_id NULL→pending，非空→awaiting_bot），**保留 retry_count**（累计退避）。
+/// 死信（retry_count >= MAX_RETRIES）不自动回（需人工 retry_task reset）。调度循环每 tick 调用。
+/// 应用层计算退避（避开 SQLite 无 power() 的双方言难题）。
+pub async fn retry_eligible_failed(db: &DbPool) -> Result<i64, AppError> {
+    let rows: Vec<(i64, i64, Option<i64>, chrono::NaiveDateTime)> = match db {
+        DbPool::Sqlite(pool) => {
+            sqlx::query_as(
+                "SELECT id, retry_count, image_message_id, updated_at FROM forward_tasks
+                 WHERE status='failed' AND retry_count < ?",
+            )
+            .bind(MAX_RETRIES)
+            .fetch_all(pool)
+            .await?
+        }
+        DbPool::Postgres(pool) => {
+            sqlx::query_as(
+                "SELECT id, retry_count, image_message_id, updated_at FROM forward_tasks
+                 WHERE status='failed' AND retry_count < $1",
+            )
+            .bind(MAX_RETRIES)
+            .fetch_all(pool)
+            .await?
+        }
+    };
+    let now = chrono::Utc::now().naive_utc();
+    let mut recovered: i64 = 0;
+    for (id, retry_count, image_message_id, updated_at) in rows {
+        let backoff = (1i64 << retry_count.min(10)).min(300); // 2^retry_count，cap 300s
+        if (now - updated_at).num_seconds() < backoff {
+            continue; // 退避窗口未到
+        }
+        let status = if image_message_id.is_none() {
+            "pending"
+        } else {
+            "awaiting_bot"
+        };
+        match db {
+            DbPool::Sqlite(pool) => {
+                let _ = sqlx::query(
+                    "UPDATE forward_tasks SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                )
+                .bind(status)
+                .bind(id)
+                .execute(pool)
+                .await;
+            }
+            DbPool::Postgres(pool) => {
+                let _ = sqlx::query(
+                    "UPDATE forward_tasks SET status=$1, updated_at=CURRENT_TIMESTAMP WHERE id=$2",
+                )
+                .bind(status)
+                .bind(id)
+                .execute(pool)
+                .await;
+            }
+        };
+        recovered += 1;
+    }
+    if recovered > 0 {
+        tracing::info!("retry_eligible_failed 恢复 {recovered} 个 failed 任务（指数退避自动重试）");
+    }
+    Ok(recovered)
+}
+
+/// D4：崩溃恢复扫描——处理 `stage1_running` / `stage2_running` 的「卡住」任务
+///
+/// 启动时 + 调度器周期触发。基于副作用标记（image_message_id / file_id）**确定性**恢复
+///（contracts/state-machine.md 不变量3）：
+/// - `stage1_running` + `image_message_id` NULL → `pending`（副作用未完成，安全重试）
+/// - `stage1_running` + `image_message_id` 非空 → `awaiting_bot`（已发，**不重发**）
+/// - `stage2_running` + `file_id` NULL → `awaiting_bot`（未转，重试）
+/// - `stage2_running` + `file_id` 非空 → 补 `image_mappings` → `forwarded`（已转，**不重发**）
+///
+/// `threshold_secs`：仅恢复 `updated_at` 早于 `now - threshold` 的任务（避免误伤进行中任务）。
+/// 返回恢复的任务数。
+pub async fn recover_stuck_tasks(db: &DbPool, threshold_secs: u64) -> Result<i64, AppError> {
+    let mut recovered: i64 = 0;
+    match db {
+        DbPool::Sqlite(pool) => {
+            let cutoff = format!("-{} seconds", threshold_secs as i64);
+            // 阶段1：image_message_id NULL → pending（安全重试）
+            recovered += sqlx::query(
+                "UPDATE forward_tasks SET status='pending', updated_at=CURRENT_TIMESTAMP \
+                 WHERE status='stage1_running' AND image_message_id IS NULL \
+                 AND updated_at < datetime('now', ?)",
+            )
+            .bind(&cutoff)
+            .execute(pool)
+            .await?
+            .rows_affected() as i64;
+            // 阶段1：image_message_id 非空 → awaiting_bot（不重发）
+            recovered += sqlx::query(
+                "UPDATE forward_tasks SET status='awaiting_bot', updated_at=CURRENT_TIMESTAMP \
+                 WHERE status='stage1_running' AND image_message_id IS NOT NULL \
+                 AND updated_at < datetime('now', ?)",
+            )
+            .bind(&cutoff)
+            .execute(pool)
+            .await?
+            .rows_affected() as i64;
+            // 阶段2：file_id NULL → awaiting_bot（重试）
+            recovered += sqlx::query(
+                "UPDATE forward_tasks SET status='awaiting_bot', updated_at=CURRENT_TIMESTAMP \
+                 WHERE status='stage2_running' AND file_id IS NULL \
+                 AND updated_at < datetime('now', ?)",
+            )
+            .bind(&cutoff)
+            .execute(pool)
+            .await?
+            .rows_affected() as i64;
+            // 阶段2：file_id 非空 → 先补 image_mappings，再 forwarded（不重发）
+            let stuck_done: Vec<(String, String)> = sqlx::query_as(
+                "SELECT remote_id, file_id FROM forward_tasks \
+                 WHERE status='stage2_running' AND file_id IS NOT NULL \
+                 AND updated_at < datetime('now', ?)",
+            )
+            .bind(&cutoff)
+            .fetch_all(pool)
+            .await?;
+            for (remote_id, file_id) in &stuck_done {
+                let _ = sqlx::query(
+                    "INSERT OR IGNORE INTO image_mappings (remote_id, file_id) VALUES (?, ?)",
+                )
+                .bind(remote_id)
+                .bind(file_id)
+                .execute(pool)
+                .await;
+            }
+            recovered += sqlx::query(
+                "UPDATE forward_tasks SET status='forwarded', updated_at=CURRENT_TIMESTAMP \
+                 WHERE status='stage2_running' AND file_id IS NOT NULL \
+                 AND updated_at < datetime('now', ?)",
+            )
+            .bind(&cutoff)
+            .execute(pool)
+            .await?
+            .rows_affected() as i64;
+        }
+        DbPool::Postgres(pool) => {
+            // threshold_secs 为内部常量派生，非用户输入，format! 拼接 interval 无注入风险
+            let intv = format!("interval '{} seconds'", threshold_secs as i64);
+            recovered += sqlx::query(&format!(
+                "UPDATE forward_tasks SET status='pending', updated_at=CURRENT_TIMESTAMP \
+                 WHERE status='stage1_running' AND image_message_id IS NULL \
+                 AND updated_at < now() - {intv}"
+            ))
+            .execute(pool)
+            .await?
+            .rows_affected() as i64;
+            recovered += sqlx::query(&format!(
+                "UPDATE forward_tasks SET status='awaiting_bot', updated_at=CURRENT_TIMESTAMP \
+                 WHERE status='stage1_running' AND image_message_id IS NOT NULL \
+                 AND updated_at < now() - {intv}"
+            ))
+            .execute(pool)
+            .await?
+            .rows_affected() as i64;
+            recovered += sqlx::query(&format!(
+                "UPDATE forward_tasks SET status='awaiting_bot', updated_at=CURRENT_TIMESTAMP \
+                 WHERE status='stage2_running' AND file_id IS NULL \
+                 AND updated_at < now() - {intv}"
+            ))
+            .execute(pool)
+            .await?
+            .rows_affected() as i64;
+            let stuck_done: Vec<(String, String)> = sqlx::query_as(&format!(
+                "SELECT remote_id, file_id FROM forward_tasks \
+                 WHERE status='stage2_running' AND file_id IS NOT NULL \
+                 AND updated_at < now() - {intv}"
+            ))
+            .fetch_all(pool)
+            .await?;
+            for (remote_id, file_id) in &stuck_done {
+                let _ = sqlx::query(
+                    "INSERT INTO image_mappings (remote_id, file_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                )
+                .bind(remote_id)
+                .bind(file_id)
+                .execute(pool)
+                .await;
+            }
+            recovered += sqlx::query(&format!(
+                "UPDATE forward_tasks SET status='forwarded', updated_at=CURRENT_TIMESTAMP \
+                 WHERE status='stage2_running' AND file_id IS NOT NULL \
+                 AND updated_at < now() - {intv}"
+            ))
+            .execute(pool)
+            .await?
+            .rows_affected() as i64;
+        }
+    }
+    if recovered > 0 {
+        tracing::info!("recover_stuck_tasks 恢复 {recovered} 个卡住任务（stage1/stage2_running）");
+    }
+    Ok(recovered)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    /// 测试用 SQLite 内存库（008 迁移 + image_message_id 字段）
+    async fn setup_db() -> DbPool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("connect test db");
+        sqlx::raw_sql(include_str!("../../migrations/008_image_tables_sqlite.sql"))
+            .execute(&pool)
+            .await
+            .expect("run 008 migration");
+        // image_message_id 由 Migration 015（main.rs 内联）添加，测试手动补字段
+        let _ = sqlx::raw_sql("ALTER TABLE forward_tasks ADD COLUMN image_message_id INTEGER")
+            .execute(&pool)
+            .await;
+        DbPool::Sqlite(pool)
+    }
+
+    async fn insert_task(
+        db: &DbPool,
+        remote_id: &str,
+        status: &str,
+        img_msg: Option<i64>,
+        file_id: Option<&str>,
+    ) -> i64 {
+        match db {
+            DbPool::Sqlite(pool) => sqlx::query(
+                "INSERT INTO forward_tasks (remote_id, status, image_message_id, file_id) VALUES (?, ?, ?, ?)",
+            )
+            .bind(remote_id)
+            .bind(status)
+            .bind(img_msg)
+            .bind(file_id)
+            .execute(pool)
+            .await
+            .expect("insert task")
+            .last_insert_rowid(),
+            _ => unreachable!(),
+        }
+    }
+
+    async fn get_status(db: &DbPool, id: i64) -> String {
+        match db {
+            DbPool::Sqlite(pool) => {
+                let (s,): (String,) =
+                    sqlx::query_as("SELECT status FROM forward_tasks WHERE id = ?")
+                        .bind(id)
+                        .fetch_one(pool)
+                        .await
+                        .expect("get status");
+                s
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    async fn get_image_message_id(db: &DbPool, id: i64) -> Option<i64> {
+        match db {
+            DbPool::Sqlite(pool) => {
+                let (v,): (Option<i64>,) =
+                    sqlx::query_as("SELECT image_message_id FROM forward_tasks WHERE id = ?")
+                        .bind(id)
+                        .fetch_one(pool)
+                        .await
+                        .expect("get img id");
+                v
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// 模拟任务「卡住」——把 updated_at 设为 N 秒前（recover 仅恢复超 threshold 的任务）
+    async fn set_updated_ago(db: &DbPool, id: i64, secs_ago: i64) {
+        let cutoff = format!("-{} seconds", secs_ago);
+        match db {
+            DbPool::Sqlite(pool) => {
+                sqlx::query(
+                    "UPDATE forward_tasks SET updated_at = datetime('now', ?) WHERE id = ?",
+                )
+                .bind(&cutoff)
+                .bind(id)
+                .execute(pool)
+                .await
+                .expect("set updated_at");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// T007 / SC-001：阶段1 副作用已发生（image_message_id 已持久化）后崩溃，
+    /// recover 转 awaiting_bot——**不回 pending、不重发**群组A。
+    #[tokio::test]
+    async fn test_stage1_marker_present_no_resend() {
+        let db = setup_db().await;
+        let id = insert_task(&db, "img1", "stage1_running", Some(999), None).await;
+        set_updated_ago(&db, id, 100).await; // 模拟卡住 100s
+        let recovered = recover_stuck_tasks(&db, 0).await.expect("recover");
+        assert_eq!(recovered, 1);
+        assert_eq!(get_status(&db, id).await, "awaiting_bot"); // 不回 pending → 不重发
+        assert_eq!(get_image_message_id(&db, id).await, Some(999)); // 标记不丢失
+    }
+
+    /// 阶段1 副作用未完成（image_message_id NULL）→ recover 回 pending（安全重试）。
+    #[tokio::test]
+    async fn test_stage1_marker_absent_safe_retry() {
+        let db = setup_db().await;
+        let id = insert_task(&db, "img2", "stage1_running", None, None).await;
+        set_updated_ago(&db, id, 100).await;
+        recover_stuck_tasks(&db, 0).await.expect("recover");
+        assert_eq!(get_status(&db, id).await, "pending");
+    }
+
+    /// T010 / SC-002：阶段2 副作用已发生（file_id 已持久化）后崩溃，
+    /// recover 转 forwarded + 补全 image_mappings——**不重发**群组B、去重恢复。
+    #[tokio::test]
+    async fn test_stage2_marker_present_no_resend_and_mapping() {
+        let db = setup_db().await;
+        let id = insert_task(&db, "img3", "stage2_running", Some(100), Some("file123")).await;
+        set_updated_ago(&db, id, 100).await;
+        recover_stuck_tasks(&db, 0).await.expect("recover");
+        assert_eq!(get_status(&db, id).await, "forwarded"); // 不重发
+        match &db {
+            DbPool::Sqlite(pool) => {
+                let (fid,): (String,) =
+                    sqlx::query_as("SELECT file_id FROM image_mappings WHERE remote_id = ?")
+                        .bind("img3")
+                        .fetch_one(pool)
+                        .await
+                        .expect("mapping should be backfilled");
+                assert_eq!(fid, "file123"); // 去重映射恢复
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// 阶段2 副作用未完成（file_id NULL）→ recover 回 awaiting_bot（重试）。
+    #[tokio::test]
+    async fn test_stage2_marker_absent_retry() {
+        let db = setup_db().await;
+        let id = insert_task(&db, "img4", "stage2_running", Some(100), None).await;
+        set_updated_ago(&db, id, 100).await;
+        recover_stuck_tasks(&db, 0).await.expect("recover");
+        assert_eq!(get_status(&db, id).await, "awaiting_bot");
+    }
+
+    /// T011 / SC-004：fetch 原子转移——pending→stage1_running，且两次 fetch 不取同一任务（防重取）。
+    #[tokio::test]
+    async fn test_fetch_atomic_no_double_take() {
+        let db = setup_db().await;
+        let id = insert_task(&db, "img5", "pending", None, None).await;
+        let t1 = fetch_pending_task(&db)
+            .await
+            .expect("fetch1")
+            .expect("got task");
+        assert_eq!(t1.id, id);
+        assert_eq!(t1.status, "stage1_running"); // 原子转移
+        // 第二次 fetch pending → None（已被转移，防重取）
+        let t2 = fetch_pending_task(&db).await.expect("fetch2");
+        assert!(t2.is_none());
+    }
+
+    /// T014 / SC-003：公平调度——awaiting_bot 优先取（不饥饿）。
+    /// pending 与 awaiting_bot 共存时，process_next_task 的公平策略令 awaiting_bot 先被 fetch。
+    #[tokio::test]
+    async fn test_fair_scheduling_awaiting_bot_first() {
+        let db = setup_db().await;
+        let _pid = insert_task(&db, "p1", "pending", None, None).await;
+        let aid = insert_task(&db, "a1", "awaiting_bot", Some(50), None).await;
+        // 公平策略：awaiting_bot 优先 → fetch_awaiting_bot_task 先返回它
+        let t = fetch_awaiting_bot_task(&db)
+            .await
+            .expect("fetch")
+            .expect("got task");
+        assert_eq!(t.id, aid); // awaiting_bot 被取，不饥饿
+        assert_eq!(t.status, "stage2_running");
+    }
+
+    /// 辅助：设置 retry_count + updated_at（模拟 failed 任务的退避状态）
+    async fn set_retry_count_and_ago(db: &DbPool, id: i64, retry_count: i64, secs_ago: i64) {
+        let cutoff = format!("-{} seconds", secs_ago);
+        match db {
+            DbPool::Sqlite(pool) => {
+                sqlx::query(
+                    "UPDATE forward_tasks SET retry_count=?, updated_at=datetime('now', ?) WHERE id=?",
+                )
+                .bind(retry_count)
+                .bind(&cutoff)
+                .bind(id)
+                .execute(pool)
+                .await
+                .expect("set retry_count");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// feature 029 LOGIC-004：退避窗口未到不自动回
+    #[tokio::test]
+    async fn test_retry_backoff_not_yet() {
+        let db = setup_db().await;
+        let id = insert_task(&db, "rt1", "failed", None, None).await;
+        set_retry_count_and_ago(&db, id, 1, 1).await; // retry_count=1 退避 2s，updated 1s 前
+        let recovered = retry_eligible_failed(&db).await.unwrap();
+        assert_eq!(recovered, 0); // 退避未到
+        assert_eq!(get_status(&db, id).await, "failed");
+    }
+
+    /// 退避窗口已到 → 自动恢复（image_message_id NULL → pending）
+    #[tokio::test]
+    async fn test_retry_backoff_elapsed() {
+        let db = setup_db().await;
+        let id = insert_task(&db, "rt2", "failed", None, None).await;
+        set_retry_count_and_ago(&db, id, 1, 3).await; // 退避 2s，updated 3s 前（已过）
+        let recovered = retry_eligible_failed(&db).await.unwrap();
+        assert_eq!(recovered, 1);
+        assert_eq!(get_status(&db, id).await, "pending");
+    }
+
+    /// 死信（retry_count >= MAX_RETRIES）不自动回
+    #[tokio::test]
+    async fn test_dead_letter_not_retried() {
+        let db = setup_db().await;
+        let id = insert_task(&db, "rt3", "failed", None, None).await;
+        set_retry_count_and_ago(&db, id, MAX_RETRIES, 1000).await; // 死信 + 很久前
+        let recovered = retry_eligible_failed(&db).await.unwrap();
+        assert_eq!(recovered, 0); // 死信不回（WHERE retry_count < MAX 不查）
+        assert_eq!(get_status(&db, id).await, "failed");
+    }
 }

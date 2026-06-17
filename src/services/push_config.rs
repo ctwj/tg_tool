@@ -527,7 +527,8 @@ pub async fn push_for_config(
             if config.data_source_type == "all" {
                 sqlx::query_as(
                     "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
-                     (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status \
+                     (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status, \
+                     (SELECT ft.file_id FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS file_id \
                      FROM extracted_resources er \
                      WHERE er.is_pushed = 0 \
                      AND NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = ? AND rps.status = 'pushed') \
@@ -540,7 +541,8 @@ pub async fn push_for_config(
             } else {
                 sqlx::query_as(
                     "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
-                     (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status \
+                     (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status, \
+                     (SELECT ft.file_id FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS file_id \
                      FROM extracted_resources er \
                      JOIN collector_histories ch ON er.collector_history_id = ch.id \
                      JOIN push_config_collectors pcc ON pcc.collector_id = ch.collector_id \
@@ -559,7 +561,8 @@ pub async fn push_for_config(
             if config.data_source_type == "all" {
                 sqlx::query_as(
                     "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
-                     (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status \
+                     (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status, \
+                     (SELECT ft.file_id FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS file_id \
                      FROM extracted_resources er \
                      WHERE er.is_pushed = FALSE \
                      AND NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = $1 AND rps.status = 'pushed') \
@@ -572,7 +575,8 @@ pub async fn push_for_config(
             } else {
                 sqlx::query_as(
                     "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
-                     (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status \
+                     (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status, \
+                     (SELECT ft.file_id FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS file_id \
                      FROM extracted_resources er \
                      JOIN collector_histories ch ON er.collector_history_id = ch.id \
                      JOIN push_config_collectors pcc ON pcc.collector_id = ch.collector_id \
@@ -658,7 +662,7 @@ pub async fn push_for_config(
     }
 
     let resource_count = valid.len();
-    // 读取图床域名 — 推送时把 img 字段（photo_id）拼接为完整图床 URL
+    // 读取图床域名 — 推送时把图片 file_id 拼接为完整图床 URL（{domain}/file/{file_id}）
     let image_domain = {
         let cache = option_cache.read().await;
         cache.get("TelegramImageDomain").cloned()
@@ -680,9 +684,8 @@ pub async fn push_for_config(
     match result {
         Ok((status_code, body, is_success, _request_info)) => {
             if is_success {
-                for r in valid {
-                    crate::services::resource::mark_resource_pushed(db, r.id).await?;
-                }
+                let pushed_ids: Vec<i64> = valid.iter().map(|r| r.id).collect();
+                crate::services::resource::batch_mark_pushed(db, &pushed_ids).await?;
                 insert_push_status_batch(db, valid, config_id, "pushed").await?;
 
                 crate::services::resource::record_push_history_with_skips(

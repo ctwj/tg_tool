@@ -10,14 +10,14 @@ pub async fn list_clients(State(state): State<AppState>) -> Result<Json<Value>, 
     let clients = match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
             sqlx::query_as::<_, crate::models::client::Client>(
-                "SELECT id, user_id, client_type, phone, token, status, session_path, created_at, updated_at FROM clients ORDER BY created_at DESC",
+                "SELECT id, user_id, client_type, phone, token, status, session_path, name, username, created_at, updated_at FROM clients ORDER BY created_at DESC",
             )
             .fetch_all(pool)
             .await?
         }
         crate::state::DbPool::Postgres(pool) => {
             sqlx::query_as::<_, crate::models::client::Client>(
-                "SELECT id, user_id, client_type, phone, token, status, session_path, created_at, updated_at FROM clients ORDER BY created_at DESC",
+                "SELECT id, user_id, client_type, phone, token, status, session_path, name, username, created_at, updated_at FROM clients ORDER BY created_at DESC",
             )
             .fetch_all(pool)
             .await?
@@ -56,19 +56,21 @@ pub async fn add_client(
             proxy_url
         };
 
-        let _bot_info =
+        let bot_info =
             crate::services::bot_api::validate_token(token, proxy_url.as_deref()).await?;
 
-        // 直接插入为 active 状态（Bot 不需要认证流程）
+        // 直接插入为 active 状态（Bot 不需要认证流程），写入 Bot 名 / username
         match &state.db {
             crate::state::DbPool::Sqlite(pool) => {
-                sqlx::query("INSERT INTO clients (id, user_id, client_type, phone, token, status) VALUES (?, ?, ?, ?, ?, 'active')")
+                sqlx::query("INSERT INTO clients (id, user_id, client_type, phone, token, status, name, username) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)")
                     .bind(&id).bind(user.id).bind(client_type).bind(phone).bind(token)
+                    .bind(bot_info.first_name.as_str()).bind(bot_info.username.as_deref())
                     .execute(pool).await?;
             }
             crate::state::DbPool::Postgres(pool) => {
-                sqlx::query("INSERT INTO clients (id, user_id, client_type, phone, token, status) VALUES ($1, $2, $3, $4, $5, 'active')")
+                sqlx::query("INSERT INTO clients (id, user_id, client_type, phone, token, status, name, username) VALUES ($1, $2, $3, $4, $5, 'active', $6, $7)")
                     .bind(&id).bind(user.id).bind(client_type).bind(phone).bind(token)
+                    .bind(bot_info.first_name.as_str()).bind(bot_info.username.as_deref())
                     .execute(pool).await?;
             }
         }

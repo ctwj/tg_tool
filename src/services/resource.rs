@@ -223,7 +223,9 @@ async fn process_single_record_for_batch(
         }
         None => {
             // 无内容，标记已提取并跳过
-            let _ = mark_extracted(db, history_id).await;
+            if let Err(e) = mark_extracted(db, history_id).await {
+                tracing::error!("标记已提取失败 history={history_id}: {e}");
+            }
             result.skipped += 1;
             return result;
         }
@@ -481,7 +483,9 @@ pub async fn extract_single_record(
                 extra: None,
                 extract_mode: extract_mode.clone(),
             };
-            let _ = insert_resource(db, &new_resource).await;
+            if let Err(e) = insert_resource(db, &new_resource).await {
+                tracing::error!("资源插入失败（资源未持久化）: {e}");
+            }
         }
 
         results.push(json!({
@@ -798,8 +802,9 @@ pub async fn get_resource(db: &DbPool, id: i64) -> Result<ExtractedResource, App
     match db {
         DbPool::Sqlite(pool) => {
             sqlx::query_as(
-                "SELECT id, collector_history_id, title, url, description, category, tags, img, source, extra, extract_mode, is_pushed, is_edited, created_at, updated_at \
-                 FROM extracted_resources WHERE id = ?"
+                "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
+                 (SELECT ft.file_id FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS file_id \
+                 FROM extracted_resources er WHERE er.id = ?"
             )
             .bind(id)
             .fetch_optional(pool)
@@ -807,8 +812,9 @@ pub async fn get_resource(db: &DbPool, id: i64) -> Result<ExtractedResource, App
         }
         DbPool::Postgres(pool) => {
             sqlx::query_as(
-                "SELECT id, collector_history_id, title, url, description, category, tags, img, source, extra, extract_mode, is_pushed, is_edited, created_at, updated_at \
-                 FROM extracted_resources WHERE id = $1"
+                "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
+                 (SELECT ft.file_id FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS file_id \
+                 FROM extracted_resources er WHERE er.id = $1"
             )
             .bind(id)
             .fetch_optional(pool)
@@ -1140,7 +1146,8 @@ pub async fn push_resources(
         DbPool::Sqlite(pool) => {
             sqlx::query_as(
                 "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
-                 (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status \
+                 (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status, \
+                 (SELECT ft.file_id FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS file_id \
                  FROM extracted_resources er \
                  WHERE er.is_pushed = 0 \
                  LIMIT ?"
@@ -1152,7 +1159,8 @@ pub async fn push_resources(
         DbPool::Postgres(pool) => {
             sqlx::query_as(
                 "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
-                 (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status \
+                 (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status, \
+                 (SELECT ft.file_id FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS file_id \
                  FROM extracted_resources er \
                  WHERE er.is_pushed = FALSE \
                  LIMIT $1"
@@ -1228,9 +1236,8 @@ pub async fn push_resources(
     match result {
         Ok((status_code, body, is_success, _request_info)) => {
             if is_success {
-                for r in valid {
-                    mark_resource_pushed(db, r.id).await?;
-                }
+                let pushed_ids: Vec<i64> = valid.iter().map(|r| r.id).collect();
+                batch_mark_pushed(db, &pushed_ids).await?;
                 record_push_history_with_skips(
                     db,
                     &batch_id,
@@ -1340,8 +1347,8 @@ async fn build_and_send_push_request(
 /// 构建并发送推送请求 — 接受直接参数（供 push_config 按配置推送使用）
 /// 返回 (http_status, response_body, is_success, request_info)
 ///
-/// `image_domain`：图床域名（如 `https://img.example.com`），配置后 img 字段会从 photo_id
-/// 拼接为完整 URL `{domain}/{photo_id}`；未配置（None 或空）时 img 保留原 photo_id。
+/// `image_domain`：图床域名（如 `https://img.example.com`），配置后 img 字段会从 file_id
+/// 拼接为完整 URL `{domain}/file/{file_id}`；未配置（None 或空）时 img 保留裸 file_id。
 #[allow(clippy::too_many_arguments)]
 pub async fn build_and_send_push_with_params(
     resources: &[ExtractedResource],
@@ -1369,15 +1376,16 @@ pub async fn build_and_send_push_with_params(
                 .as_deref()
                 .map(|u| u.split(',').map(|s| s.trim()).collect())
                 .unwrap_or_default();
-            // img 字段：配置了图床域名时拼接为完整 URL，否则保留原 photo_id
-            let img_value = r.img.as_deref().and_then(|raw| {
-                let raw = raw.trim();
-                if raw.is_empty() {
+            // img 字段：按 Bot file_id 拼接完整图床 URL（{domain}/{file_id}，后端智能路由识别）；
+            // file_id 来自两阶段转存（未转存资源为空 → img 为 None）；未配域名则保留裸 file_id
+            let img_value = r.file_id.as_deref().and_then(|fid| {
+                let fid = fid.trim();
+                if fid.is_empty() {
                     return None;
                 }
                 match domain_norm {
-                    Some(d) => Some(format!("{d}/{raw}")),
-                    None => Some(raw.to_string()),
+                    Some(d) => Some(format!("{d}/{fid}")),
+                    None => Some(fid.to_string()),
                 }
             });
             json!({
@@ -1549,6 +1557,41 @@ pub async fn mark_resource_pushed(db: &DbPool, id: i64) -> Result<(), AppError> 
             .bind(id)
             .execute(pool)
             .await?;
+        }
+    }
+    Ok(())
+}
+
+/// 批量标记资源为已推送（feature 031 PERF-002：消除逐条 UPDATE 的 N+1）
+pub async fn batch_mark_pushed(db: &DbPool, ids: &[i64]) -> Result<(), AppError> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    match db {
+        DbPool::Sqlite(pool) => {
+            let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "UPDATE extracted_resources SET is_pushed = 1, updated_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders})"
+            );
+            let mut q = sqlx::query(&sql);
+            for id in ids {
+                q = q.bind(id);
+            }
+            q.execute(pool).await?;
+        }
+        DbPool::Postgres(pool) => {
+            let placeholders = (1..=ids.len())
+                .map(|i| format!("${i}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "UPDATE extracted_resources SET is_pushed = TRUE, updated_at = NOW() WHERE id IN ({placeholders})"
+            );
+            let mut q = sqlx::query(&sql);
+            for id in ids {
+                q = q.bind(id);
+            }
+            q.execute(pool).await?;
         }
     }
     Ok(())

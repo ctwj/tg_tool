@@ -48,6 +48,8 @@ export interface Client {
   client_type: 'Client' | 'Bot'
   phone?: string
   token?: string
+  name?: string
+  username?: string
   status: 'new' | 'active' | 'wait_code' | 'wait_password' | 'offline'
   session_path?: string
   created_at: string

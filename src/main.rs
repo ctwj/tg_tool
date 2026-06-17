@@ -47,6 +47,7 @@ async fn main() {
 
     // Ensure root user exists with a valid bcrypt hash
     ensure_root_user(&db_pool).await;
+    migrate_weak_default_password(&db_pool).await;
 
     // Ensure directories exist
     std::fs::create_dir_all("tg_store").expect("Failed to create tg_store directory");
@@ -275,7 +276,9 @@ async fn main() {
     let addr = format!("0.0.0.0:{}", config.port);
     tracing::info!("Server listening on {}", addr);
 
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .unwrap_or_else(|e| panic!("{}", format_bind_error(&addr, e)));
 
     // Run server with graceful shutdown
     let tg_manager_shutdown = tg_manager.clone();
@@ -283,32 +286,87 @@ async fn main() {
     let extract_scheduler_shutdown = state.extract_scheduler.clone();
     let forward_scheduler_shutdown = state.forward_scheduler.clone();
 
+    // feature 030 SEC-008：axum with_graceful_shutdown —— 信号后 drain 在途 HTTP（非立即中断）
+    let result = axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await;
+    if let Err(e) = result {
+        tracing::error!("Server error: {e}");
+    }
+
+    // 关闭序列（serve drain 完成后）：停调度器 + 断 Telegram
+    tracing::info!("HTTP drain 完成，开始关闭后台任务...");
+    tgTool::services::scheduler::stop_scheduler(scheduler_shutdown).await;
+    tgTool::services::scheduler::stop_extract_scheduler(extract_scheduler_shutdown).await;
+    tgTool::services::forward_queue::stop_forward_scheduler(forward_scheduler_shutdown).await;
+    tracing::info!("Schedulers stopped");
+
+    // Telegram 客户端优雅断开（timeout 兜底）
+    let shutdown_result = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tg_manager_shutdown.graceful_shutdown(),
+    )
+    .await;
+    if shutdown_result.is_err() {
+        tracing::warn!("Graceful shutdown timed out after 10 seconds");
+    }
+    tracing::info!("Server shutdown complete");
+}
+
+/// feature 030 SEC-008：关闭信号（ctrl_c + Unix SIGTERM）—— 触发 axum graceful drain
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{SignalKind, signal};
+        let _ = signal(SignalKind::terminate())
+            .expect("install terminate handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
     tokio::select! {
-        result = axum::serve(listener, app) => {
-            if let Err(e) = result {
-                tracing::error!("Server error: {e}");
-            }
-        }
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("Received shutdown signal, starting graceful shutdown...");
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+    tracing::info!("收到关闭信号，开始 drain 在途请求...");
+}
 
-            // Stop scheduler
-            tgTool::services::scheduler::stop_scheduler(scheduler_shutdown).await;
-            tgTool::services::scheduler::stop_extract_scheduler(extract_scheduler_shutdown).await;
-            tgTool::services::forward_queue::stop_forward_scheduler(forward_scheduler_shutdown).await;
-            tracing::info!("Schedulers stopped");
+/// 格式化 bind 错误信息（feature 030 LOGIC-008，纯函数便于 TDD）
+fn format_bind_error(addr: &str, e: impl std::fmt::Display) -> String {
+    format!("服务启动失败：无法监听 {addr}（{e}）— 请检查端口是否被占用或权限不足")
+}
 
-            // Graceful shutdown with timeout
-            let shutdown_result = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                tg_manager_shutdown.graceful_shutdown(),
-            ).await;
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod tests {
+    use super::*;
 
-            if shutdown_result.is_err() {
-                tracing::warn!("Graceful shutdown timed out after 10 seconds");
-            }
-            tracing::info!("Server shutdown complete");
-        }
+    #[test]
+    fn test_format_bind_error_contains_addr() {
+        let msg = format_bind_error("0.0.0.0:3000", "test error");
+        assert!(msg.contains("0.0.0.0:3000"), "应含地址: {msg}");
+    }
+
+    #[test]
+    fn test_format_bind_error_contains_reason() {
+        let msg = format_bind_error("0.0.0.0:3000", "地址已被占用 (os error 98)");
+        assert!(msg.contains("地址已被占用"), "应含原因: {msg}");
+    }
+
+    #[test]
+    fn test_format_bind_error_contains_hint() {
+        let msg = format_bind_error("0.0.0.0:3000", "err");
+        assert!(
+            msg.contains("端口") && msg.contains("占用"),
+            "应含解决建议: {msg}"
+        );
     }
 }
 
@@ -560,6 +618,32 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::info!("SQLite migration 015 applied");
                 }
             }
+            // Migration 016: users 加 must_change_password（feature 027 SEC-002）
+            {
+                let m16 = include_str!("../migrations/016_users_must_change_password_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m16).execute(pool).await {
+                    let msg = e.to_string();
+                    if !msg.contains("duplicate column") && !msg.contains("already exists") {
+                        panic!("Failed to run SQLite migration 016: {e}");
+                    }
+                    tracing::debug!("SQLite migration 016 skipped (already applied)");
+                } else {
+                    tracing::info!("SQLite migration 016 applied");
+                }
+            }
+            // Migration 017: clients 加 name/username（客户端列表显示账号名）
+            {
+                let m17 = include_str!("../migrations/017_client_name_username_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m17).execute(pool).await {
+                    let msg = e.to_string();
+                    if !msg.contains("duplicate column") && !msg.contains("already exists") {
+                        panic!("Failed to run SQLite migration 017: {e}");
+                    }
+                    tracing::debug!("SQLite migration 017 skipped (already applied)");
+                } else {
+                    tracing::info!("SQLite migration 017 applied");
+                }
+            }
         }
         DbPool::Postgres(pool) => {
             let migration_sql = include_str!("../migrations/001_init_postgres.sql");
@@ -782,6 +866,32 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::info!("PostgreSQL migration 015 applied");
                 }
             }
+            // Migration 016: users 加 must_change_password（feature 027 SEC-002）
+            {
+                let m16 = include_str!("../migrations/016_users_must_change_password_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m16).execute(pool).await {
+                    let msg = e.to_string();
+                    if !msg.contains("already exists") && !msg.contains("duplicate") {
+                        panic!("Failed to run PostgreSQL migration 016: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 016 skipped (already applied)");
+                } else {
+                    tracing::info!("PostgreSQL migration 016 applied");
+                }
+            }
+            // Migration 017: clients 加 name/username（客户端列表显示账号名）
+            {
+                let m17 = include_str!("../migrations/017_client_name_username_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m17).execute(pool).await {
+                    let msg = e.to_string();
+                    if !msg.contains("already exists") && !msg.contains("duplicate") {
+                        panic!("Failed to run PostgreSQL migration 017: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 017 skipped (already applied)");
+                } else {
+                    tracing::info!("PostgreSQL migration 017 applied");
+                }
+            }
         }
     }
 }
@@ -813,10 +923,12 @@ async fn load_option_cache(state: &AppState) {
 /// This avoids hardcoding a bcrypt hash in the migration SQL,
 /// which would break across bcrypt library version upgrades.
 async fn ensure_root_user(pool: &DbPool) {
-    let hash = crypto::hash_password("123456").expect("Failed to hash root password");
+    // feature 027 SEC-002：root 不再用固定 123456，首启动生成随机强口令 + must_change_password=1
+    let random_pw = crypto::generate_random_password();
+    let hash = crypto::hash_password(&random_pw).expect("Failed to hash root password");
     let created = match pool {
         DbPool::Sqlite(pool) => {
-            sqlx::query("INSERT OR IGNORE INTO users (username, password, role, status) VALUES ('root', ?, 100, 1)")
+            sqlx::query("INSERT OR IGNORE INTO users (username, password, role, status, must_change_password) VALUES ('root', ?, 100, 1, 1)")
                 .bind(&hash)
                 .execute(pool)
                 .await
@@ -825,7 +937,7 @@ async fn ensure_root_user(pool: &DbPool) {
                 > 0
         }
         DbPool::Postgres(pool) => {
-            sqlx::query("INSERT INTO users (username, password, role, status) VALUES ('root', $1, 100, 1) ON CONFLICT (username) DO NOTHING")
+            sqlx::query("INSERT INTO users (username, password, role, status, must_change_password) VALUES ('root', $1, 100, 1, TRUE) ON CONFLICT (username) DO NOTHING")
                 .bind(&hash)
                 .execute(pool)
                 .await
@@ -836,7 +948,46 @@ async fn ensure_root_user(pool: &DbPool) {
     };
 
     if created {
-        tracing::info!("Created default root user");
+        // 首启动打印一次性初始随机口令（敏感·首次登录后请立即改密）
+        tracing::warn!(
+            "已创建默认 root 用户，初始随机口令（敏感·首次登录后请立即改密）: {}",
+            random_pw
+        );
+    }
+}
+
+/// feature 027 SEC-002：存量迁移——检测仍为弱口令 123456 的账号，标记 must_change_password
+/// （不删除、不改 hash，仅标记；下次登录强制改密。兼容既有部署。）
+async fn migrate_weak_default_password(pool: &DbPool) {
+    let users: Vec<(i64, String)> = match pool {
+        DbPool::Sqlite(pool) => sqlx::query_as("SELECT id, password FROM users")
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default(),
+        DbPool::Postgres(pool) => sqlx::query_as("SELECT id, password FROM users")
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default(),
+    };
+    for (id, hash) in users {
+        if crypto::verify_password("123456", &hash).unwrap_or(false) {
+            match pool {
+                DbPool::Sqlite(p) => {
+                    let _ = sqlx::query("UPDATE users SET must_change_password = 1 WHERE id = ?")
+                        .bind(id)
+                        .execute(p)
+                        .await;
+                }
+                DbPool::Postgres(p) => {
+                    let _ =
+                        sqlx::query("UPDATE users SET must_change_password = TRUE WHERE id = $1")
+                            .bind(id)
+                            .execute(p)
+                            .await;
+                }
+            };
+            tracing::warn!("用户 {} 检测到弱口令 123456，已标记必须改密", id);
+        }
     }
 }
 

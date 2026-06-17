@@ -125,7 +125,10 @@ async fn write_batch(
                             inserted += 1;
                     }
                 }
-                let _ = tx.commit().await;
+                if let Err(e) = tx.commit().await {
+                    tracing::error!("采集批次事务提交失败（整批回滚）: {e}");
+                    return 0;
+                }
             }
         }
         crate::state::DbPool::Postgres(pool) => {
@@ -147,7 +150,10 @@ async fn write_batch(
                             inserted += 1;
                     }
                 }
-                let _ = tx.commit().await;
+                if let Err(e) = tx.commit().await {
+                    tracing::error!("采集批次事务提交失败（整批回滚）: {e}");
+                    return 0;
+                }
             }
         }
     }

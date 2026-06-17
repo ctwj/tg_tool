@@ -59,6 +59,13 @@ const Clients: React.FC = () => {
     } catch (e: any) { message.error(e.message || '停止失败') }
   }
 
+  // 脱敏：保留前 head + 后 tail，中间 ****（过短则全 ****）
+  const maskSecret = (v: string, head: number, tail: number): string => {
+    if (!v) return ''
+    if (v.length <= head + tail) return '****'
+    return `${v.slice(0, head)}****${v.slice(-tail)}`
+  }
+
   const statusConfig: Record<string, { color: string; text: string }> = {
     active: { color: '#10b981', text: '在线' },
     new: { color: '#0ea5e9', text: '新建' },
@@ -90,7 +97,37 @@ const Clients: React.FC = () => {
         </Tag>
       ),
     },
-    { title: '手机号', dataIndex: 'phone', key: 'phone' },
+    {
+      title: '账号',
+      key: 'account',
+      width: 160,
+      render: (_: any, record: Client) => {
+        const name = record.name
+        const username = record.username
+        if (!name && !username) return <span style={{ color: '#9ca3af' }}>-</span>
+        return (
+          <div style={{ lineHeight: '18px' }}>
+            {name && <div style={{ fontSize: 13, fontWeight: 600, color: '#0c4a6e' }}>{name}</div>}
+            {username && <div style={{ fontSize: 12, color: '#6b7280' }}>@{username}</div>}
+          </div>
+        )
+      },
+    },
+    {
+      title: '手机号/Token',
+      key: 'contact',
+      width: 160,
+      render: (_: any, record: Client) => {
+        const isBot = record.client_type === 'Bot'
+        const raw = isBot ? record.token : record.phone
+        if (!raw) return <span style={{ color: '#9ca3af' }}>-</span>
+        return (
+          <span style={{ fontSize: 13 }}>
+            {isBot ? maskSecret(raw, 4, 4) : maskSecret(raw, 3, 2)}
+          </span>
+        )
+      },
+    },
     {
       title: '状态',
       dataIndex: 'status',

@@ -37,12 +37,8 @@ pub struct Config {
     #[arg(long, default_value = "", env = "REDIS_CONN_STRING")]
     pub redis_conn_string: String,
 
-    /// Session 密钥
-    #[arg(
-        long,
-        default_value = "change-me-to-a-random-string",
-        env = "SESSION_SECRET"
-    )]
+    /// Session 密钥（启动期强制校验：非空 / 非默认值 / ≥32 字符；feature 027 SEC-001）
+    #[arg(long, default_value = "", env = "SESSION_SECRET")]
     pub session_secret: String,
 
     /// 单 IP 速率限制（请求数/窗口期）
@@ -60,6 +56,17 @@ impl Config {
         let _ = dotenvy::dotenv();
 
         let config = Config::parse();
+
+        // feature 027 SEC-001：启动期强制校验 SESSION_SECRET（拒绝空 / 默认值 / 过短）
+        // 生产环境 fail-fast；测试环境仅提示（测试不模拟生产 secret，
+        // 校验逻辑由 validate_session_secret 单测覆盖，见 SC-001）
+        if let Err(msg) = crate::services::crypto::validate_session_secret(&config.session_secret) {
+            if cfg!(not(test)) {
+                panic!("启动失败 — {msg}");
+            } else {
+                eprintln!("[test] SESSION_SECRET 校验跳过: {msg}");
+            }
+        }
 
         // Ensure tg_store directory exists
         if !config.tg_store.exists() {
@@ -98,7 +105,7 @@ mod tests {
             tg_app_hash: "testhash".to_string(),
             sql_dsn: sql_dsn.to_string(),
             redis_conn_string: String::new(),
-            session_secret: "test-secret".to_string(),
+            session_secret: "test-secret-0123456789abcdef0123456789".to_string(),
             rate_limit_max: 100,
             rate_limit_window_secs: 60,
         }
