@@ -321,7 +321,7 @@ async fn shutdown_signal() {
 
     #[cfg(unix)]
     let terminate = async {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let _ = signal(SignalKind::terminate())
             .expect("install terminate handler")
             .recv()
@@ -340,12 +340,11 @@ async fn shutdown_signal() {
 
 /// 格式化 bind 错误信息（feature 030 LOGIC-008，纯函数便于 TDD）
 fn format_bind_error(addr: &str, e: impl std::fmt::Display) -> String {
-    format!(
-        "服务启动失败：无法监听 {addr}（{e}）— 请检查端口是否被占用或权限不足"
-    )
+    format!("服务启动失败：无法监听 {addr}（{e}）— 请检查端口是否被占用或权限不足")
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -364,7 +363,10 @@ mod tests {
     #[test]
     fn test_format_bind_error_contains_hint() {
         let msg = format_bind_error("0.0.0.0:3000", "err");
-        assert!(msg.contains("端口") && msg.contains("占用"), "应含解决建议: {msg}");
+        assert!(
+            msg.contains("端口") && msg.contains("占用"),
+            "应含解决建议: {msg}"
+        );
     }
 }
 
@@ -932,18 +934,14 @@ async fn ensure_root_user(pool: &DbPool) {
 /// （不删除、不改 hash，仅标记；下次登录强制改密。兼容既有部署。）
 async fn migrate_weak_default_password(pool: &DbPool) {
     let users: Vec<(i64, String)> = match pool {
-        DbPool::Sqlite(pool) => {
-            sqlx::query_as("SELECT id, password FROM users")
-                .fetch_all(pool)
-                .await
-                .unwrap_or_default()
-        }
-        DbPool::Postgres(pool) => {
-            sqlx::query_as("SELECT id, password FROM users")
-                .fetch_all(pool)
-                .await
-                .unwrap_or_default()
-        }
+        DbPool::Sqlite(pool) => sqlx::query_as("SELECT id, password FROM users")
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default(),
+        DbPool::Postgres(pool) => sqlx::query_as("SELECT id, password FROM users")
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default(),
     };
     for (id, hash) in users {
         if crypto::verify_password("123456", &hash).unwrap_or(false) {

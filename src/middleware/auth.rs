@@ -69,6 +69,7 @@ fn extract_session_token(cookie_str: &str) -> Option<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 

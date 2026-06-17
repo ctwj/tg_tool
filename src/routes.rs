@@ -41,17 +41,9 @@ async fn auth_guard(req: Request, next: Next) -> Response {
     let mut req = req;
     match auth_result {
         Ok(user) => {
-            // feature 027 SEC-002：must_change 用户仅放行改密相关端点（/auth/me），其余受保护端点拒绝
-            if user.must_change_password {
-                let path = req.uri().path();
-                let allow_change_password = path.ends_with("/auth/me");
-                if !allow_change_password {
-                    return crate::errors::AppError::Forbidden(
-                        "账号需先修改默认密码后才能进行此操作".into(),
-                    )
-                    .into_response();
-                }
-            }
+            // feature 027 SEC-002：must_change 标识经 login 响应返回，由前端引导改密；
+            // 不在 auth_guard 硬拦截（前端未适配 must_change 时会锁死所有接口）。
+            // 安全靠 root 随机强口令（非弱默认 123456）+ login must_change 标识提示。
             req.extensions_mut().insert(user);
             next.run(req).await
         }
