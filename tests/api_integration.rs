@@ -2263,7 +2263,6 @@ async fn test_login_with_correct_captcha_succeeds() {
 async fn test_captcha_single_use() {
     let db = setup_test_db().await;
     let (state, _) = make_test_state(db);
-    let captcha_store = state.captcha_store.clone();
     let app = build_test_app(state.clone());
 
     // Fail 3 times

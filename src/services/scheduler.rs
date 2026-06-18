@@ -118,8 +118,8 @@ async fn run_push_tick(
         let last = match config_last_run.get(&config.id).copied() {
             Some(t) => t,
             None => {
-                let initial = compute_initial_last_run(db, config.id, interval_secs, now, now_utc)
-                    .await;
+                let initial =
+                    compute_initial_last_run(db, config.id, interval_secs, now, now_utc).await;
                 config_last_run.insert(config.id, initial);
                 initial
             }
@@ -180,12 +180,9 @@ async fn compute_initial_last_run(
         }
     };
 
-    let initial = match last_pushed {
+    match last_pushed {
         Some(dt) => {
-            let elapsed = now_utc
-                .signed_duration_since(dt)
-                .num_seconds()
-                .max(0) as u64;
+            let elapsed = now_utc.signed_duration_since(dt).num_seconds().max(0) as u64;
             tracing::info!(
                 "Push scheduler: config {} recovered last_run from history, elapsed={}s",
                 config_id,
@@ -203,8 +200,7 @@ async fn compute_initial_last_run(
             now.checked_sub(std::time::Duration::from_secs(interval_secs))
                 .unwrap_or(now)
         }
-    };
-    initial
+    }
 }
 
 /// Stop the scheduler

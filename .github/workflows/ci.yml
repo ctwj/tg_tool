@@ -127,12 +127,22 @@ jobs:
           key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-build-
 
-      - name: Set version from tag
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Set version from tag or input
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
+          # 兼容两种触发：tag push（github.ref=refs/tags/vX.Y.Z）或手动 workflow_dispatch（inputs.version）
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION=${GITHUB_REF#refs/tags/v}
+          fi
+          # 去掉可能的 v 前缀，统一为纯版本号
+          VERSION="${VERSION#v}"
           sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
+          # 强制清理主 crate 产物，避免 cargo cache 复用时 env!("CARGO_PKG_VERSION") 未重新求值
+          cargo clean -p tgTool --release --target x86_64-unknown-linux-musl || true
           echo "Building version: ${VERSION}"
+          grep '^version' Cargo.toml
 
       - name: Build release binary
         run: cargo build --release --target x86_64-unknown-linux-musl --features embed-frontend
