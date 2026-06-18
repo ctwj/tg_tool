@@ -108,6 +108,26 @@ pub async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
     };
     drop(extract_sched);
 
+    // 活跃自动推送配置数 — 用于前端区分"调度器循环在跑但无活跃配置"场景
+    let push_active_configs: i64 = match &state.db {
+        crate::state::DbPool::Sqlite(pool) => {
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM push_configs WHERE is_active = 1 AND auto_push = 1",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0)
+        }
+        crate::state::DbPool::Postgres(pool) => {
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM push_configs WHERE is_active = TRUE AND auto_push = TRUE",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0)
+        }
+    };
+
     let push_sched = state.scheduler.read().await;
     let push_interval = push_sched.interval_minutes;
     let push_next_run = if push_sched.running {
@@ -195,6 +215,7 @@ pub async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
                 "push_running": push_next_run.is_some(),
                 "push_next_run": push_next_run,
                 "push_interval_minutes": push_interval,
+                "push_active_configs": push_active_configs,
                 "forward_running": forward_running,
                 "forward_interval_secs": forward_interval,
             },

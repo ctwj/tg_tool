@@ -339,6 +339,8 @@ export interface SchedulersStatus {
   push_running: boolean
   push_next_run?: string
   push_interval_minutes: number
+  // 活跃自动推送配置数 (is_active=1 AND auto_push=1)
+  push_active_configs: number
   forward_running: boolean
   forward_interval_secs: number
 }

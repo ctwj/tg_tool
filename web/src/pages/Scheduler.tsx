@@ -243,6 +243,11 @@ const Scheduler: React.FC = () => {
   const extractRateNum = extractStats && extractStats.total > 0 ? (extractStats.success / extractStats.total) * 100 : 0
   const extractRateStr = extractRateNum > 0 ? extractRateNum.toFixed(1) + '%' : '—'
 
+  // 推送调度"真正在推送" = 调度器循环在跑 + 至少存在一个活跃自动推送配置
+  // 全局调度器进程内常驻，但禁用全部配置后应让用户看到"已暂停"
+  const pushEffectivelyRunning =
+    !!schedulers?.push_running && (schedulers?.push_active_configs ?? 0) > 0
+
   return (
     <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
       <style>{pulseStyle}</style>
@@ -270,12 +275,14 @@ const Scheduler: React.FC = () => {
               </Space>
             }
             extra={
-              schedulers?.push_running ? (
+              pushEffectivelyRunning ? (
                 <span style={{ fontSize: 13, color: '#10b981' }}>
                   <span className="sched-status-dot" />运行中
                 </span>
+              ) : schedulers?.push_running ? (
+                <Tag color="warning" style={{ margin: 0 }}>已暂停（无活跃配置）</Tag>
               ) : (
-                <Tag color="default">已停止</Tag>
+                <Tag color="default" style={{ margin: 0 }}>已停止</Tag>
               )
             }
           >
@@ -284,16 +291,16 @@ const Scheduler: React.FC = () => {
                 <Progress
                   type="circle"
                   size={64}
-                  percent={schedulers.push_running ? calcProgress(schedulers.push_next_run, schedulers.push_interval_minutes) : 0}
+                  percent={pushEffectivelyRunning ? calcProgress(schedulers.push_next_run, schedulers.push_interval_minutes) : 0}
                   strokeColor="#0369a1"
-                  format={() => <ClockCircleOutlined style={{ fontSize: 18, color: schedulers.push_running ? '#0369a1' : '#d1d5db' }} />}
+                  format={() => <ClockCircleOutlined style={{ fontSize: 18, color: pushEffectivelyRunning ? '#0369a1' : '#d1d5db' }} />}
                 />
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 12, color: '#9ca3af' }}>
                     间隔 {schedulers.push_interval_minutes} 分钟
                   </div>
                   <div style={{ fontSize: 13, color: '#1f2937', fontWeight: 500, margin: '2px 0' }}>
-                    {schedulers.push_running ? calcCountdown(schedulers.push_next_run) : '—'}
+                    {pushEffectivelyRunning ? calcCountdown(schedulers.push_next_run) : '—'}
                   </div>
                   <div style={{ fontSize: 11, color: '#9ca3af' }}>
                     {schedulers.push_next_run?.substring(11) || '未计划'}

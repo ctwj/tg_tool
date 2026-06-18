@@ -108,19 +108,23 @@ async fn run_push_tick(
     };
 
     let now = std::time::Instant::now();
+    let now_utc = chrono::Utc::now().naive_utc();
     for config in &configs {
-        let last = config_last_run.get(&config.id).copied();
         let interval_secs = (config.push_interval as u64) * 60;
-        let should_run = match last {
-            Some(t) => now.duration_since(t).as_secs() >= interval_secs,
-            // LOGIC-015：重启后首次（config_last_run 内存态丢失）不立即执行——记录 now 等下个
-            // interval，防止重启后首 tick 全配置立即执行（推送风暴）
+        // 首次见到该 config（重启后内存态丢失）：从 push_histories 恢复上次推送时间
+        // 作为初始 last_run；无历史（全新配置）则允许立即触发首次推送。
+        // 这样既避免"重启后必须等一个 interval 才推"的体验问题，又避免风暴——
+        // 因为每个 config 都按真实节奏调度，距上次推送 < interval 的会自然等到下个 tick。
+        let last = match config_last_run.get(&config.id).copied() {
+            Some(t) => t,
             None => {
-                config_last_run.insert(config.id, now);
-                false
+                let initial = compute_initial_last_run(db, config.id, interval_secs, now, now_utc)
+                    .await;
+                config_last_run.insert(config.id, initial);
+                initial
             }
         };
-
+        let should_run = now.duration_since(last).as_secs() >= interval_secs;
         if !should_run {
             continue;
         }
@@ -141,6 +145,66 @@ async fn run_push_tick(
         }
         config_last_run.insert(config.id, now);
     }
+}
+
+/// 重启后首次见到 config 时计算其初始 last_run：
+/// - 有推送历史 → 用上次 pushed_at 反推 Instant，按 interval 正常调度（不延后、不补跑）
+/// - 无历史 / 查询失败 → 返回 `now - interval`，让本轮 tick 立即触发首次推送
+async fn compute_initial_last_run(
+    db: &crate::state::DbPool,
+    config_id: i64,
+    interval_secs: u64,
+    now: std::time::Instant,
+    now_utc: chrono::NaiveDateTime,
+) -> std::time::Instant {
+    let last_pushed: Option<chrono::NaiveDateTime> = match db {
+        crate::state::DbPool::Sqlite(pool) => {
+            sqlx::query_scalar::<_, chrono::NaiveDateTime>(
+                "SELECT pushed_at FROM push_histories WHERE push_config_id = ? ORDER BY id DESC LIMIT 1",
+            )
+            .bind(config_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+        }
+        crate::state::DbPool::Postgres(pool) => {
+            sqlx::query_scalar::<_, chrono::NaiveDateTime>(
+                "SELECT pushed_at FROM push_histories WHERE push_config_id = $1 ORDER BY id DESC LIMIT 1",
+            )
+            .bind(config_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+        }
+    };
+
+    let initial = match last_pushed {
+        Some(dt) => {
+            let elapsed = now_utc
+                .signed_duration_since(dt)
+                .num_seconds()
+                .max(0) as u64;
+            tracing::info!(
+                "Push scheduler: config {} recovered last_run from history, elapsed={}s",
+                config_id,
+                elapsed
+            );
+            now.checked_sub(std::time::Duration::from_secs(elapsed))
+                .unwrap_or(now)
+        }
+        None => {
+            tracing::info!(
+                "Push scheduler: config {} has no push history, triggering first push",
+                config_id
+            );
+            // 让 should_run 为 true：last 比 interval 还早
+            now.checked_sub(std::time::Duration::from_secs(interval_secs))
+                .unwrap_or(now)
+        }
+    };
+    initial
 }
 
 /// Stop the scheduler

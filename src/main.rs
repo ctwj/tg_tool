@@ -245,42 +245,18 @@ async fn main() {
         }
     }
 
-    // Start push scheduler if any push_config has auto_push enabled
-    // 修复：以前重启后 push scheduler 不自动启动，导致调度监控显示"已停止"
-    {
-        let has_active: bool = match &state.db {
-            tgTool::state::DbPool::Sqlite(pool) => {
-                sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM push_configs WHERE is_active = 1 AND auto_push = 1",
-                )
-                .fetch_one(pool)
-                .await
-                .unwrap_or(0)
-                    > 0
-            }
-            tgTool::state::DbPool::Postgres(pool) => {
-                sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM push_configs WHERE is_active = TRUE AND auto_push = TRUE",
-                )
-                .fetch_one(pool)
-                .await
-                .unwrap_or(0)
-                    > 0
-            }
-        };
-        if has_active {
-            tracing::info!("Active push config detected, starting push scheduler");
-            tgTool::services::scheduler::start_scheduler(
-                state.scheduler.clone(),
-                1,
-                state.db.clone(),
-                state.option_cache.clone(),
-            )
-            .await;
-        } else {
-            tracing::info!("No active push config, push scheduler stays stopped");
-        }
-    }
+    // Start push scheduler unconditionally — 调度器固定 1 分钟 tick，由 run_push_tick
+    // 内部按 is_active=1 AND auto_push=1 过滤；这样运行时 toggle 任一配置都不需要
+    // 重启调度循环（避免丢失 config_last_run 内存态触发 LOGIC-015 防风暴）。
+    // 调度监控卡片"运行中/已暂停"语义由 /status 的 push_active_configs 字段决定。
+    tracing::info!("Starting push scheduler (unconditional, fixed 1-min tick)");
+    tgTool::services::scheduler::start_scheduler(
+        state.scheduler.clone(),
+        1,
+        state.db.clone(),
+        state.option_cache.clone(),
+    )
+    .await;
 
     // Start forward scheduler if image hosting is configured
     {
