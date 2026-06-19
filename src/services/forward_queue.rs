@@ -365,7 +365,9 @@ async fn execute_stage1(state: &AppState, task: &ForwardTask, chat_id_a: &str) {
             // 文案修正：阶段1 失败不一定发生在 copy_media/send_album 调用环节
             // （可能是更早的"源消息无图片媒体"），统一描述为"阶段1 失败"
             let err_str = format!("阶段1 失败: {e}");
-            if let Err(db_err) = mark_task_failed(&state.db, task.id, &err_str).await {
+            if let Err(db_err) =
+                mark_task_failed(&state.db, task.id, &task.remote_id, &err_str).await
+            {
                 tracing::warn!("任务 {} 标记 failed 失败: {db_err}", task.id);
             }
             tracing::warn!("任务 {} {err_str}", task.id);
@@ -459,7 +461,9 @@ async fn execute_stage2(
         Err(e) => {
             let err_str = e.to_string();
             let is_flood = err_str.contains("FLOOD_WAIT");
-            if let Err(db_err) = mark_task_failed(&state.db, task.id, &err_str).await {
+            if let Err(db_err) =
+                mark_task_failed(&state.db, task.id, &task.remote_id, &err_str).await
+            {
                 tracing::warn!("任务 {} 标记 failed 失败: {db_err}", task.id);
             }
             tracing::warn!("任务 {} 阶段2 失败: {err_str}", task.id);
@@ -938,27 +942,91 @@ async fn mark_task_forwarded(db: &DbPool, task_id: i64, file_id: &str) -> Result
     Ok(())
 }
 
-/// 标记任务为 failed
-async fn mark_task_failed(db: &DbPool, task_id: i64, error: &str) -> Result<(), AppError> {
-    match db {
+/// 标记任务为 failed。feature 040：若 retry_count 自增后 >= MAX_RETRIES（死信），
+/// 在**同一事务**内清空关联资源 `extracted_resources.img`（WHERE img = remote_id）
+/// 并删除该失败任务行——任一步失败整体回滚（FR-006 原子性）。日志在 commit 成功后记录，
+/// 避免出现"日志说清了但事务回滚"的误导（research D7）。
+async fn mark_task_failed(
+    db: &DbPool,
+    task_id: i64,
+    remote_id: &str,
+    error: &str,
+) -> Result<(), AppError> {
+    let cleaned = match db {
         DbPool::Sqlite(pool) => {
+            let mut tx = pool.begin().await?;
             sqlx::query(
-                "UPDATE forward_tasks SET status = 'failed', error = ?, retry_count = retry_count + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE forward_tasks SET status='failed', error=?, retry_count=retry_count+1, updated_at=CURRENT_TIMESTAMP WHERE id=?",
             )
             .bind(error)
             .bind(task_id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
+            let (retry_count,): (i64,) =
+                sqlx::query_as("SELECT retry_count FROM forward_tasks WHERE id=?")
+                    .bind(task_id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            if retry_count >= MAX_RETRIES {
+                sqlx::query("UPDATE extracted_resources SET img=NULL WHERE img=?")
+                    .bind(remote_id)
+                    .execute(&mut *tx)
+                    .await?;
+                sqlx::query("DELETE FROM forward_tasks WHERE id=?")
+                    .bind(task_id)
+                    .execute(&mut *tx)
+                    .await?;
+                tx.commit().await?;
+                true
+            } else {
+                tx.commit().await?;
+                false
+            }
         }
         DbPool::Postgres(pool) => {
+            let mut tx = pool.begin().await?;
             sqlx::query(
-                "UPDATE forward_tasks SET status = 'failed', error = $1, retry_count = retry_count + 1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+                "UPDATE forward_tasks SET status='failed', error=$1, retry_count=retry_count+1, updated_at=CURRENT_TIMESTAMP WHERE id=$2",
             )
             .bind(error)
             .bind(task_id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
+            let (retry_count,): (i64,) =
+                sqlx::query_as("SELECT retry_count FROM forward_tasks WHERE id=$1")
+                    .bind(task_id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            if retry_count >= MAX_RETRIES {
+                sqlx::query("UPDATE extracted_resources SET img=NULL WHERE img=$1")
+                    .bind(remote_id)
+                    .execute(&mut *tx)
+                    .await?;
+                sqlx::query("DELETE FROM forward_tasks WHERE id=$1")
+                    .bind(task_id)
+                    .execute(&mut *tx)
+                    .await?;
+                tx.commit().await?;
+                true
+            } else {
+                tx.commit().await?;
+                false
+            }
         }
+    };
+
+    if cleaned {
+        tracing::info!(
+            "死信自动清理: task={} remote_id={} cleared_resource_img=true",
+            task_id,
+            remote_id
+        );
+    } else {
+        tracing::debug!(
+            "任务标记失败（未达死信阈值）: task={} remote_id={}",
+            task_id,
+            remote_id
+        );
     }
     Ok(())
 }
@@ -1344,6 +1412,19 @@ mod tests {
         let _ = sqlx::raw_sql("ALTER TABLE forward_tasks ADD COLUMN image_message_id INTEGER")
             .execute(&pool)
             .await;
+        // feature 040：死信清理测试需要 extracted_resources 表（003 migration）。
+        // sqlx 的 SQLite 连接默认 foreign_keys=ON，003 的 collector_history_id
+        // 外键需要依赖表存在，故先加载 001_init（含 collector_histories）。
+        sqlx::raw_sql(include_str!("../../migrations/001_init_sqlite.sql"))
+            .execute(&pool)
+            .await
+            .expect("run 001 migration");
+        sqlx::raw_sql(include_str!(
+            "../../migrations/003_extracted_resources_sqlite.sql"
+        ))
+        .execute(&pool)
+        .await
+        .expect("run 003 migration");
         DbPool::Sqlite(pool)
     }
 
@@ -1366,6 +1447,64 @@ mod tests {
             .await
             .expect("insert task")
             .last_insert_rowid(),
+            _ => unreachable!(),
+        }
+    }
+
+    /// feature 040：插入一条 extracted_resources 记录。
+    /// sqlx SQLite 连接默认 foreign_keys=ON，需先建幂等占位外键链：
+    /// users(1) → collectors(1) → collector_histories(1) → extracted_resources。
+    async fn insert_resource(db: &DbPool, title: &str, img: Option<&str>) -> i64 {
+        match db {
+            DbPool::Sqlite(pool) => {
+                sqlx::query(
+                    "INSERT OR IGNORE INTO users (id, username, password) VALUES (1, 'test', 'p')",
+                )
+                .execute(pool)
+                .await
+                .expect("placeholder user");
+                sqlx::query(
+                    "INSERT OR IGNORE INTO collectors (id, user_id, channel_id, collector_type) \
+                     VALUES (1, 1, 1, 'test')",
+                )
+                .execute(pool)
+                .await
+                .expect("placeholder collector");
+                sqlx::query(
+                    "INSERT OR IGNORE INTO collector_histories \
+                     (id, collector_id, channel_id, message_id) VALUES (1, 1, 1, 1)",
+                )
+                .execute(pool)
+                .await
+                .expect("placeholder collector_history");
+                sqlx::query(
+                    "INSERT INTO extracted_resources (collector_history_id, title, img, source) \
+                     VALUES (?, ?, ?, 'tg')",
+                )
+                .bind(1i64)
+                .bind(title)
+                .bind(img)
+                .execute(pool)
+                .await
+                .expect("insert resource")
+                .last_insert_rowid()
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// feature 040：读取资源的 img 字段（死信清理后应为 None）。
+    async fn get_resource_img(db: &DbPool, id: i64) -> Option<String> {
+        match db {
+            DbPool::Sqlite(pool) => {
+                let (v,): (Option<String>,) =
+                    sqlx::query_as("SELECT img FROM extracted_resources WHERE id = ?")
+                        .bind(id)
+                        .fetch_one(pool)
+                        .await
+                        .expect("get resource img");
+                v
+            }
             _ => unreachable!(),
         }
     }
@@ -1556,5 +1695,196 @@ mod tests {
         let recovered = retry_eligible_failed(&db).await.unwrap();
         assert_eq!(recovered, 0); // 死信不回（WHERE retry_count < MAX 不查）
         assert_eq!(get_status(&db, id).await, "failed");
+    }
+
+    // ─── feature 040：死信自动清理（清空资源 img + 删除失败任务）─────────────
+
+    /// FR-001/FR-002：retry_count 达 MAX_RETRIES 的瞬间，事务内清空关联资源 img
+    /// 并删除该失败任务行。
+    #[tokio::test]
+    async fn test_dead_letter_clears_resource_img_and_deletes_task() {
+        let db = setup_db().await;
+        // 资源 img = remote_id
+        let rid = insert_resource(&db, "死信测试资源", Some("rid-dl")).await;
+        // 任务已失败 4 次（再失败一次即 retry_count=5=MAX_RETRIES → 死信）
+        let tid = insert_task(&db, "rid-dl", "failed", None, None).await;
+        set_retry_count_and_ago(&db, tid, MAX_RETRIES - 1, 0).await;
+
+        mark_task_failed(&db, tid, "rid-dl", "第 5 次失败")
+            .await
+            .expect("mark failed");
+
+        // (a) 任务行被删除
+        let still_exists: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM forward_tasks WHERE id = ?")
+                .bind(tid)
+                .fetch_optional(match &db {
+                    DbPool::Sqlite(p) => p,
+                    _ => unreachable!(),
+                })
+                .await
+                .expect("check task");
+        assert!(still_exists.is_none(), "死信任务行应被删除");
+
+        // (b) 资源 img 被置 NULL（资源记录本身保留 — 由 US2 测试覆盖更多字段）
+        assert_eq!(get_resource_img(&db, rid).await, None);
+    }
+
+    /// FR-001 反向：retry_count < MAX_RETRIES 时，仅自增计数，不清 img 不删行。
+    #[tokio::test]
+    async fn test_failed_below_threshold_keeps_task_and_img() {
+        let db = setup_db().await;
+        let rid = insert_resource(&db, "非死信资源", Some("rid-ok")).await;
+        let tid = insert_task(&db, "rid-ok", "failed", None, None).await;
+        set_retry_count_and_ago(&db, tid, 3, 0).await; // retry_count=3
+
+        mark_task_failed(&db, tid, "rid-ok", "第 4 次失败")
+            .await
+            .expect("mark failed");
+
+        // 任务仍在、status=failed、retry_count=4
+        assert_eq!(get_status(&db, tid).await, "failed");
+        let rc: i64 = sqlx::query_scalar("SELECT retry_count FROM forward_tasks WHERE id = ?")
+            .bind(tid)
+            .fetch_one(match &db {
+                DbPool::Sqlite(p) => p,
+                _ => unreachable!(),
+            })
+            .await
+            .expect("get retry_count");
+        assert_eq!(rc, 4);
+        // 资源 img 保持原值
+        assert_eq!(get_resource_img(&db, rid).await.as_deref(), Some("rid-ok"));
+    }
+
+    /// FR-003 / User Story 2：死信清理仅清空 img，资源记录其他字段（title/url/desc/
+    /// category/tags/is_pushed/is_edited）100% 保留。
+    #[tokio::test]
+    #[allow(clippy::type_complexity)] // 测试用 8 元组一次性取全字段，比拆多次 SELECT 更直观
+    async fn test_resource_non_img_fields_preserved_after_cleanup() {
+        let db = setup_db().await;
+        let pool = match &db {
+            DbPool::Sqlite(p) => p,
+            _ => unreachable!(),
+        };
+        // 先建占位链，再用完整字段插入资源
+        insert_resource(&db, "占位", Some("rid-preserve")).await;
+        sqlx::query(
+            "UPDATE extracted_resources SET \
+             title='完整资源', url='https://example.com/x', description='描述', \
+             category='quark', tags='电影,动作', is_pushed=1, is_edited=1 \
+             WHERE img='rid-preserve'",
+        )
+        .execute(pool)
+        .await
+        .expect("update resource fields");
+        let rid: i64 =
+            sqlx::query_scalar("SELECT id FROM extracted_resources WHERE img='rid-preserve'")
+                .fetch_one(pool)
+                .await
+                .expect("get resource id");
+        let tid = insert_task(&db, "rid-preserve", "failed", None, None).await;
+        set_retry_count_and_ago(&db, tid, MAX_RETRIES - 1, 0).await;
+
+        mark_task_failed(&db, tid, "rid-preserve", "死信")
+            .await
+            .expect("mark failed");
+
+        // 资源行仍在，非 img 字段原样保留，仅 img=NULL
+        let row: (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            bool,
+            bool,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT title, url, description, category, tags, is_pushed, is_edited, img \
+             FROM extracted_resources WHERE id=?",
+        )
+        .bind(rid)
+        .fetch_one(pool)
+        .await
+        .expect("fetch resource");
+        assert_eq!(row.0, "完整资源");
+        assert_eq!(row.1.as_deref(), Some("https://example.com/x"));
+        assert_eq!(row.2.as_deref(), Some("描述"));
+        assert_eq!(row.3.as_deref(), Some("quark"));
+        assert_eq!(row.4.as_deref(), Some("电影,动作"));
+        assert!(row.5, "is_pushed 保留");
+        assert!(row.6, "is_edited 保留");
+        assert_eq!(row.7, None, "img 被清空");
+    }
+
+    /// Edge Case：资源 img 已是 NULL（用户手动清空过）→ 清理仍 OK，幂等不报错。
+    #[tokio::test]
+    async fn test_dead_letter_clear_idempotent_on_null_img() {
+        let db = setup_db().await;
+        let rid = insert_resource(&db, "已无图资源", None).await; // img 已 NULL
+        let tid = insert_task(&db, "rid-null", "failed", None, None).await;
+        set_retry_count_and_ago(&db, tid, MAX_RETRIES - 1, 0).await;
+
+        // remote_id 与资源 img 不同（资源 img 已是 NULL，不存在匹配行）
+        mark_task_failed(&db, tid, "rid-null", "死信")
+            .await
+            .expect("mark failed should be ok");
+
+        // 任务行被删
+        let pool = match &db {
+            DbPool::Sqlite(p) => p,
+            _ => unreachable!(),
+        };
+        let still: Option<(i64,)> = sqlx::query_as("SELECT id FROM forward_tasks WHERE id=?")
+            .bind(tid)
+            .fetch_optional(pool)
+            .await
+            .expect("check task");
+        assert!(still.is_none(), "任务仍应被删除");
+        // 资源行仍在、img 仍为 NULL（幂等）
+        assert_eq!(get_resource_img(&db, rid).await, None);
+    }
+
+    /// Edge Case：同一 remote_id 多条任务——清理某死信时只删当前任务，
+    /// 不影响仍在重试中的其他任务；资源 img 以"是否存在死信"为准清空（一次 UPDATE）。
+    #[tokio::test]
+    async fn test_multiple_tasks_same_remote_id_only_deletes_current_task() {
+        let db = setup_db().await;
+        let rid = insert_resource(&db, "多任务资源", Some("rid-multi")).await;
+        // 任务 A：retry_count=4，将被 mark_task_failed → 5（死信）→ 删除
+        let tid_a = insert_task(&db, "rid-multi", "failed", None, None).await;
+        set_retry_count_and_ago(&db, tid_a, MAX_RETRIES - 1, 0).await;
+        // 任务 B：retry_count=2，独立任务行，不应被触碰
+        let tid_b = insert_task(&db, "rid-multi", "failed", None, None).await;
+        set_retry_count_and_ago(&db, tid_b, 2, 0).await;
+
+        mark_task_failed(&db, tid_a, "rid-multi", "A 死信")
+            .await
+            .expect("mark A failed");
+
+        let pool = match &db {
+            DbPool::Sqlite(p) => p,
+            _ => unreachable!(),
+        };
+        // A 被删
+        let a: Option<(i64,)> = sqlx::query_as("SELECT id FROM forward_tasks WHERE id=?")
+            .bind(tid_a)
+            .fetch_optional(pool)
+            .await
+            .expect("check A");
+        assert!(a.is_none(), "任务 A（死信）应被删除");
+        // B 仍在、retry_count 不变
+        let b: Option<(i64, i64)> =
+            sqlx::query_as("SELECT id, retry_count FROM forward_tasks WHERE id=?")
+                .bind(tid_b)
+                .fetch_optional(pool)
+                .await
+                .expect("check B");
+        let (b_id, b_rc) = b.expect("任务 B 应保留");
+        assert_eq!(b_id, tid_b);
+        assert_eq!(b_rc, 2, "任务 B 的 retry_count 不应被改动");
+        // 资源 img 被清空（一次 UPDATE 清掉所有 img='rid-multi' 的资源行）
+        assert_eq!(get_resource_img(&db, rid).await, None);
     }
 }

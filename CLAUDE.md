@@ -155,4 +155,5 @@ shell commands, and other important information, read the current plan:
 - [吞错链与失败重试修复 Plan](specs/029-fix-error-swallow-retry/plan.md) — 修复审计 LOGIC-004~007：6 处 let _ = 吞错改传播/记录 + failed 指数退避自动重试 + 死信 + retry_all_failed 防风暴（TDD）
 - [优雅关闭 + bind 可读错误 Plan](specs/030-graceful-shutdown-bind/plan.md) — 修复审计 LOGIC-008/SEC-008/014：bind 可读 panic + axum with_graceful_shutdown drain + 后台任务 CancellationToken/JoinSet 收尾（TDD，立即修复档 IMP-005 完成）
 - [推送调度间隔与推送配置同步 Plan](specs/039-push-schedule-interval-sync/plan.md) — 修复推送间隔修改后监控页不更新：SchedulerState 提升 config_last_run 共享 + /api/status 扩展 push_configs 数组 + 前端"推送调度"卡片改单卡片内列表（区分扫描周期与配置间隔）
+- [转发队列死信自动清理 Plan](specs/040-forward-failed-cleanup/plan.md) — 死信（失败≥5次）即时清除：mark_task_failed 事务化，清空 extracted_resources.img + 删除 forward_tasks 行；零 schema 变更，单函数签名扩展 + 两调用点同步改
 <!-- SPECKIT END -->
