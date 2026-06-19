@@ -1183,24 +1183,35 @@ pub async fn retry_task(db: &DbPool, task_id: i64) -> Result<(), AppError> {
 /// 自动防风暴由 `retry_eligible_failed`（指数退避）负责，与本函数职责不同。
 /// 每批 UPDATE 后被恢复的行 status 不再是 'failed'，下一轮子查询天然不重复命中，无死循环风险。
 pub async fn retry_all_failed(db: &DbPool) -> Result<i64, AppError> {
+    // 双方言占位符：SQLite 用 ?，PostgreSQL 用 $N（sqlx::query 运行时不做转换）。
     const BATCH: i64 = 100;
-    let sql = "UPDATE forward_tasks
-        SET status = CASE WHEN image_message_id IS NULL THEN 'pending' ELSE 'awaiting_bot' END,
-            error = NULL, updated_at = CURRENT_TIMESTAMP
-        WHERE id IN (SELECT id FROM forward_tasks WHERE status = 'failed' ORDER BY id LIMIT ?)";
     let mut total: i64 = 0;
     loop {
         let n = match db {
-            DbPool::Sqlite(pool) => sqlx::query(sql)
+            DbPool::Sqlite(pool) => {
+                sqlx::query(
+                    "UPDATE forward_tasks
+                     SET status = CASE WHEN image_message_id IS NULL THEN 'pending' ELSE 'awaiting_bot' END,
+                         error = NULL, updated_at = CURRENT_TIMESTAMP
+                     WHERE id IN (SELECT id FROM forward_tasks WHERE status = 'failed' ORDER BY id LIMIT ?)",
+                )
                 .bind(BATCH)
                 .execute(pool)
                 .await?
-                .rows_affected() as i64,
-            DbPool::Postgres(pool) => sqlx::query(sql)
+                .rows_affected() as i64
+            }
+            DbPool::Postgres(pool) => {
+                sqlx::query(
+                    "UPDATE forward_tasks
+                     SET status = CASE WHEN image_message_id IS NULL THEN 'pending' ELSE 'awaiting_bot' END,
+                         error = NULL, updated_at = CURRENT_TIMESTAMP
+                     WHERE id IN (SELECT id FROM forward_tasks WHERE status = 'failed' ORDER BY id LIMIT $1)",
+                )
                 .bind(BATCH)
                 .execute(pool)
                 .await?
-                .rows_affected() as i64,
+                .rows_affected() as i64
+            }
         };
         if n == 0 {
             break;
