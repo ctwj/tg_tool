@@ -335,10 +335,19 @@ mod tests {
         // 1 小时前的 Instant（interval = 60 秒，必然已过期）
         let last = std::time::Instant::now() - std::time::Duration::from_secs(3600);
         let (last_at, next_at) = compute_last_and_next_run(Some(last), 60);
-        assert!(last_at.is_some(), "last_run_at should be Some when last is Some");
-        assert!(next_at.is_some(), "next_run should be Some when last is Some");
+        assert!(
+            last_at.is_some(),
+            "last_run_at should be Some when last is Some"
+        );
+        assert!(
+            next_at.is_some(),
+            "next_run should be Some when last is Some"
+        );
         // 已过期时 next_run ≈ now；这里仅校验格式（避免与本地时间硬比较）
-        assert!(next_at.unwrap().contains(' '), "next_run should be formatted YYYY-MM-DD HH:MM:SS");
+        assert!(
+            next_at.unwrap().contains(' '),
+            "next_run should be formatted YYYY-MM-DD HH:MM:SS"
+        );
     }
 
     /// T006: 未到期 → next_run 为 last + interval（剩余 > 0）

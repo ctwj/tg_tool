@@ -2634,7 +2634,9 @@ async fn test_status_push_configs_reflects_interval() {
     assert_success(&body);
 
     // push_configs 数组包含 1 条记录，字段齐全（即使调度器未运行，DB 中有 active 配置即应出现）
-    let configs = body["data"]["schedulers"]["push_configs"].as_array().unwrap();
+    let configs = body["data"]["schedulers"]["push_configs"]
+        .as_array()
+        .unwrap();
     assert_eq!(configs.len(), 1);
     assert_eq!(configs[0]["name"], "配置A");
     assert_eq!(configs[0]["push_interval"], 30);
@@ -2654,7 +2656,9 @@ async fn test_status_push_configs_reflects_interval() {
     let req = build_auth_request("GET", "/api/status", &token, None);
     let resp = app.clone().oneshot(req).await.unwrap();
     let body = parse_body(resp.into_body()).await;
-    let configs = body["data"]["schedulers"]["push_configs"].as_array().unwrap();
+    let configs = body["data"]["schedulers"]["push_configs"]
+        .as_array()
+        .unwrap();
     assert_eq!(configs.len(), 1);
     assert_eq!(
         configs[0]["push_interval"], 60,
@@ -2705,12 +2709,11 @@ async fn status_push_configs_multiple() {
     );
 
     // push_configs 数组长度为 3，按 id ASC 排序
-    let configs = body["data"]["schedulers"]["push_configs"].as_array().unwrap();
+    let configs = body["data"]["schedulers"]["push_configs"]
+        .as_array()
+        .unwrap();
     assert_eq!(configs.len(), 3, "should list all 3 active configs");
-    let ids: Vec<i64> = configs
-        .iter()
-        .map(|c| c["id"].as_i64().unwrap())
-        .collect();
+    let ids: Vec<i64> = configs.iter().map(|c| c["id"].as_i64().unwrap()).collect();
     let mut sorted_ids = ids.clone();
     sorted_ids.sort();
     assert_eq!(ids, sorted_ids, "push_configs should be ordered by id ASC");
@@ -2762,8 +2765,14 @@ async fn status_push_configs_empty_when_all_disabled() {
 
     // 无活跃自动推送配置 → 空数组 + 计数为 0
     assert_eq!(body["data"]["schedulers"]["push_active_configs"], 0);
-    let configs = body["data"]["schedulers"]["push_configs"].as_array().unwrap();
-    assert_eq!(configs.len(), 0, "auto_push=0 configs must not appear in push_configs");
+    let configs = body["data"]["schedulers"]["push_configs"]
+        .as_array()
+        .unwrap();
+    assert_eq!(
+        configs.len(),
+        0,
+        "auto_push=0 configs must not appear in push_configs"
+    );
 }
 
 // ============================================================
