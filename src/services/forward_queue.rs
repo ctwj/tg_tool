@@ -1178,18 +1178,36 @@ pub async fn retry_task(db: &DbPool, task_id: i64) -> Result<(), AppError> {
 }
 
 /// 重试所有失败任务（智能恢复 — FR-052）
+///
+/// 用户主动触发「全部重试」：循环分批 UPDATE（每批 100 条小事务），直到清空所有 failed。
+/// 自动防风暴由 `retry_eligible_failed`（指数退避）负责，与本函数职责不同。
+/// 每批 UPDATE 后被恢复的行 status 不再是 'failed'，下一轮子查询天然不重复命中，无死循环风险。
 pub async fn retry_all_failed(db: &DbPool) -> Result<i64, AppError> {
-    // feature 029 LOGIC-004：分批恢复（LIMIT 100）+ updated_at 退避标记，防重试风暴。
-    // 子查询 IN 双方言一致；运维多次调用可恢复全部。
+    const BATCH: i64 = 100;
     let sql = "UPDATE forward_tasks
         SET status = CASE WHEN image_message_id IS NULL THEN 'pending' ELSE 'awaiting_bot' END,
             error = NULL, updated_at = CURRENT_TIMESTAMP
-        WHERE id IN (SELECT id FROM forward_tasks WHERE status = 'failed' ORDER BY id LIMIT 100)";
-    let count = match db {
-        DbPool::Sqlite(pool) => sqlx::query(sql).execute(pool).await?.rows_affected() as i64,
-        DbPool::Postgres(pool) => sqlx::query(sql).execute(pool).await?.rows_affected() as i64,
-    };
-    Ok(count)
+        WHERE id IN (SELECT id FROM forward_tasks WHERE status = 'failed' ORDER BY id LIMIT ?)";
+    let mut total: i64 = 0;
+    loop {
+        let n = match db {
+            DbPool::Sqlite(pool) => sqlx::query(sql)
+                .bind(BATCH)
+                .execute(pool)
+                .await?
+                .rows_affected() as i64,
+            DbPool::Postgres(pool) => sqlx::query(sql)
+                .bind(BATCH)
+                .execute(pool)
+                .await?
+                .rows_affected() as i64,
+        };
+        if n == 0 {
+            break;
+        }
+        total += n;
+    }
+    Ok(total)
 }
 
 /// feature 029 LOGIC-004：自动指数退避重试 eligible failed 任务。
@@ -1695,6 +1713,50 @@ mod tests {
         let recovered = retry_eligible_failed(&db).await.unwrap();
         assert_eq!(recovered, 0); // 死信不回（WHERE retry_count < MAX 不查）
         assert_eq!(get_status(&db, id).await, "failed");
+    }
+
+    /// 「全部重试」必须恢复所有 failed 任务，而非仅前 100 条。
+    /// 回归 feature 029 LIMIT 100 的硬编码上限——用户主动点击应一次清空。
+    #[tokio::test]
+    async fn test_retry_all_failed_recovers_all_beyond_batch_limit() {
+        let db = setup_db().await;
+        // 插入 150 条 failed（超过单批 100）
+        let mut ids = Vec::with_capacity(150);
+        for i in 0..150 {
+            ids.push(insert_task(&db, &format!("rid-batch-{i}"), "failed", None, None).await);
+        }
+        // 混入几条带 image_message_id 的，验证 awaiting_bot 分支也在批量内
+        for i in 0..5 {
+            ids.push(
+                insert_task(
+                    &db,
+                    &format!("rid-batch-img-{i}"),
+                    "failed",
+                    Some(999_000 + i),
+                    None,
+                )
+                .await,
+            );
+        }
+
+        let retried = retry_all_failed(&db).await.expect("retry all");
+        assert_eq!(retried, 155); // 全部恢复，不是 100
+
+        // 全部离开 failed 状态
+        let still_failed: i64 = match &db {
+            DbPool::Sqlite(p) => {
+                sqlx::query_scalar("SELECT COUNT(*) FROM forward_tasks WHERE status = 'failed'")
+                    .fetch_one(p)
+                    .await
+                    .unwrap()
+            }
+            _ => unreachable!(),
+        };
+        assert_eq!(still_failed, 0);
+
+        // 再次调用应返回 0（已清空，无死循环）
+        let again = retry_all_failed(&db).await.unwrap();
+        assert_eq!(again, 0);
     }
 
     // ─── feature 040：死信自动清理（清空资源 img + 删除失败任务）─────────────
