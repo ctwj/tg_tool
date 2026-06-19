@@ -486,6 +486,41 @@ pub async fn duplicate_config(db: &DbPool, config_id: i64) -> Result<i64, AppErr
     Ok(new_id)
 }
 
+/// 构造推送历史 message 的结构化后缀（FR-003，feature 041 US2）。
+/// - 当 skipped_total > 0：追加 ` | 跳过 N 条（图片未转存 X，链接失效 Y，空资源 Z，其他 W）`
+/// - 当 remaining > 0：追加 ` | 剩余 M 条待下次推送`
+/// 仅包含非零项以保持 message 简洁。
+fn format_message_suffix(
+    skipped_image: usize,
+    skipped_link: usize,
+    skipped_empty: usize,
+    skipped_other: usize,
+    remaining: i64,
+) -> String {
+    let mut suffix = String::new();
+    let total = skipped_image + skipped_link + skipped_empty + skipped_other;
+    if total > 0 {
+        let mut parts: Vec<String> = Vec::new();
+        if skipped_image > 0 {
+            parts.push(format!("图片未转存 {skipped_image}"));
+        }
+        if skipped_link > 0 {
+            parts.push(format!("链接失效 {skipped_link}"));
+        }
+        if skipped_empty > 0 {
+            parts.push(format!("空资源 {skipped_empty}"));
+        }
+        if skipped_other > 0 {
+            parts.push(format!("其他 {skipped_other}"));
+        }
+        suffix.push_str(&format!(" | 跳过 {total} 条（{}）", parts.join("，")));
+    }
+    if remaining > 0 {
+        suffix.push_str(&format!(" | 剩余 {remaining} 条待下次推送"));
+    }
+    suffix
+}
+
 /// 按推送配置执行推送 — 查询该配置数据源范围内未推送的资源，执行推送
 pub async fn push_for_config(
     db: &DbPool,
@@ -720,6 +755,16 @@ pub async fn push_for_config(
     if valid.is_empty() {
         // 候选集非空但分类后无 valid —— 计算剩余 = total - skipped
         let remaining = total_candidate.saturating_sub(skipped_total as i64);
+        let msg = format!(
+            "没有可推送的有效资源{}",
+            format_message_suffix(
+                skipped_image,
+                skipped_link,
+                skipped_empty,
+                skipped_other,
+                remaining,
+            )
+        );
         crate::services::resource::record_push_history_with_skips(
             db,
             &batch_id,
@@ -728,7 +773,7 @@ pub async fn push_for_config(
             0,
             skipped_image as i64,
             skipped_link as i64,
-            "没有可推送的有效资源",
+            &msg,
             None,
             Some(config_id),
             &classify.skipped,
@@ -769,11 +814,19 @@ pub async fn push_for_config(
             let remaining = total_candidate
                 .saturating_sub(resource_count as i64)
                 .saturating_sub(skipped_total as i64);
+            let suffix = format_message_suffix(
+                skipped_image,
+                skipped_link,
+                skipped_empty,
+                skipped_other,
+                remaining,
+            );
             if is_success {
                 let pushed_ids: Vec<i64> = valid.iter().map(|r| r.id).collect();
                 crate::services::resource::batch_mark_pushed(db, &pushed_ids).await?;
                 insert_push_status_batch(db, valid, config_id, "pushed").await?;
 
+                let msg = format!("推送成功{suffix}");
                 crate::services::resource::record_push_history_with_skips(
                     db,
                     &batch_id,
@@ -782,7 +835,7 @@ pub async fn push_for_config(
                     resource_count as i64,
                     skipped_image as i64,
                     skipped_link as i64,
-                    "推送成功",
+                    &msg,
                     None,
                     Some(config_id),
                     &classify.skipped,
@@ -797,6 +850,7 @@ pub async fn push_for_config(
                     "remaining_count": remaining,
                 }))
             } else {
+                let msg = format!("API返回错误: {}{suffix}", status_code);
                 crate::services::resource::record_push_history_with_skips(
                     db,
                     &batch_id,
@@ -805,7 +859,7 @@ pub async fn push_for_config(
                     resource_count as i64,
                     skipped_image as i64,
                     skipped_link as i64,
-                    &format!("API返回错误: {}", status_code),
+                    &msg,
                     Some(&body),
                     Some(config_id),
                     &classify.skipped,
@@ -818,6 +872,14 @@ pub async fn push_for_config(
             }
         }
         Err(e) => {
+            let suffix = format_message_suffix(
+                skipped_image,
+                skipped_link,
+                skipped_empty,
+                skipped_other,
+                total_candidate.saturating_sub(skipped_total as i64),
+            );
+            let msg = format!("推送请求失败{suffix}");
             crate::services::resource::record_push_history_with_skips(
                 db,
                 &batch_id,
@@ -826,7 +888,7 @@ pub async fn push_for_config(
                 0,
                 skipped_image as i64,
                 skipped_link as i64,
-                "推送请求失败",
+                &msg,
                 Some(&e.to_string()),
                 Some(config_id),
                 &classify.skipped,

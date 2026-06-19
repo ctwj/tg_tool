@@ -334,9 +334,10 @@ impl ClassifyResult {
 
 /// 资源有效性分类（纯函数，可单测）。
 /// `statuses`：normalized url → LinkStatus（由 `check_urls` 提供）。
-/// 规则：
+/// 规则（FR-003 5 类跳过）：
+/// - **EmptyResource（最优先，feature 041 US2）**：img 与 url 同时为空 → EmptyResource
 /// - 图片未转存（img 非空且 img_forward_status != "forwarded"）→ ImageNotForwarded
-/// - 否则任一 URL invalid → LinkInvalid
+/// - 任一 URL invalid → LinkInvalid
 /// - 否则有效（pending/unknown/valid 均不阻塞）
 pub fn classify_resources_with_statuses(
     resources: &[ExtractedResource],
@@ -345,6 +346,20 @@ pub fn classify_resources_with_statuses(
     let mut result = ClassifyResult::default();
     for r in resources {
         let img = r.img.as_deref().unwrap_or("").trim();
+        let urls = split_resource_urls(r.url.as_deref());
+
+        // EmptyResource 优先于其他分支：业务上无图无 URL 的资源无推送价值
+        // （修复前：此类资源走完图片分支（img 空跳过）+ URL 分支（urls 空不命中 Invalid）后落入 valid，被推送到目标 API）
+        if img.is_empty() && urls.is_empty() {
+            result.skipped.push(SkipEntry {
+                resource: r.clone(),
+                reason: SkipReason::EmptyResource,
+                urls_invalid: Vec::new(),
+                detail: "无图且无 URL，空资源".to_string(),
+            });
+            continue;
+        }
+
         if !img.is_empty() && r.img_forward_status.as_deref() != Some("forwarded") {
             result.skipped.push(SkipEntry {
                 resource: r.clone(),
@@ -354,7 +369,6 @@ pub fn classify_resources_with_statuses(
             });
             continue;
         }
-        let urls = split_resource_urls(r.url.as_deref());
         let invalid: Vec<String> = urls
             .iter()
             .filter(|u| statuses.get(*u) == Some(&LinkStatus::Invalid))
@@ -628,10 +642,13 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_no_url_image_ok_is_valid() {
+    fn test_classify_no_url_no_image_is_empty_resource() {
+        // FR-003 (feature 041 US2): img 与 url 同时为空 → EmptyResource 跳过
+        // 旧测试 test_classify_no_url_image_ok_is_valid 假设此类资源 valid，已废弃
         let r = make_resource(1, None, None, None);
         let res = classify_resources_with_statuses(&[r], &HashMap::new());
-        assert_eq!(res.valid.len(), 1);
+        assert_eq!(res.valid.len(), 0);
+        assert_eq!(res.skipped_empty_count(), 1);
     }
 
     #[test]
@@ -695,6 +712,91 @@ mod tests {
         assert_eq!(res.valid.len(), 2); // r1 + r2
         assert_eq!(res.skipped_image_count(), 1); // r3 图片未转存
         assert_eq!(res.skipped_link_count(), 0); // 不做链接检测
+    }
+
+    // --- FR-003: EmptyResource 分类（feature 041 US2）---
+
+    #[test]
+    fn test_classify_empty_resource() {
+        // img 空且 url 空时归入 EmptyResource（业务上无意义的空资源不推送）
+        let r = make_resource(1, None, None, None);
+        let res = classify_resources_with_statuses(&[r], &HashMap::new());
+        assert_eq!(res.valid.len(), 0, "空资源不应进入 valid");
+        assert_eq!(res.skipped_empty_count(), 1, "应归入 EmptyResource");
+        assert_eq!(res.skipped_image_count(), 0);
+        assert_eq!(res.skipped_link_count(), 0);
+    }
+
+    #[test]
+    fn test_classify_empty_resource_with_empty_string_fields() {
+        // img="" 空字符串也视为空（DB 字段可能是 NULL 或空串）
+        let mut r = make_resource(1, None, Some(""), None);
+        r.url = Some("   ".to_string()); // url 全空白也算空
+        let res = classify_resources_with_statuses(&[r], &HashMap::new());
+        assert_eq!(res.valid.len(), 0);
+        assert_eq!(res.skipped_empty_count(), 1);
+    }
+
+    #[test]
+    fn test_classify_empty_url_with_image_forwarded_is_valid() {
+        // 图片已转存 + 无 URL → 非空资源，应 valid（不归入 EmptyResource）
+        let r = make_resource(1, None, Some("img_abc"), Some("forwarded"));
+        let res = classify_resources_with_statuses(&[r], &HashMap::new());
+        assert_eq!(res.valid.len(), 1, "图片已转存无 URL 是有效资源");
+        assert_eq!(res.skipped_empty_count(), 0);
+        assert_eq!(res.skipped_image_count(), 0);
+    }
+
+    #[test]
+    fn test_classify_skipped_counts_5_categories() {
+        // 混合 4 类资源：2 图片未转存 + 1 链接失效 + 1 空资源 + 1 有效
+        // （"Other" 类别当前 classify 不会自然产生，验证 counter 为 0 即可）
+        let r_img1 = make_resource(
+            10,
+            Some("https://pan.quark.cn/s/a"),
+            Some("img1"),
+            Some("pending"),
+        );
+        let r_img2 = make_resource(
+            11,
+            Some("https://pan.quark.cn/s/b"),
+            Some("img2"),
+            None, // None != "forwarded" → ImageNotForwarded
+        );
+        let r_link_invalid = make_resource(
+            12,
+            Some("https://pan.quark.cn/s/expired"),
+            None,
+            None,
+        );
+        let r_empty = make_resource(13, None, None, None);
+        let r_valid = make_resource(
+            14,
+            Some("https://pan.quark.cn/s/ok"),
+            None,
+            None,
+        );
+        let statuses = st(&[
+            ("https://pan.quark.cn/s/expired", LinkStatus::Invalid),
+            (
+                "https://pan.quark.cn/s/ok",
+                LinkStatus::Valid,
+            ),
+        ]);
+        let res = classify_resources_with_statuses(
+            &[r_img1, r_img2, r_link_invalid, r_empty, r_valid],
+            &statuses,
+        );
+        assert_eq!(res.skipped_image_count(), 2, "2 条图片未转存");
+        assert_eq!(res.skipped_link_count(), 1, "1 条链接失效");
+        assert_eq!(res.skipped_empty_count(), 1, "1 条空资源");
+        assert_eq!(res.skipped_other_count(), 0, "Other 当前不产生");
+        assert_eq!(res.valid.len(), 1, "1 条有效");
+        assert_eq!(
+            res.skipped.len(),
+            4,
+            "skipped 总数 = 2 + 1 + 1 + 0 = 4"
+        );
     }
 
     // --- 资源级聚合 ---

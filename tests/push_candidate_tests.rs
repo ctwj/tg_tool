@@ -182,7 +182,8 @@ async fn start_mock_push_server_ok() -> (String, tokio::task::JoinHandle<()>) {
 }
 
 /// 插入一条 extracted_resource，返回其自增 id。
-/// img 默认 NULL（不阻塞图片分支），url 默认 "https://example.com/r/{id}"。
+/// - url=None 时写入 NULL（用于触发 EmptyResource 分类）
+/// - img=None 时写入 NULL
 async fn insert_resource(
     pool: &sqlx::SqlitePool,
     title: &str,
@@ -190,16 +191,14 @@ async fn insert_resource(
     img: Option<&str>,
     created_at: Option<&str>,
 ) -> i64 {
-    let url_v = url.unwrap_or("https://example.com/default");
-    let img_v = img;
     let created_v = created_at.unwrap_or("2026-06-10 12:00:00");
     sqlx::query(
         "INSERT INTO extracted_resources (collector_history_id, title, url, img, source, extract_mode, is_pushed, created_at, updated_at) \
          VALUES (1, ?, ?, ?, 'tg', 'rule', 0, ?, ?)",
     )
     .bind(title)
-    .bind(url_v)
-    .bind(img_v)
+    .bind(url)
+    .bind(img)
     .bind(created_v)
     .bind(created_v)
     .execute(pool)
@@ -510,3 +509,132 @@ async fn test_dead_letter_cleared_img_pushable() {
             .unwrap();
     assert_eq!(status, "pushed");
 }
+
+// ─── T014: 跳过明细 5 类（FR-003） — message 文本 + push_skip_records 明细 ───
+
+#[tokio::test]
+async fn test_skip_details_5_categories_in_message() {
+    let db = setup_test_db().await;
+    let pool = match &db {
+        DbPool::Sqlite(p) => p.clone(),
+        _ => panic!("expected sqlite"),
+    };
+    setup_foreign_key_parents(&pool).await;
+
+    let (mock_url, _mock_handle) = start_mock_push_server_ok().await;
+
+    // 准备混合资源：
+    // - 2 条图片未转存（img 非空 + img_forward_status != forwarded）
+    // - 1 条链接失效（pre-populate link_check_results with 'invalid'）
+    // - 1 条空资源（img + url 都空）
+    // - 1 条有效资源（img 空 + url 缓存 valid）
+    let url_invalid = "https://pan.quark.cn/s/expired";
+    let url_valid = "https://pan.quark.cn/s/ok";
+
+    // 通过公共函数计算 url_hash，预填缓存
+    let norm_invalid = tgTool::services::link_check::normalize_url(url_invalid);
+    let hash_invalid = tgTool::services::link_check::url_hash(&norm_invalid);
+    let norm_valid = tgTool::services::link_check::normalize_url(url_valid);
+    let hash_valid = tgTool::services::link_check::url_hash(&norm_valid);
+
+    let future_ts = "2999-12-31 23:59:59"; // 永不过期
+    sqlx::query("INSERT INTO link_check_results (url_hash, normalized_url, status, expires_at) VALUES (?, ?, 'invalid', ?)")
+        .bind(&hash_invalid)
+        .bind(&norm_invalid)
+        .bind(future_ts)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO link_check_results (url_hash, normalized_url, status, expires_at) VALUES (?, ?, 'valid', ?)")
+        .bind(&hash_valid)
+        .bind(&norm_valid)
+        .bind(future_ts)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // 插入 5 条资源
+    // 注意：make_resource 默认有 created_at，但这里直接 SQL 插入避免依赖辅助函数
+    let _r_img1 = insert_resource(&pool, "img-not-fwd-1", Some(url_valid), Some("img_a"), None).await;
+    // 给 r_img1 添加 img_forward_status（默认 insert_resource 不带 forward_tasks 关联，status 为 None → ImageNotForwarded）
+    let _r_img2 = insert_resource(&pool, "img-not-fwd-2", Some(url_valid), Some("img_b"), None).await;
+    let _r_link = insert_resource(&pool, "link-invalid", Some(url_invalid), None, None).await;
+    let _r_empty = insert_resource(&pool, "empty", None, Some(""), None).await;
+    let _r_valid = insert_resource(&pool, "valid", Some(url_valid), None, None).await;
+
+    // 创建配置：开启 link_check_before_push（用 cache 中的 invalid 状态触发 LinkInvalid）
+    sqlx::query(
+        "INSERT INTO push_configs (name, api_url, target, data_source_type, link_check_before_push, is_active, auto_push) \
+         VALUES ('配置Skip', ?, 'api_skip', 'all', 1, 1, 0)",
+    )
+    .bind(&mock_url)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let config_id: i64 = sqlx::query_scalar("SELECT last_insert_rowid()")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    let resp = trigger_push(&mut app, &token, config_id, None).await;
+    assert_eq!(resp["success"], true, "push failed: {resp}");
+    // 只推送 1 条（valid），其余 4 条跳过
+    assert_eq!(resp["data"]["processed_count"], 1);
+    // 返回 JSON 的 skipped 对象各键计数正确
+    assert_eq!(resp["data"]["skipped"]["image_not_forwarded"], 2);
+    assert_eq!(resp["data"]["skipped"]["link_invalid"], 1);
+    assert_eq!(resp["data"]["skipped"]["empty_resource"], 1);
+    assert_eq!(resp["data"]["skipped"]["other"], 0);
+    assert_eq!(resp["data"]["skipped"]["total"], 4);
+
+    // 验证 push_histories.message 含分类汇总（5 类格式）
+    let message: String =
+        sqlx::query_scalar("SELECT message FROM push_histories WHERE push_config_id = ? ORDER BY id DESC LIMIT 1")
+            .bind(config_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        message.contains("图片未转存") && message.contains('2'),
+        "message 应含 '图片未转存 2'，实际：{message}"
+    );
+    assert!(
+        message.contains("链接失效") && message.contains('1'),
+        "message 应含 '链接失效 1'，实际：{message}"
+    );
+    assert!(
+        message.contains("空资源") && message.contains('1'),
+        "message 应含 '空资源 1'，实际：{message}"
+    );
+
+    // 验证 push_skip_records 表写入 4 条明细
+    let skip_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM push_skip_records psr \
+            JOIN push_histories ph ON psr.push_history_id = ph.id \
+            WHERE ph.push_config_id = ?")
+            .bind(config_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(skip_count, 4, "应有 4 条跳过明细");
+
+    // 验证 skip_reason 值匹配（按 reason 分组计数）
+    let reasons: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT psr.skip_reason, COUNT(*) FROM push_skip_records psr \
+         JOIN push_histories ph ON psr.push_history_id = ph.id \
+         WHERE ph.push_config_id = ? GROUP BY psr.skip_reason",
+    )
+    .bind(config_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let mut reason_map: std::collections::HashMap<String, i64> = reasons.into_iter().collect();
+    assert_eq!(reason_map.remove("image_not_forwarded").unwrap_or(0), 2);
+    assert_eq!(reason_map.remove("link_invalid").unwrap_or(0), 1);
+    assert_eq!(reason_map.remove("empty_resource").unwrap_or(0), 1);
+}
+
