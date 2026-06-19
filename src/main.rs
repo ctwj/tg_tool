@@ -670,6 +670,16 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::info!("SQLite migration 018 applied");
                 }
             }
+            // Migration 019: push_histories.data_count INT4->BIGINT（SQLite no-op，保持序号一致）
+            {
+                let m19 =
+                    include_str!("../migrations/019_push_histories_data_count_bigint_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m19).execute(pool).await {
+                    tracing::warn!("SQLite migration 019 skipped: {e}");
+                } else {
+                    tracing::debug!("SQLite migration 019 applied (no-op)");
+                }
+            }
         }
         DbPool::Postgres(pool) => {
             let migration_sql = include_str!("../migrations/001_init_postgres.sql");
@@ -929,6 +939,17 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::debug!("PostgreSQL migration 018 skipped (already applied)");
                 } else {
                     tracing::info!("PostgreSQL migration 018 applied");
+                }
+            }
+            // Migration 019: push_histories.data_count INT4 -> BIGINT
+            // 修复存量 PG 库（在 001 改用 BIGINT 之前创建）data_count 仍为 INT4 导致推送历史 500 错误
+            {
+                let m19 =
+                    include_str!("../migrations/019_push_histories_data_count_bigint_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m19).execute(pool).await {
+                    tracing::warn!("PostgreSQL migration 019 skipped: {e}");
+                } else {
+                    tracing::info!("PostgreSQL migration 019 applied (data_count -> BIGINT)");
                 }
             }
         }

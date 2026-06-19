@@ -1,0 +1,12 @@
+-- 019: push_histories.data_count INT4 -> BIGINT
+--
+-- 背景：migration 007 (INT4→INT8 全量迁移) 当时只处理了 id/外键列，
+-- 漏掉了 push_histories.data_count（非 id 非 FK 的计数字段）。
+-- 在 001_init_postgres.sql 改用 BIGINT 之前创建的存量 PG 库，该列仍是 INTEGER (INT4)，
+-- 与 Rust 模型 data_count: i64 不兼容，导致推送历史查询报错：
+--   ColumnDecode { index: "data_count",
+--     source: "mismatched types; Rust type `i64` (as SQL type `INT8`)
+--              is not compatible with SQL type `INT4`" }
+--
+-- 本迁移将存量库的该列转为 BIGINT。新库（建表时已是 BIGINT）执行此语句为 no-op（PG 幂等）。
+ALTER TABLE push_histories ALTER COLUMN data_count TYPE BIGINT;
