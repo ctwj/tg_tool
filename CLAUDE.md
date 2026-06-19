@@ -91,7 +91,7 @@ src/
 
 ### 公开路由（无需认证）
 - `POST /api/auth/register` / `POST /api/auth/login` / `POST /api/auth/logout`
-- `GET /api/status`
+- `GET /api/status` — 系统状态；`schedulers.push_configs[]`（feature 039）为每个 active 自动推送配置的独立调度视图（含 `push_interval`/`last_run_at`/`next_run`），`push_scan_interval_secs` 为系统扫描周期（秒）
 - `GET /api/files/download/{filename}`
 - `GET /api/images/{photo_id}` — 图片代理缓存（按需下载 Telegram 图片并缓存）
 
@@ -154,4 +154,5 @@ shell commands, and other important information, read the current plan:
 - [数据泄露与路径穿越修复 Plan](specs/028-fix-data-leak-pathtraversal/plan.md) — 修复审计 SEC-003/004/015：用户响应脱敏 password/access_token + 文件接口 canonicalize 限定 uploads + DB 物理隔离（接管链最后入口）（TDD）
 - [吞错链与失败重试修复 Plan](specs/029-fix-error-swallow-retry/plan.md) — 修复审计 LOGIC-004~007：6 处 let _ = 吞错改传播/记录 + failed 指数退避自动重试 + 死信 + retry_all_failed 防风暴（TDD）
 - [优雅关闭 + bind 可读错误 Plan](specs/030-graceful-shutdown-bind/plan.md) — 修复审计 LOGIC-008/SEC-008/014：bind 可读 panic + axum with_graceful_shutdown drain + 后台任务 CancellationToken/JoinSet 收尾（TDD，立即修复档 IMP-005 完成）
+- [推送调度间隔与推送配置同步 Plan](specs/039-push-schedule-interval-sync/plan.md) — 修复推送间隔修改后监控页不更新：SchedulerState 提升 config_last_run 共享 + /api/status 扩展 push_configs 数组 + 前端"推送调度"卡片改单卡片内列表（区分扫描周期与配置间隔）
 <!-- SPECKIT END -->
