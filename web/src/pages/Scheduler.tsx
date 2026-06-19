@@ -6,6 +6,7 @@ import {
   ThunderboltOutlined,
   CloudSyncOutlined,
   FieldTimeOutlined,
+  QuestionCircleOutlined,
 } from '@ant-design/icons'
 import apiClient from '../api/client'
 import type {
@@ -287,25 +288,100 @@ const Scheduler: React.FC = () => {
             }
           >
             {schedulers && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                <Progress
-                  type="circle"
-                  size={64}
-                  percent={pushEffectivelyRunning ? calcProgress(schedulers.push_next_run, schedulers.push_interval_minutes) : 0}
-                  strokeColor="#0369a1"
-                  format={() => <ClockCircleOutlined style={{ fontSize: 18, color: pushEffectivelyRunning ? '#0369a1' : '#d1d5db' }} />}
-                />
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 12, color: '#9ca3af' }}>
-                    间隔 {schedulers.push_interval_minutes} 分钟
-                  </div>
-                  <div style={{ fontSize: 13, color: '#1f2937', fontWeight: 500, margin: '2px 0' }}>
-                    {pushEffectivelyRunning ? calcCountdown(schedulers.push_next_run) : '—'}
-                  </div>
-                  <div style={{ fontSize: 11, color: '#9ca3af' }}>
-                    {schedulers.push_next_run?.substring(11) || '未计划'}
-                  </div>
+              <div>
+                {/* T008 (US1) + T012 (US3): 系统扫描周期 — 与单配置推送间隔在文案/字重/颜色上明确区分 */}
+                <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 8 }}>
+                  <Tooltip
+                    title="系统每分钟扫描一次所有启用自动推送的配置，按各配置独立设置的推送间隔判断是否触发推送。"
+                    placement="topLeft"
+                  >
+                    <span style={{ cursor: 'help', borderBottom: '1px dashed #9ca3af' }}>
+                      系统扫描周期
+                      <QuestionCircleOutlined style={{ marginLeft: 4, fontSize: 11 }} />
+                    </span>
+                  </Tooltip>
+                  ：每 {Math.max(1, Math.round((schedulers.push_scan_interval_secs ?? 60) / 60))} 分钟
                 </div>
+                {/* 配置列表：每个 active 自动推送配置一行（名 / 间隔 / 下次推送倒计时） */}
+                {(() => {
+                  const configs = schedulers.push_configs ?? []
+                  if (configs.length === 0) {
+                    return (
+                      <div style={{ fontSize: 13, color: '#9ca3af', padding: '8px 0' }}>
+                        {schedulers.push_running
+                          ? '无活跃推送配置，将不会自动推送'
+                          : '调度未启动'}
+                      </div>
+                    )
+                  }
+                  return (
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 6,
+                        // T011 (US2): 多配置场景（>5）下卡片主体内部纵向滚动，避免卡片无限增高
+                        maxHeight: configs.length > 5 ? 200 : undefined,
+                        overflowY: configs.length > 5 ? 'auto' : undefined,
+                      }}
+                    >
+                      {configs.map(c => {
+                        const running = pushEffectivelyRunning
+                        const countdown =
+                          running && c.next_run ? calcCountdown(c.next_run) : '—'
+                        const nextLabel = c.next_run
+                          ? c.next_run.substring(11)
+                          : running
+                          ? '即将执行'
+                          : '—'
+                        return (
+                          <div
+                            key={c.id}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 8,
+                              fontSize: 13,
+                            }}
+                          >
+                            <span
+                              className="sched-status-dot"
+                              style={{ visibility: running ? 'visible' : 'hidden' }}
+                            />
+                            <Tooltip title={c.name} placement="topLeft">
+                              <span
+                                style={{
+                                  flex: 1,
+                                  color: '#1f2937',
+                                  fontWeight: 500,
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                {c.name}
+                              </span>
+                            </Tooltip>
+                            <span style={{ color: '#1f2937', fontSize: 12 }}>
+                              每 {c.push_interval} 分推送
+                            </span>
+                            <span
+                              style={{
+                                color: running ? '#0369a1' : '#9ca3af',
+                                fontWeight: 500,
+                                minWidth: 70,
+                                textAlign: 'right',
+                              }}
+                              title={nextLabel}
+                            >
+                              {countdown}
+                            </span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )
+                })()}
               </div>
             )}
           </Card>

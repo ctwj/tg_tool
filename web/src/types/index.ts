@@ -332,15 +332,32 @@ export interface ExtractHistoryStats {
 }
 
 // Scheduler status (from /status schedulers block)
+// 推送配置调度信息（feature 039）— 每个 active 自动推送配置独立展示
+export interface PushConfigSchedule {
+  id: number
+  name: string
+  /** 推送间隔（分钟），来自 push_configs.push_interval */
+  push_interval: number
+  /** 上次推送本地时间 "YYYY-MM-DD HH:MM:SS"；null=从未推送过或调度器未运行 */
+  last_run_at: string | null
+  /** 下次预计推送本地时间；null=调度器未运行或全新配置尚未触发首次 */
+  next_run: string | null
+}
+
 export interface SchedulersStatus {
   extract_running: boolean
   extract_next_run?: string
   extract_interval_minutes: number
   push_running: boolean
   push_next_run?: string
+  // 保留：扫描周期（分钟），前端不再用作"推送间隔"展示
   push_interval_minutes: number
   // 活跃自动推送配置数 (is_active=1 AND auto_push=1)
   push_active_configs: number
+  // feature 039 新增：系统扫描周期（秒），通常为 60
+  push_scan_interval_secs?: number
+  // feature 039 新增：每个 active 自动推送配置的调度信息数组
+  push_configs?: PushConfigSchedule[]
   forward_running: boolean
   forward_interval_secs: number
 }

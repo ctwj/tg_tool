@@ -2581,6 +2581,189 @@ async fn test_status_next_run_after_restart() {
     // interval_minutes 字段存在
     assert!(body["data"]["schedulers"]["push_interval_minutes"].is_number());
     assert!(body["data"]["schedulers"]["extract_interval_minutes"].is_number());
+
+    // T003 (US1): 本特性新增字段 — push_scan_interval_secs（扫描周期秒）+ push_configs（每配置调度数组）
+    assert!(
+        body["data"]["schedulers"]["push_scan_interval_secs"].is_number(),
+        "push_scan_interval_secs must be a number"
+    );
+    assert!(
+        body["data"]["schedulers"]["push_configs"].is_array(),
+        "push_configs must be an array"
+    );
+    // 无 active 自动推送配置 → 空数组
+    assert_eq!(
+        body["data"]["schedulers"]["push_configs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+}
+
+// ============================================================
+// T004 (US1): push_interval 修改后 /api/status 立即反映（核心 bug 修复）
+// ============================================================
+
+#[tokio::test]
+async fn test_status_push_configs_reflects_interval() {
+    let db = setup_test_db().await;
+    let pool = match &db {
+        DbPool::Sqlite(p) => p.clone(),
+        _ => panic!("expected sqlite"),
+    };
+    let (state, _) = make_test_state(db.clone());
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 插入一条 active 自动推送配置（push_interval=30）
+    sqlx::query(
+        "INSERT INTO push_configs (name, api_url, api_token, target, auth_type, auth_key, \
+         http_method, body_template, custom_headers, batch_size, data_source_type, \
+         auto_push, push_interval, link_check_before_push, is_active) \
+         VALUES ('配置A', 'http://example/api', NULL, '', 'none', '', 'POST', NULL, '', \
+         10, 'all', 1, 30, 0, 1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let req = build_auth_request("GET", "/api/status", &token, None);
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+
+    // push_configs 数组包含 1 条记录，字段齐全（即使调度器未运行，DB 中有 active 配置即应出现）
+    let configs = body["data"]["schedulers"]["push_configs"].as_array().unwrap();
+    assert_eq!(configs.len(), 1);
+    assert_eq!(configs[0]["name"], "配置A");
+    assert_eq!(configs[0]["push_interval"], 30);
+    assert!(configs[0]["id"].is_number());
+    // last_run_at / next_run 字段存在（调度器未启动时值为 null）
+    assert!(configs[0].get("last_run_at").is_some());
+    assert!(configs[0].get("next_run").is_some());
+    assert_eq!(configs[0]["last_run_at"], serde_json::Value::Null);
+    assert_eq!(configs[0]["next_run"], serde_json::Value::Null);
+
+    // 修改 push_interval 为 60，再调用 /api/status，立即反映新值（核心 bug 修复点）
+    sqlx::query("UPDATE push_configs SET push_interval = 60 WHERE name = '配置A'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let req = build_auth_request("GET", "/api/status", &token, None);
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let body = parse_body(resp.into_body()).await;
+    let configs = body["data"]["schedulers"]["push_configs"].as_array().unwrap();
+    assert_eq!(configs.len(), 1);
+    assert_eq!(
+        configs[0]["push_interval"], 60,
+        "push_interval change must be reflected immediately without restart or tick"
+    );
+}
+
+// ============================================================
+// T009 (US2): 多 active 自动推送配置并存 — push_configs 数组独立展示
+// ============================================================
+
+#[tokio::test]
+async fn status_push_configs_multiple() {
+    let db = setup_test_db().await;
+    let pool = match &db {
+        DbPool::Sqlite(p) => p.clone(),
+        _ => panic!("expected sqlite"),
+    };
+    let (state, _) = make_test_state(db.clone());
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 插入 3 条 active 自动推送配置，push_interval 分别为 5/30/60
+    for (name, interval) in [("配置A", 5), ("配置B", 30), ("配置C", 60)] {
+        sqlx::query(
+            "INSERT INTO push_configs (name, api_url, api_token, target, auth_type, auth_key, \
+             http_method, body_template, custom_headers, batch_size, data_source_type, \
+             auto_push, push_interval, link_check_before_push, is_active) \
+             VALUES (?, 'http://example/api', NULL, '', 'none', '', 'POST', NULL, '', \
+             10, 'all', 1, ?, 0, 1)",
+        )
+        .bind(name)
+        .bind(interval)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let req = build_auth_request("GET", "/api/status", &token, None);
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+
+    // push_active_configs 计数
+    assert_eq!(
+        body["data"]["schedulers"]["push_active_configs"], 3,
+        "push_active_configs should count all active+auto_push configs"
+    );
+
+    // push_configs 数组长度为 3，按 id ASC 排序
+    let configs = body["data"]["schedulers"]["push_configs"].as_array().unwrap();
+    assert_eq!(configs.len(), 3, "should list all 3 active configs");
+    let ids: Vec<i64> = configs
+        .iter()
+        .map(|c| c["id"].as_i64().unwrap())
+        .collect();
+    let mut sorted_ids = ids.clone();
+    sorted_ids.sort();
+    assert_eq!(ids, sorted_ids, "push_configs should be ordered by id ASC");
+
+    // 每个元素字段齐全；push_interval 与插入值一致（顺序 id ASC 对应 A=5, B=30, C=60）
+    let expected = [("配置A", 5), ("配置B", 30), ("配置C", 60)];
+    for (i, (name, interval)) in expected.iter().enumerate() {
+        assert_eq!(configs[i]["name"], *name, "config[{i}] name mismatch");
+        assert_eq!(
+            configs[i]["push_interval"], *interval,
+            "config[{i}] push_interval mismatch"
+        );
+        assert!(configs[i].get("last_run_at").is_some());
+        assert!(configs[i].get("next_run").is_some());
+    }
+}
+
+// ============================================================
+// T010 (US2): active 但 auto_push=0 → push_configs 为空
+// ============================================================
+
+#[tokio::test]
+async fn status_push_configs_empty_when_all_disabled() {
+    let db = setup_test_db().await;
+    let pool = match &db {
+        DbPool::Sqlite(p) => p.clone(),
+        _ => panic!("expected sqlite"),
+    };
+    let (state, _) = make_test_state(db.clone());
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 插入 active 但 auto_push=0 的记录（不满足 "active AND auto_push" 过滤条件）
+    sqlx::query(
+        "INSERT INTO push_configs (name, api_url, api_token, target, auth_type, auth_key, \
+         http_method, body_template, custom_headers, batch_size, data_source_type, \
+         auto_push, push_interval, link_check_before_push, is_active) \
+         VALUES ('禁用自动推送', 'http://example/api', NULL, '', 'none', '', 'POST', NULL, '', \
+         10, 'all', 0, 30, 0, 1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let req = build_auth_request("GET", "/api/status", &token, None);
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+
+    // 无活跃自动推送配置 → 空数组 + 计数为 0
+    assert_eq!(body["data"]["schedulers"]["push_active_configs"], 0);
+    let configs = body["data"]["schedulers"]["push_configs"].as_array().unwrap();
+    assert_eq!(configs.len(), 0, "auto_push=0 configs must not appear in push_configs");
 }
 
 // ============================================================

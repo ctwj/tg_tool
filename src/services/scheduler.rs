@@ -15,6 +15,11 @@ pub struct SchedulerState {
     pub started_at: Option<std::time::Instant>,
     pub handle: Option<tokio::task::JoinHandle<()>>,
     pub cancel: Option<CancellationToken>,
+    /// 每个 active 推送配置的上次推送时刻（config_id → Instant）。
+    /// - 由 `run_push_tick` 写入（首次见到 config 时初始化 + 每次推送成功后更新）
+    /// - 由 `/api/status` 读取（计算每个配置的 next_run 暴露给前端）
+    /// - 使用 `Arc<RwLock<HashMap>>` 以便 worker 任务与 handler 共享同一实例
+    pub config_last_run: Arc<RwLock<std::collections::HashMap<i64, std::time::Instant>>>,
 }
 
 pub type SchedulerHandle = Arc<RwLock<SchedulerState>>;
@@ -28,6 +33,7 @@ pub fn create_scheduler() -> SchedulerHandle {
         started_at: None,
         handle: None,
         cancel: None,
+        config_last_run: Arc::new(RwLock::new(std::collections::HashMap::new())),
     }))
 }
 
@@ -48,20 +54,19 @@ pub async fn start_scheduler(
     state.running = true;
     state.interval_minutes = 1;
     state.started_at = Some(std::time::Instant::now());
+    // clone Arc 引用，move 进 worker 闭包（tick 间共享读写 / 同时供 handler 读取）
+    let shared_config_last_run = state.config_last_run.clone();
 
     let sched = scheduler.clone();
     let handle = tokio::spawn(async move {
         // 固定 1 分钟 tick
         let duration = std::time::Duration::from_secs(60);
-        // 记录每个配置的上次推送时间 (config_id -> last_pushed_at)
-        let mut config_last_run: std::collections::HashMap<i64, std::time::Instant> =
-            std::collections::HashMap::new();
 
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(duration) => {
                     tracing::info!("Push scheduler tick: scanning active push configs");
-                    run_push_tick(&db, &option_cache, &mut config_last_run).await;
+                    run_push_tick(&db, &option_cache, &shared_config_last_run).await;
                     {
                         let mut s = sched.write().await;
                         s.last_run_at = Some(std::time::Instant::now());
@@ -86,7 +91,7 @@ pub async fn start_scheduler(
 async fn run_push_tick(
     db: &crate::state::DbPool,
     option_cache: &crate::state::OptionCache,
-    config_last_run: &mut std::collections::HashMap<i64, std::time::Instant>,
+    config_last_run: &Arc<RwLock<std::collections::HashMap<i64, std::time::Instant>>>,
 ) {
     let configs: Vec<crate::models::push_config::PushConfig> = match db {
         crate::state::DbPool::Sqlite(pool) => {
@@ -115,12 +120,18 @@ async fn run_push_tick(
         // 作为初始 last_run；无历史（全新配置）则允许立即触发首次推送。
         // 这样既避免"重启后必须等一个 interval 才推"的体验问题，又避免风暴——
         // 因为每个 config 都按真实节奏调度，距上次推送 < interval 的会自然等到下个 tick。
-        let last = match config_last_run.get(&config.id).copied() {
+        //
+        // 读锁短暂持有后立即 drop（不跨 await 点），避免与 handler 读侧 / 其他写侧阻塞。
+        let last = {
+            let guard = config_last_run.read().await;
+            guard.get(&config.id).copied()
+        };
+        let last = match last {
             Some(t) => t,
             None => {
                 let initial =
                     compute_initial_last_run(db, config.id, interval_secs, now, now_utc).await;
-                config_last_run.insert(config.id, initial);
+                config_last_run.write().await.insert(config.id, initial);
                 initial
             }
         };
@@ -143,7 +154,7 @@ async fn run_push_tick(
                 tracing::warn!("Push config '{}' failed: {e}", config.name);
             }
         }
-        config_last_run.insert(config.id, now);
+        config_last_run.write().await.insert(config.id, now);
     }
 }
 
@@ -416,5 +427,38 @@ mod tests {
         stop_extract_scheduler(scheduler.clone()).await;
         let state = scheduler.read().await;
         assert!(!state.running);
+    }
+
+    /// T002: config_last_run 共享语义验证
+    /// - create_scheduler 后 map 为空
+    /// - clone 出 Arc 写入 → 原 SchedulerState 可见（证明 worker 闭包与 handler 共享同一实例）
+    #[tokio::test]
+    async fn test_config_last_run_shared_across_readers() {
+        let scheduler = create_scheduler();
+
+        // (a) 初始为空
+        {
+            let state = scheduler.read().await;
+            let map = state.config_last_run.read().await;
+            assert!(map.is_empty(), "config_last_run should start empty");
+        }
+
+        // (b) 模拟 worker 闭包：clone Arc，写入一个 config_id → Instant
+        let cloned_arc = {
+            let state = scheduler.read().await;
+            Arc::clone(&state.config_last_run)
+        };
+        cloned_arc
+            .write()
+            .await
+            .insert(42, std::time::Instant::now());
+
+        // (c) 通过 SchedulerState 读取，能看到刚写入的值（证明共享，不是拷贝）
+        {
+            let state = scheduler.read().await;
+            let map = state.config_last_run.read().await;
+            assert_eq!(map.len(), 1, "write via cloned Arc should be visible");
+            assert!(map.contains_key(&42));
+        }
     }
 }
