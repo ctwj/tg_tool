@@ -274,6 +274,8 @@ pub async fn check_urls(
 pub enum SkipReason {
     ImageNotForwarded,
     LinkInvalid,
+    EmptyResource,
+    Other,
 }
 
 impl SkipReason {
@@ -281,6 +283,8 @@ impl SkipReason {
         match self {
             SkipReason::ImageNotForwarded => "image_not_forwarded",
             SkipReason::LinkInvalid => "link_invalid",
+            SkipReason::EmptyResource => "empty_resource",
+            SkipReason::Other => "other",
         }
     }
 }
@@ -312,6 +316,18 @@ impl ClassifyResult {
         self.skipped
             .iter()
             .filter(|s| s.reason == SkipReason::LinkInvalid)
+            .count()
+    }
+    pub fn skipped_empty_count(&self) -> usize {
+        self.skipped
+            .iter()
+            .filter(|s| s.reason == SkipReason::EmptyResource)
+            .count()
+    }
+    pub fn skipped_other_count(&self) -> usize {
+        self.skipped
+            .iter()
+            .filter(|s| s.reason == SkipReason::Other)
             .count()
     }
 }

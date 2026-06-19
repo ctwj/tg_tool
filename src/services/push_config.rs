@@ -522,24 +522,51 @@ pub async fn push_for_config(
     let batch_size = batch_size_override.unwrap_or(config.batch_size);
 
     // 2. 查询该配置数据源范围内的未推送资源（含 img_forward_status；图片转存过滤改由 Rust 分类）
-    let resources: Vec<crate::models::extracted_resource::ExtractedResource> = match db {
+    //
+    // D1 修复（FR-009/SC-007 多配置阻断根因）：废弃 `er.is_pushed = FALSE` 全局过滤。
+    //   原因：is_pushed 是「任一配置推送过即置位」的全局字段，但候选 SQL 把它当作「本配置未推送」语义读，
+    //         导致配置 A 推过的资源被配置 B 的 SQL 永远排除。修复后只用 `resource_push_status (resource_id, push_config_id, status)`
+    //         复合键做 per-config 过滤。is_pushed 字段保留供列表/统计使用，但不再决定候选集。
+    // D6 修复：候选 SQL 加 `ORDER BY er.created_at ASC, er.id ASC`，保证 FIFO 顺序，避免 LIMIT 命中不可预测。
+    //
+    // 同时跑 COUNT 前置查询（D7）取 total_candidate，用于后续计算 remaining_count 反馈给用户。
+    let (total_candidate, resources): (i64, Vec<crate::models::extracted_resource::ExtractedResource>) = match db {
         DbPool::Sqlite(pool) => {
             if config.data_source_type == "all" {
-                sqlx::query_as(
+                let total: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM extracted_resources er \
+                     WHERE NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = ? AND rps.status = 'pushed')"
+                )
+                .bind(config_id)
+                .fetch_one(pool)
+                .await?;
+                let rows = sqlx::query_as(
                     "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
                      (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status, \
                      (SELECT ft.file_id FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS file_id \
                      FROM extracted_resources er \
-                     WHERE er.is_pushed = 0 \
-                     AND NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = ? AND rps.status = 'pushed') \
+                     WHERE NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = ? AND rps.status = 'pushed') \
+                     ORDER BY er.created_at ASC, er.id ASC \
                      LIMIT ?"
                 )
                 .bind(config_id)
                 .bind(batch_size)
                 .fetch_all(pool)
-                .await?
+                .await?;
+                (total, rows)
             } else {
-                sqlx::query_as(
+                let total: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM extracted_resources er \
+                     JOIN collector_histories ch ON er.collector_history_id = ch.id \
+                     JOIN push_config_collectors pcc ON pcc.collector_id = ch.collector_id \
+                     WHERE pcc.push_config_id = ? \
+                     AND NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = ? AND rps.status = 'pushed')"
+                )
+                .bind(config_id)
+                .bind(config_id)
+                .fetch_one(pool)
+                .await?;
+                let rows = sqlx::query_as(
                     "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
                      (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status, \
                      (SELECT ft.file_id FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS file_id \
@@ -548,32 +575,53 @@ pub async fn push_for_config(
                      JOIN push_config_collectors pcc ON pcc.collector_id = ch.collector_id \
                      WHERE pcc.push_config_id = ? \
                      AND NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = ? AND rps.status = 'pushed') \
+                     ORDER BY er.created_at ASC, er.id ASC \
                      LIMIT ?"
                 )
                 .bind(config_id)
                 .bind(config_id)
                 .bind(batch_size)
                 .fetch_all(pool)
-                .await?
+                .await?;
+                (total, rows)
             }
         }
         DbPool::Postgres(pool) => {
             if config.data_source_type == "all" {
-                sqlx::query_as(
+                let total: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM extracted_resources er \
+                     WHERE NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = $1 AND rps.status = 'pushed')"
+                )
+                .bind(config_id)
+                .fetch_one(pool)
+                .await?;
+                let rows = sqlx::query_as(
                     "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
                      (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status, \
                      (SELECT ft.file_id FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS file_id \
                      FROM extracted_resources er \
-                     WHERE er.is_pushed = FALSE \
-                     AND NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = $1 AND rps.status = 'pushed') \
+                     WHERE NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = $1 AND rps.status = 'pushed') \
+                     ORDER BY er.created_at ASC, er.id ASC \
                      LIMIT $2"
                 )
                 .bind(config_id)
                 .bind(batch_size)
                 .fetch_all(pool)
-                .await?
+                .await?;
+                (total, rows)
             } else {
-                sqlx::query_as(
+                let total: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM extracted_resources er \
+                     JOIN collector_histories ch ON er.collector_history_id = ch.id \
+                     JOIN push_config_collectors pcc ON pcc.collector_id = ch.collector_id \
+                     WHERE pcc.push_config_id = $1 \
+                     AND NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = $2 AND rps.status = 'pushed')"
+                )
+                .bind(config_id)
+                .bind(config_id)
+                .fetch_one(pool)
+                .await?;
+                let rows = sqlx::query_as(
                     "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
                      (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status, \
                      (SELECT ft.file_id FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS file_id \
@@ -582,13 +630,15 @@ pub async fn push_for_config(
                      JOIN push_config_collectors pcc ON pcc.collector_id = ch.collector_id \
                      WHERE pcc.push_config_id = $1 \
                      AND NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = $2 AND rps.status = 'pushed') \
+                     ORDER BY er.created_at ASC, er.id ASC \
                      LIMIT $3"
                 )
                 .bind(config_id)
                 .bind(config_id)
                 .bind(batch_size)
                 .fetch_all(pool)
-                .await?
+                .await?;
+                (total, rows)
             }
         }
     };
@@ -621,6 +671,7 @@ pub async fn push_for_config(
             "message": "没有需要推送的资源",
             "processed_count": 0,
             "batch_id": batch_id,
+            "remaining_count": 0,
         }));
     }
 
@@ -646,11 +697,16 @@ pub async fn push_for_config(
     };
     let skipped_image = classify.skipped_image_count();
     let skipped_link = classify.skipped_link_count();
+    let skipped_empty = classify.skipped_empty_count();
+    let skipped_other = classify.skipped_other_count();
     let valid = &classify.valid;
+    let skipped_total = skipped_image + skipped_link + skipped_empty + skipped_other;
     let skipped_json = serde_json::json!({
         "image_not_forwarded": skipped_image,
         "link_invalid": skipped_link,
-        "total": skipped_image + skipped_link,
+        "empty_resource": skipped_empty,
+        "other": skipped_other,
+        "total": skipped_total,
     });
 
     // 4. 批次 ID
@@ -662,6 +718,8 @@ pub async fn push_for_config(
     let batch_id = format!("batch_{}_{}", target_label, chrono::Utc::now().timestamp());
 
     if valid.is_empty() {
+        // 候选集非空但分类后无 valid —— 计算剩余 = total - skipped
+        let remaining = total_candidate.saturating_sub(skipped_total as i64);
         crate::services::resource::record_push_history_with_skips(
             db,
             &batch_id,
@@ -681,6 +739,7 @@ pub async fn push_for_config(
             "processed_count": 0,
             "batch_id": batch_id,
             "skipped": skipped_json,
+            "remaining_count": remaining,
         }));
     }
 
@@ -706,6 +765,10 @@ pub async fn push_for_config(
 
     match result {
         Ok((status_code, body, is_success, _request_info)) => {
+            // remaining_count = total - (processed + skipped)，反映本次推送后还剩多少待推送资源
+            let remaining = total_candidate
+                .saturating_sub(resource_count as i64)
+                .saturating_sub(skipped_total as i64);
             if is_success {
                 let pushed_ids: Vec<i64> = valid.iter().map(|r| r.id).collect();
                 crate::services::resource::batch_mark_pushed(db, &pushed_ids).await?;
@@ -731,6 +794,7 @@ pub async fn push_for_config(
                     "processed_count": resource_count,
                     "batch_id": batch_id,
                     "skipped": skipped_json,
+                    "remaining_count": remaining,
                 }))
             } else {
                 crate::services::resource::record_push_history_with_skips(
@@ -774,6 +838,10 @@ pub async fn push_for_config(
 }
 
 /// 批量插入 resource_push_status
+///
+/// D2 修复：ON CONFLICT DO UPDATE 让 `failed → pushed` 状态转换能落地。
+/// 旧实现用 `INSERT OR IGNORE` / `DO NOTHING`，冲突时静默跳过，导致资源一旦失败就永远卡在 failed，
+/// 即使后续推送成功也无法纠正状态。修复后冲突时更新 status + updated_at，幂等（同值再写仍是同值）。
 async fn insert_push_status_batch(
     db: &DbPool,
     resources: &[crate::models::extracted_resource::ExtractedResource],
@@ -784,7 +852,10 @@ async fn insert_push_status_batch(
         match db {
             DbPool::Sqlite(pool) => {
                 sqlx::query(
-                    "INSERT OR IGNORE INTO resource_push_status (resource_id, push_config_id, status) VALUES (?, ?, ?)",
+                    "INSERT INTO resource_push_status (resource_id, push_config_id, status) VALUES (?, ?, ?) \
+                     ON CONFLICT(resource_id, push_config_id) DO UPDATE SET \
+                     status = excluded.status, \
+                     updated_at = CURRENT_TIMESTAMP",
                 )
                 .bind(r.id)
                 .bind(config_id)
@@ -794,7 +865,10 @@ async fn insert_push_status_batch(
             }
             DbPool::Postgres(pool) => {
                 sqlx::query(
-                    "INSERT INTO resource_push_status (resource_id, push_config_id, status) VALUES ($1, $2, $3) ON CONFLICT (resource_id, push_config_id) DO NOTHING",
+                    "INSERT INTO resource_push_status (resource_id, push_config_id, status) VALUES ($1, $2, $3) \
+                     ON CONFLICT (resource_id, push_config_id) DO UPDATE SET \
+                     status = EXCLUDED.status, \
+                     updated_at = CURRENT_TIMESTAMP",
                 )
                 .bind(r.id)
                 .bind(config_id)
