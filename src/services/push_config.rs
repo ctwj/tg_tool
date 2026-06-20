@@ -565,6 +565,32 @@ pub async fn push_for_config(
         config.data_source_type
     );
 
+    // FR-006（feature 041 US3）：从 OptionCache 读 `push_require_image_forwarded`，
+    // 默认严格模式（现行行为）。设为 "false" 时进入宽松模式（不拦截图片未转存）。
+    //
+    // feature 042：strict_image_check 读取前移到候选 SQL 之前，让候选 SQL 能根据
+    // 严格/宽松模式拼接 img_predicate 谓词——严格模式下直接在 SQL 阶段过滤掉
+    // 「带 img 但 forward_tasks 无 forwarded 状态」的资源，避免死循环
+    // （候选 SQL ORDER BY+LIMIT 每次拉同样 N 条未转存 → 全跳过 → 永远推不出去）。
+    let strict_image_check = {
+        let cache = option_cache.read().await;
+        cache
+            .get("push_require_image_forwarded")
+            .map(|v| v != "false")
+            .unwrap_or(true)
+    };
+    // feature 042：候选 SQL 图片转存过滤谓词（仅严格模式生效）。
+    // 语义：保留无图资源（img IS NULL/''）或已转存资源（forward_tasks 有 forwarded 行）；
+    //       过滤掉带图未转存资源（孤立 img 或 forward_tasks 非 forwarded 状态）。
+    // 走 idx_forward_tasks_remote_id 索引点查，~13000 行候选约 10ms 级别。
+    let img_predicate: &str = if strict_image_check {
+        " AND (er.img IS NULL OR er.img = '' \
+           OR EXISTS (SELECT 1 FROM forward_tasks ft \
+                      WHERE ft.remote_id = er.img AND ft.status = 'forwarded'))"
+    } else {
+        ""
+    };
+
     // 2. 查询该配置数据源范围内的未推送资源（含 img_forward_status；图片转存过滤改由 Rust 分类）
     //
     // D1 修复（FR-009/SC-007 多配置阻断根因）：废弃 `er.is_pushed = FALSE` 全局过滤。
@@ -581,20 +607,20 @@ pub async fn push_for_config(
         DbPool::Sqlite(pool) => {
             if config.data_source_type == "all" {
                 let total: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM extracted_resources er \
-                     WHERE NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = ? AND rps.status = 'pushed')"
+                    &format!("SELECT COUNT(*) FROM extracted_resources er \
+                     WHERE NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = ? AND rps.status = 'pushed'){img_predicate}"),
                 )
                 .bind(config_id)
                 .fetch_one(pool)
                 .await?;
                 let rows = sqlx::query_as(
-                    "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
+                    &format!("SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
                      (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status, \
                      (SELECT ft.file_id FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS file_id \
                      FROM extracted_resources er \
-                     WHERE NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = ? AND rps.status = 'pushed') \
+                     WHERE NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = ? AND rps.status = 'pushed'){img_predicate} \
                      ORDER BY er.created_at ASC, er.id ASC \
-                     LIMIT ?"
+                     LIMIT ?"),
                 )
                 .bind(config_id)
                 .bind(batch_size)
@@ -603,27 +629,27 @@ pub async fn push_for_config(
                 (total, rows)
             } else {
                 let total: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM extracted_resources er \
+                    &format!("SELECT COUNT(*) FROM extracted_resources er \
                      JOIN collector_histories ch ON er.collector_history_id = ch.id \
                      JOIN push_config_collectors pcc ON pcc.collector_id = ch.collector_id \
                      WHERE pcc.push_config_id = ? \
-                     AND NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = ? AND rps.status = 'pushed')"
+                     AND NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = ? AND rps.status = 'pushed'){img_predicate}"),
                 )
                 .bind(config_id)
                 .bind(config_id)
                 .fetch_one(pool)
                 .await?;
                 let rows = sqlx::query_as(
-                    "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
+                    &format!("SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
                      (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status, \
                      (SELECT ft.file_id FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS file_id \
                      FROM extracted_resources er \
                      JOIN collector_histories ch ON er.collector_history_id = ch.id \
                      JOIN push_config_collectors pcc ON pcc.collector_id = ch.collector_id \
                      WHERE pcc.push_config_id = ? \
-                     AND NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = ? AND rps.status = 'pushed') \
+                     AND NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = ? AND rps.status = 'pushed'){img_predicate} \
                      ORDER BY er.created_at ASC, er.id ASC \
-                     LIMIT ?"
+                     LIMIT ?"),
                 )
                 .bind(config_id)
                 .bind(config_id)
@@ -636,20 +662,20 @@ pub async fn push_for_config(
         DbPool::Postgres(pool) => {
             if config.data_source_type == "all" {
                 let total: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM extracted_resources er \
-                     WHERE NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = $1 AND rps.status = 'pushed')"
+                    &format!("SELECT COUNT(*) FROM extracted_resources er \
+                     WHERE NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = $1 AND rps.status = 'pushed'){img_predicate}"),
                 )
                 .bind(config_id)
                 .fetch_one(pool)
                 .await?;
                 let rows = sqlx::query_as(
-                    "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
+                    &format!("SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
                      (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status, \
                      (SELECT ft.file_id FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS file_id \
                      FROM extracted_resources er \
-                     WHERE NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = $1 AND rps.status = 'pushed') \
+                     WHERE NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = $1 AND rps.status = 'pushed'){img_predicate} \
                      ORDER BY er.created_at ASC, er.id ASC \
-                     LIMIT $2"
+                     LIMIT $2"),
                 )
                 .bind(config_id)
                 .bind(batch_size)
@@ -658,27 +684,27 @@ pub async fn push_for_config(
                 (total, rows)
             } else {
                 let total: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM extracted_resources er \
+                    &format!("SELECT COUNT(*) FROM extracted_resources er \
                      JOIN collector_histories ch ON er.collector_history_id = ch.id \
                      JOIN push_config_collectors pcc ON pcc.collector_id = ch.collector_id \
                      WHERE pcc.push_config_id = $1 \
-                     AND NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = $2 AND rps.status = 'pushed')"
+                     AND NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = $2 AND rps.status = 'pushed'){img_predicate}"),
                 )
                 .bind(config_id)
                 .bind(config_id)
                 .fetch_one(pool)
                 .await?;
                 let rows = sqlx::query_as(
-                    "SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
+                    &format!("SELECT er.id, er.collector_history_id, er.title, er.url, er.description, er.category, er.tags, er.img, er.source, er.extra, er.extract_mode, er.is_pushed, er.is_edited, er.created_at, er.updated_at, \
                      (SELECT ft.status FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS img_forward_status, \
                      (SELECT ft.file_id FROM forward_tasks ft WHERE ft.remote_id = er.img ORDER BY ft.id DESC LIMIT 1) AS file_id \
                      FROM extracted_resources er \
                      JOIN collector_histories ch ON er.collector_history_id = ch.id \
                      JOIN push_config_collectors pcc ON pcc.collector_id = ch.collector_id \
                      WHERE pcc.push_config_id = $1 \
-                     AND NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = $2 AND rps.status = 'pushed') \
+                     AND NOT EXISTS (SELECT 1 FROM resource_push_status rps WHERE rps.resource_id = er.id AND rps.push_config_id = $2 AND rps.status = 'pushed'){img_predicate} \
                      ORDER BY er.created_at ASC, er.id ASC \
-                     LIMIT $3"
+                     LIMIT $3"),
                 )
                 .bind(config_id)
                 .bind(config_id)
@@ -725,15 +751,7 @@ pub async fn push_for_config(
     // 3. 有效性分类：图片未转存 / 链接失效 / 空资源 跳过（FR-001/FR-003/FR-006）
     //    若配置关闭「推送前链接检测」，则跳过 LinkChecker 调用，仅做图片/空资源过滤
     //
-    //    FR-006（feature 041 US3）：从 OptionCache 读 `push_require_image_forwarded`，
-    //    默认严格模式（现行行为）。设为 "false" 时进入宽松模式（不拦截图片未转存）。
-    let strict_image_check = {
-        let cache = option_cache.read().await;
-        cache
-            .get("push_require_image_forwarded")
-            .map(|v| v != "false")
-            .unwrap_or(true)
-    };
+    //    strict_image_check 已在候选 SQL 之前读取（feature 042 前移）。
     let classify = if config.link_check_before_push {
         match crate::services::link_check::classify_resources(
             db,

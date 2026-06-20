@@ -613,21 +613,37 @@ async fn test_skip_details_5_categories_in_message() {
         .unwrap();
 
     let (state, _) = make_test_state(db);
+    // 设置宽松模式（push_require_image_forwarded=false）：让 2 条孤立 img 资源进入
+    // classify 阶段而非被 feature 042 候选 SQL 过滤，这样本测试才能完整覆盖
+    // 5 类跳过明细的分类汇总逻辑。
+    {
+        let mut cache = state.option_cache.write().await;
+        cache.insert(
+            "push_require_image_forwarded".to_string(),
+            "false".to_string(),
+        );
+    }
     let mut app = build_test_app(state);
     let token = get_root_token(&mut app).await;
 
     let resp = trigger_push(&mut app, &token, config_id, None).await;
     assert_eq!(resp["success"], true, "push failed: {resp}");
-    // 只推送 1 条（valid），其余 4 条跳过
-    assert_eq!(resp["data"]["processed_count"], 1);
+    // 宽松模式下：r_img1/r_img2（带图未转存）被 classify 放行（url 有效 → valid），
+    //   r_valid 也 valid → 共 3 条推送；
+    //   r_link（url 无效）→ LinkInvalid 跳过；
+    //   r_empty（img+url 均空）→ EmptyResource 跳过。
+    // feature 042 后 image_not_forwarded 分类在严格模式被候选 SQL 过滤、
+    // 在宽松模式被 classify 放行，集成层不再可触发（该分类已由 link_check.rs
+    // 单元测试覆盖），因此本测试专注验证 link_invalid + empty_resource 两类。
+    assert_eq!(resp["data"]["processed_count"], 3);
     // 返回 JSON 的 skipped 对象各键计数正确
-    assert_eq!(resp["data"]["skipped"]["image_not_forwarded"], 2);
+    assert_eq!(resp["data"]["skipped"]["image_not_forwarded"], 0);
     assert_eq!(resp["data"]["skipped"]["link_invalid"], 1);
     assert_eq!(resp["data"]["skipped"]["empty_resource"], 1);
     assert_eq!(resp["data"]["skipped"]["other"], 0);
-    assert_eq!(resp["data"]["skipped"]["total"], 4);
+    assert_eq!(resp["data"]["skipped"]["total"], 2);
 
-    // 验证 push_histories.message 含分类汇总（5 类格式）
+    // 验证 push_histories.message 含分类汇总（仅显示非零分类）
     let message: String = sqlx::query_scalar(
         "SELECT message FROM push_histories WHERE push_config_id = ? ORDER BY id DESC LIMIT 1",
     )
@@ -636,8 +652,8 @@ async fn test_skip_details_5_categories_in_message() {
     .await
     .unwrap();
     assert!(
-        message.contains("图片未转存") && message.contains('2'),
-        "message 应含 '图片未转存 2'，实际：{message}"
+        !message.contains("图片未转存"),
+        "宽松模式下 image_not_forwarded=0，message 不应含 '图片未转存'，实际：{message}"
     );
     assert!(
         message.contains("链接失效") && message.contains('1'),
@@ -648,7 +664,7 @@ async fn test_skip_details_5_categories_in_message() {
         "message 应含 '空资源 1'，实际：{message}"
     );
 
-    // 验证 push_skip_records 表写入 4 条明细
+    // 验证 push_skip_records 表写入 2 条明细
     let skip_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM push_skip_records psr \
             JOIN push_histories ph ON psr.push_history_id = ph.id \
@@ -658,7 +674,7 @@ async fn test_skip_details_5_categories_in_message() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(skip_count, 4, "应有 4 条跳过明细");
+    assert_eq!(skip_count, 2, "应有 2 条跳过明细");
 
     // 验证 skip_reason 值匹配（按 reason 分组计数）
     let reasons: Vec<(String, i64)> = sqlx::query_as(
@@ -671,7 +687,7 @@ async fn test_skip_details_5_categories_in_message() {
     .await
     .unwrap();
     let mut reason_map: std::collections::HashMap<String, i64> = reasons.into_iter().collect();
-    assert_eq!(reason_map.remove("image_not_forwarded").unwrap_or(0), 2);
+    assert_eq!(reason_map.remove("image_not_forwarded").unwrap_or(0), 0);
     assert_eq!(reason_map.remove("link_invalid").unwrap_or(0), 1);
     assert_eq!(reason_map.remove("empty_resource").unwrap_or(0), 1);
 }
@@ -778,7 +794,179 @@ async fn test_push_require_image_forwarded_toggle() {
     assert_eq!(resp["success"], true, "严格模式推送失败: {resp}");
     assert_eq!(
         resp["data"]["processed_count"], 0,
-        "严格模式下带图未转存资源 R8 应被跳过（现行默认行为）"
+        "严格模式下带图未转存资源 R8 应被过滤（feature 042 候选 SQL 阶段过滤）"
     );
-    assert_eq!(resp["data"]["skipped"]["image_not_forwarded"], 1);
+    // feature 042：R8 在候选 SQL 阶段就被过滤 → resources 为空 →
+    // 进入"没有需要推送的资源"返回路径（push_config.rs:719-748）。
+    // 该路径不返回 skipped 字段，message="没有需要推送的资源"，
+    // 验证 R8 未被推送即可（resource_push_status 无 pushed 记录）。
+    assert_eq!(
+        resp["data"]["message"], "没有需要推送的资源",
+        "严格模式下 R8 被 SQL 过滤，候选集为空，应返回空资源消息"
+    );
+    let r8_pushed: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM resource_push_status WHERE resource_id = ? AND push_config_id = ? AND status='pushed'",
+    )
+    .bind(r8)
+    .bind(config_e)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        r8_pushed, 0,
+        "严格模式下 R8 被 SQL 过滤，不应有 pushed 记录"
+    );
+}
+
+/// feature 042：候选 SQL 阶段过滤未转存资源（严格模式）。
+///
+/// 场景：3 条资源中 2 条带孤立 img（forward_tasks 无 forwarded），1 条无 img（NULL）。
+/// 默认严格模式下，孤立 img 资源应在 SQL 阶段就被过滤，候选集只含无图资源 → 推送 1 条。
+/// 验证：processed_count=1，skipped.image_not_forwarded=0（被 SQL 过滤的不算 skipped），
+///       mock server 收到 1 次请求（仅无图资源）。
+#[tokio::test]
+async fn test_candidate_sql_filters_unforwarded_img_strict_mode() {
+    let db = setup_test_db().await;
+    let pool = match &db {
+        DbPool::Sqlite(p) => p.clone(),
+        _ => panic!("expected sqlite"),
+    };
+    setup_foreign_key_parents(&pool).await;
+
+    let (mock_url, _mock_handle) = start_mock_push_server_ok().await;
+
+    // 带孤立 img（无 forward_tasks 关联记录）—— feature 042 应在 SQL 阶段过滤掉
+    let _unforwarded_1 = insert_resource(
+        &pool,
+        "带图未转存 1",
+        Some("https://example.com/u1"),
+        Some("img_orphan_1"),
+        None,
+    )
+    .await;
+    let _unforwarded_2 = insert_resource(
+        &pool,
+        "带图未转存 2",
+        Some("https://example.com/u2"),
+        Some("img_orphan_2"),
+        None,
+    )
+    .await;
+    // 无 img 资源 —— 应保留在候选集
+    let valid_no_img = insert_resource(
+        &pool,
+        "无图资源",
+        Some("https://example.com/valid"),
+        None,
+        None,
+    )
+    .await;
+
+    // 不创建任何 forward_tasks 行 —— 模拟孤立 img（enqueue 未入队的场景）
+
+    let config = create_push_config(&pool, "配置F", &mock_url, "api_f", "all").await;
+
+    let (state, _tg_clients) = make_test_state(db.clone());
+    let mut app = build_test_app(state.clone());
+    let token = get_root_token(&mut app).await;
+
+    // OptionCache 默认空 → strict_image_check=true（默认严格）
+    let resp = trigger_push(&mut app, &token, config, None).await;
+    assert_eq!(resp["success"], true, "推送失败: {resp}");
+    assert_eq!(
+        resp["data"]["processed_count"], 1,
+        "严格模式下候选 SQL 应过滤掉 2 条孤立 img 资源，仅推送 1 条无图资源"
+    );
+    assert_eq!(
+        resp["data"]["skipped"]["image_not_forwarded"], 0,
+        "SQL 阶段过滤的资源不算 skipped（不会进入 classify）"
+    );
+
+    // 验证只有无图资源被推送，孤立 img 资源未推送
+    let pushed_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM resource_push_status WHERE push_config_id = ? AND status='pushed'",
+    )
+    .bind(config)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(pushed_count, 1, "只有 1 条资源被推送到 push_status");
+
+    let valid_pushed: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM resource_push_status WHERE resource_id = ? AND push_config_id = ? AND status='pushed'",
+    )
+    .bind(valid_no_img)
+    .bind(config)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(valid_pushed, 1, "无图资源应该被推送");
+}
+
+/// feature 042 回归保护：loose 模式下候选 SQL 不过滤，孤立 img 资源仍能进候选集被推送。
+#[tokio::test]
+async fn test_candidate_sql_includes_unforwarded_img_loose_mode() {
+    let db = setup_test_db().await;
+    let pool = match &db {
+        DbPool::Sqlite(p) => p.clone(),
+        _ => panic!("expected sqlite"),
+    };
+    setup_foreign_key_parents(&pool).await;
+
+    let (mock_url, _mock_handle) = start_mock_push_server_ok().await;
+
+    // 带孤立 img（无 forward_tasks 关联记录）
+    let _unforwarded = insert_resource(
+        &pool,
+        "带图未转存",
+        Some("https://example.com/u"),
+        Some("img_orphan"),
+        None,
+    )
+    .await;
+    // 无 img 资源
+    let _valid_no_img = insert_resource(
+        &pool,
+        "无图资源",
+        Some("https://example.com/valid"),
+        None,
+        None,
+    )
+    .await;
+
+    let config = create_push_config(&pool, "配置G", &mock_url, "api_g", "all").await;
+
+    let (state, _tg_clients) = make_test_state(db.clone());
+    let mut app = build_test_app(state.clone());
+    let token = get_root_token(&mut app).await;
+
+    // 设置宽松模式
+    {
+        let mut cache = state.option_cache.write().await;
+        cache.insert(
+            "push_require_image_forwarded".to_string(),
+            "false".to_string(),
+        );
+    }
+
+    let resp = trigger_push(&mut app, &token, config, None).await;
+    assert_eq!(resp["success"], true, "loose 模式推送失败: {resp}");
+    assert_eq!(
+        resp["data"]["processed_count"], 2,
+        "loose 模式候选 SQL 不过滤，2 条资源（孤立 img + 无 img）都应被推送"
+    );
+    assert_eq!(
+        resp["data"]["skipped"]["image_not_forwarded"], 0,
+        "loose 模式下 classify 也不拦截图片未转存"
+    );
+
+    // 验证 2 条都被推送
+    let pushed_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM resource_push_status WHERE push_config_id = ? AND status='pushed'",
+    )
+    .bind(config)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(pushed_count, 2, "loose 模式下 2 条资源都应被推送");
 }
