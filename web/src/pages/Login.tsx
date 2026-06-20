@@ -1,6 +1,6 @@
 import React from 'react'
 import { Form, Input, Button, message, Tabs } from 'antd'
-import { UserOutlined, LockOutlined, MailOutlined, SendOutlined, ReloadOutlined } from '@ant-design/icons'
+import { UserOutlined, LockOutlined, MailOutlined, ReloadOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { getRegisterStatus, getCaptchaStatus, getCaptchaImage } from '../api/auth'
@@ -153,7 +153,7 @@ const Login: React.FC = () => {
             margin: '0 auto 16px',
             boxShadow: '0 8px 24px rgba(14, 165, 233, 0.3)',
           }}>
-            <SendOutlined style={{ fontSize: 26, color: '#fff' }} />
+            <img src="/logo.svg" alt="TG tools" style={{ width: 28, height: 28 }} />
           </div>
           <h1 style={{ fontSize: 24, fontWeight: 700, color: '#0c4a6e', margin: 0 }}>
             TG tools

@@ -278,12 +278,9 @@ const Layout: React.FC = () => {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            fontSize: 18,
-            fontWeight: 700,
-            color: '#fff',
             flexShrink: 0,
           }}>
-            TG
+            <img src="/logo.svg" alt="TG tools" style={{ width: 20, height: 20 }} />
           </div>
           {!collapsed && (
             <span style={{
