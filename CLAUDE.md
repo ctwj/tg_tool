@@ -156,4 +156,5 @@ shell commands, and other important information, read the current plan:
 - [优雅关闭 + bind 可读错误 Plan](specs/030-graceful-shutdown-bind/plan.md) — 修复审计 LOGIC-008/SEC-008/014：bind 可读 panic + axum with_graceful_shutdown drain + 后台任务 CancellationToken/JoinSet 收尾（TDD，立即修复档 IMP-005 完成）
 - [推送调度间隔与推送配置同步 Plan](specs/039-push-schedule-interval-sync/plan.md) — 修复推送间隔修改后监控页不更新：SchedulerState 提升 config_last_run 共享 + /api/status 扩展 push_configs 数组 + 前端"推送调度"卡片改单卡片内列表（区分扫描周期与配置间隔）
 - [转发队列死信自动清理 Plan](specs/040-forward-failed-cleanup/plan.md) — 死信（失败≥5次）即时清除：mark_task_failed 事务化，清空 extracted_resources.img + 删除 forward_tasks 行；零 schema 变更，单函数签名扩展 + 两调用点同步改
+- [推送候选集漏数据修复 Plan](specs/041-fix-push-empty-filter/plan.md) — 修复"DB 有未推送数据但推送显示没有"：废弃候选 SQL 入口 A 的 is_pushed 全局过滤（多配置语义错配，FR-009）+ insert_push_status_batch ON CONFLICT DO UPDATE 修复 failed→pushed 转换 + 候选 SQL 加 ORDER BY + SkipReason 扩展 5 类 + OptionCache 严格/宽松开关；零 schema 变更
 <!-- SPECKIT END -->

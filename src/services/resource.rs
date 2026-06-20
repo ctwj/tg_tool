@@ -1186,17 +1186,31 @@ pub async fn push_resources(
     );
 
     // 有效性分类：图片未转存 / 链接失效 跳过（FR-001/FR-003/FR-006）
-    let classify =
-        match crate::services::link_check::classify_resources(db, option_cache, &resources).await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!("资源有效性分类失败，降级为全部尝试推送: {e}");
-                crate::services::link_check::ClassifyResult {
-                    valid: resources.clone(),
-                    skipped: Vec::new(),
-                }
+    // FR-006（feature 041 US3）：透传 strict_image_check 给 classify（候选 SQL 不动，D8）
+    let strict_image_check = {
+        let cache = option_cache.read().await;
+        cache
+            .get("push_require_image_forwarded")
+            .map(|v| v != "false")
+            .unwrap_or(true)
+    };
+    let classify = match crate::services::link_check::classify_resources(
+        db,
+        option_cache,
+        &resources,
+        strict_image_check,
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("资源有效性分类失败，降级为全部尝试推送: {e}");
+            crate::services::link_check::ClassifyResult {
+                valid: resources.clone(),
+                skipped: Vec::new(),
             }
-        };
+        }
+    };
     let skipped_image = classify.skipped_image_count();
     let skipped_link = classify.skipped_link_count();
     let valid = &classify.valid;
