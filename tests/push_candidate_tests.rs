@@ -49,8 +49,8 @@ async fn setup_test_db() -> DbPool {
         "017_client_name_username_sqlite.sql",
     ] {
         let path = format!("migrations/{n}");
-        let sql = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("Failed to read {path}: {e}"));
+        let sql =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("Failed to read {path}: {e}"));
         let _ = sqlx::raw_sql(&sql).execute(&pool).await;
     }
 
@@ -204,11 +204,10 @@ async fn insert_resource(
     .execute(pool)
     .await
     .unwrap();
-    let id: i64 =
-        sqlx::query_scalar("SELECT last_insert_rowid()")
-            .fetch_one(pool)
-            .await
-            .unwrap();
+    let id: i64 = sqlx::query_scalar("SELECT last_insert_rowid()")
+        .fetch_one(pool)
+        .await
+        .unwrap();
     id
 }
 
@@ -274,8 +273,7 @@ async fn trigger_push(
         ))
         .await
         .unwrap();
-    let body = parse_body(resp.into_body()).await;
-    body
+    parse_body(resp.into_body()).await
 }
 
 // ─── T004: 多配置场景资源能被独立推送 ─────────────────────────────────────────
@@ -305,10 +303,7 @@ async fn test_push_for_config_multi_config_independent() {
 
     // 配置 A 推送 R1 成功（模拟 A 已推送 → is_pushed=TRUE + push_status(R1,A,pushed)）
     let resp_a = trigger_push(&mut app, &token, config_a, None).await;
-    assert_eq!(
-        resp_a["success"], true,
-        "config A push failed: {resp_a}"
-    );
+    assert_eq!(resp_a["success"], true, "config A push failed: {resp_a}");
     assert_eq!(resp_a["data"]["status"], "success");
     assert_eq!(resp_a["data"]["processed_count"], 1);
 
@@ -321,13 +316,14 @@ async fn test_push_for_config_multi_config_independent() {
             .unwrap();
     assert_eq!(is_pushed, 1, "配置 A 推送后 is_pushed 应为 TRUE");
 
-    let status_a: String =
-        sqlx::query_scalar("SELECT status FROM resource_push_status WHERE resource_id = ? AND push_config_id = ?")
-            .bind(r1)
-            .bind(config_a)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let status_a: String = sqlx::query_scalar(
+        "SELECT status FROM resource_push_status WHERE resource_id = ? AND push_config_id = ?",
+    )
+    .bind(r1)
+    .bind(config_a)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(status_a, "pushed");
 
     // 关键断言：配置 B 仍能推送 R1（修复前 B 的候选 SQL 因 is_pushed=TRUE 被排除）
@@ -346,13 +342,14 @@ async fn test_push_for_config_multi_config_independent() {
     );
 
     // 验证 push_status(R1, B, pushed) 已写入
-    let status_b: String =
-        sqlx::query_scalar("SELECT status FROM resource_push_status WHERE resource_id = ? AND push_config_id = ?")
-            .bind(r1)
-            .bind(config_b)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let status_b: String = sqlx::query_scalar(
+        "SELECT status FROM resource_push_status WHERE resource_id = ? AND push_config_id = ?",
+    )
+    .bind(r1)
+    .bind(config_b)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(status_b, "pushed", "配置 B 应能独立推送 R1");
 }
 
@@ -393,13 +390,14 @@ async fn test_push_status_failed_to_pushed_transition() {
     assert_eq!(resp["data"]["processed_count"], 1);
 
     // 关键断言：(R2, C) 行的 status 已从 failed 升级为 pushed（修复前因 ON CONFLICT DO NOTHING 卡在 failed）
-    let status: String =
-        sqlx::query_scalar("SELECT status FROM resource_push_status WHERE resource_id = ? AND push_config_id = ?")
-            .bind(r2)
-            .bind(config_c)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let status: String = sqlx::query_scalar(
+        "SELECT status FROM resource_push_status WHERE resource_id = ? AND push_config_id = ?",
+    )
+    .bind(r2)
+    .bind(config_c)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(
         status, "pushed",
         "failed → pushed 状态转换必须生效（ON CONFLICT DO UPDATE）"
@@ -422,11 +420,46 @@ async fn test_candidate_sql_ordered_by_created_at() {
     // 插入 5 条资源，created_at 故意逆序（id 升序，但 created_at 降序）
     // 修复前候选 SQL 无 ORDER BY，默认按 rowid（=id）ASC，会返回最早插入的 3 条（R1/R2/R3 = 最新 created_at 的 3 条）
     // 修复后 ORDER BY created_at ASC, id ASC，应返回最早 created_at 的 3 条（R5/R4/R3）
-    let _r1 = insert_resource(&pool, "R1", Some("https://example.com/r1"), None, Some("2026-06-10 12:00:00")).await;
-    let _r2 = insert_resource(&pool, "R2", Some("https://example.com/r2"), None, Some("2026-06-09 12:00:00")).await;
-    let _r3 = insert_resource(&pool, "R3", Some("https://example.com/r3"), None, Some("2026-06-08 12:00:00")).await;
-    let _r4 = insert_resource(&pool, "R4", Some("https://example.com/r4"), None, Some("2026-06-07 12:00:00")).await;
-    let _r5 = insert_resource(&pool, "R5", Some("https://example.com/r5"), None, Some("2026-06-06 12:00:00")).await;
+    let _r1 = insert_resource(
+        &pool,
+        "R1",
+        Some("https://example.com/r1"),
+        None,
+        Some("2026-06-10 12:00:00"),
+    )
+    .await;
+    let _r2 = insert_resource(
+        &pool,
+        "R2",
+        Some("https://example.com/r2"),
+        None,
+        Some("2026-06-09 12:00:00"),
+    )
+    .await;
+    let _r3 = insert_resource(
+        &pool,
+        "R3",
+        Some("https://example.com/r3"),
+        None,
+        Some("2026-06-08 12:00:00"),
+    )
+    .await;
+    let _r4 = insert_resource(
+        &pool,
+        "R4",
+        Some("https://example.com/r4"),
+        None,
+        Some("2026-06-07 12:00:00"),
+    )
+    .await;
+    let _r5 = insert_resource(
+        &pool,
+        "R5",
+        Some("https://example.com/r5"),
+        None,
+        Some("2026-06-06 12:00:00"),
+    )
+    .await;
 
     let config = create_push_config(&pool, "配置Order", &mock_url, "api_order", "all").await;
 
@@ -500,13 +533,14 @@ async fn test_dead_letter_cleared_img_pushable() {
         "死信清理后 img 空但 url 有效的资源应被推送（修复前可能被空资源规则吞掉）"
     );
 
-    let status: String =
-        sqlx::query_scalar("SELECT status FROM resource_push_status WHERE resource_id = ? AND push_config_id = ?")
-            .bind(r7)
-            .bind(config_d)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let status: String = sqlx::query_scalar(
+        "SELECT status FROM resource_push_status WHERE resource_id = ? AND push_config_id = ?",
+    )
+    .bind(r7)
+    .bind(config_d)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(status, "pushed");
 }
 
@@ -555,9 +589,11 @@ async fn test_skip_details_5_categories_in_message() {
 
     // 插入 5 条资源
     // 注意：make_resource 默认有 created_at，但这里直接 SQL 插入避免依赖辅助函数
-    let _r_img1 = insert_resource(&pool, "img-not-fwd-1", Some(url_valid), Some("img_a"), None).await;
+    let _r_img1 =
+        insert_resource(&pool, "img-not-fwd-1", Some(url_valid), Some("img_a"), None).await;
     // 给 r_img1 添加 img_forward_status（默认 insert_resource 不带 forward_tasks 关联，status 为 None → ImageNotForwarded）
-    let _r_img2 = insert_resource(&pool, "img-not-fwd-2", Some(url_valid), Some("img_b"), None).await;
+    let _r_img2 =
+        insert_resource(&pool, "img-not-fwd-2", Some(url_valid), Some("img_b"), None).await;
     let _r_link = insert_resource(&pool, "link-invalid", Some(url_invalid), None, None).await;
     let _r_empty = insert_resource(&pool, "empty", None, Some(""), None).await;
     let _r_valid = insert_resource(&pool, "valid", Some(url_valid), None, None).await;
@@ -592,12 +628,13 @@ async fn test_skip_details_5_categories_in_message() {
     assert_eq!(resp["data"]["skipped"]["total"], 4);
 
     // 验证 push_histories.message 含分类汇总（5 类格式）
-    let message: String =
-        sqlx::query_scalar("SELECT message FROM push_histories WHERE push_config_id = ? ORDER BY id DESC LIMIT 1")
-            .bind(config_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let message: String = sqlx::query_scalar(
+        "SELECT message FROM push_histories WHERE push_config_id = ? ORDER BY id DESC LIMIT 1",
+    )
+    .bind(config_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert!(
         message.contains("图片未转存") && message.contains('2'),
         "message 应含 '图片未转存 2'，实际：{message}"
@@ -612,14 +649,15 @@ async fn test_skip_details_5_categories_in_message() {
     );
 
     // 验证 push_skip_records 表写入 4 条明细
-    let skip_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM push_skip_records psr \
+    let skip_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM push_skip_records psr \
             JOIN push_histories ph ON psr.push_history_id = ph.id \
-            WHERE ph.push_config_id = ?")
-            .bind(config_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+            WHERE ph.push_config_id = ?",
+    )
+    .bind(config_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(skip_count, 4, "应有 4 条跳过明细");
 
     // 验证 skip_reason 值匹配（按 reason 分组计数）
@@ -638,3 +676,109 @@ async fn test_skip_details_5_categories_in_message() {
     assert_eq!(reason_map.remove("empty_resource").unwrap_or(0), 1);
 }
 
+// ─── T019: OptionCache 严格/宽松开关（FR-006，feature 041 US3） ───────────────
+
+#[tokio::test]
+async fn test_push_require_image_forwarded_toggle() {
+    // 准备一个带图但未转存的资源 R8
+    // 严格模式（push_require_image_forwarded=true）：R8 被跳过
+    // 宽松模式（push_require_image_forwarded=false）：R8 被推送
+    let db = setup_test_db().await;
+    let pool = match &db {
+        DbPool::Sqlite(p) => p.clone(),
+        _ => panic!("expected sqlite"),
+    };
+    setup_foreign_key_parents(&pool).await;
+
+    let (mock_url, _mock_handle) = start_mock_push_server_ok().await;
+
+    // 资源 R8：img 非空 + 无 forward_tasks 关联（img_forward_status=None）
+    let r8 = insert_resource(
+        &pool,
+        "带图未转存",
+        Some("https://example.com/r8"),
+        Some("img_r8"),
+        None,
+    )
+    .await;
+
+    // 创建配置 E（关闭 link_check，使用 classify_without_link_check）
+    let config_e = create_push_config(&pool, "配置E", &mock_url, "api_e", "all").await;
+
+    let (state, tg_clients) = make_test_state(db.clone());
+    // 直接注入 OptionCache 配置（绕过 HTTP API）
+    {
+        let tg_manager_state = state.tg_manager.clone();
+        let _ = tg_manager_state; // 仅占位
+    }
+    let _ = tg_clients;
+
+    // 取出 option_cache（make_test_state 中创建的）—— 这里通过 TgManager 访问
+    // 简化：直接通过 SQL 写 options 表 + 重新读取。但 OptionCache 是内存 HashMap，需直接注入。
+    // 通过访问 state.option_cache 来设置（AppState 字段）
+    {
+        let cache = state.option_cache.read().await;
+        // 确认初始为空
+        assert!(cache.get("push_require_image_forwarded").is_none());
+    }
+
+    let mut app = build_test_app(state.clone());
+    let token = get_root_token(&mut app).await;
+
+    // === 场景 1：宽松模式（push_require_image_forwarded=false） ===
+    {
+        let mut cache = state.option_cache.write().await;
+        cache.insert(
+            "push_require_image_forwarded".to_string(),
+            "false".to_string(),
+        );
+    }
+    let resp = trigger_push(&mut app, &token, config_e, None).await;
+    assert_eq!(resp["success"], true, "宽松模式推送失败: {resp}");
+    assert_eq!(
+        resp["data"]["processed_count"], 1,
+        "宽松模式下带图未转存资源 R8 应被推送"
+    );
+    assert_eq!(resp["data"]["skipped"]["image_not_forwarded"], 0);
+
+    // 验证 R8 已 push_status='pushed'
+    let status: String = sqlx::query_scalar(
+        "SELECT status FROM resource_push_status WHERE resource_id = ? AND push_config_id = ?",
+    )
+    .bind(r8)
+    .bind(config_e)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(status, "pushed");
+
+    // === 场景 2：严格模式（push_require_image_forwarded=true） ===
+    // 重置 R8 的 push_status（删除以便重新触发推送）
+    sqlx::query("DELETE FROM resource_push_status WHERE resource_id = ? AND push_config_id = ?")
+        .bind(r8)
+        .bind(config_e)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // 同时重置 is_pushed=0（因为宽松推送已置位）
+    sqlx::query("UPDATE extracted_resources SET is_pushed = 0 WHERE id = ?")
+        .bind(r8)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    {
+        let mut cache = state.option_cache.write().await;
+        cache.insert(
+            "push_require_image_forwarded".to_string(),
+            "true".to_string(),
+        );
+    }
+    let resp = trigger_push(&mut app, &token, config_e, None).await;
+    assert_eq!(resp["success"], true, "严格模式推送失败: {resp}");
+    assert_eq!(
+        resp["data"]["processed_count"], 0,
+        "严格模式下带图未转存资源 R8 应被跳过（现行默认行为）"
+    );
+    assert_eq!(resp["data"]["skipped"]["image_not_forwarded"], 1);
+}

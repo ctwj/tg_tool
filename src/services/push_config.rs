@@ -489,6 +489,7 @@ pub async fn duplicate_config(db: &DbPool, config_id: i64) -> Result<i64, AppErr
 /// 构造推送历史 message 的结构化后缀（FR-003，feature 041 US2）。
 /// - 当 skipped_total > 0：追加 ` | 跳过 N 条（图片未转存 X，链接失效 Y，空资源 Z，其他 W）`
 /// - 当 remaining > 0：追加 ` | 剩余 M 条待下次推送`
+///
 /// 仅包含非零项以保持 message 简洁。
 fn format_message_suffix(
     skipped_image: usize,
@@ -556,6 +557,14 @@ pub async fn push_for_config(
 
     let batch_size = batch_size_override.unwrap_or(config.batch_size);
 
+    // D10 可观测性日志（feature 041 US3 Polish）：入口标记调度 tick
+    tracing::info!(
+        "push_for_config start: config_id={}, batch_size={}, data_source_type={}",
+        config_id,
+        batch_size,
+        config.data_source_type
+    );
+
     // 2. 查询该配置数据源范围内的未推送资源（含 img_forward_status；图片转存过滤改由 Rust 分类）
     //
     // D1 修复（FR-009/SC-007 多配置阻断根因）：废弃 `er.is_pushed = FALSE` 全局过滤。
@@ -565,7 +574,10 @@ pub async fn push_for_config(
     // D6 修复：候选 SQL 加 `ORDER BY er.created_at ASC, er.id ASC`，保证 FIFO 顺序，避免 LIMIT 命中不可预测。
     //
     // 同时跑 COUNT 前置查询（D7）取 total_candidate，用于后续计算 remaining_count 反馈给用户。
-    let (total_candidate, resources): (i64, Vec<crate::models::extracted_resource::ExtractedResource>) = match db {
+    let (total_candidate, resources): (
+        i64,
+        Vec<crate::models::extracted_resource::ExtractedResource>,
+    ) = match db {
         DbPool::Sqlite(pool) => {
             if config.data_source_type == "all" {
                 let total: i64 = sqlx::query_scalar(
@@ -710,10 +722,27 @@ pub async fn push_for_config(
         }));
     }
 
-    // 3. 有效性分类：图片未转存 / 链接失效 跳过（FR-001/FR-003/FR-006）
-    //    若配置关闭「推送前链接检测」，则跳过 LinkChecker 调用，仅过滤图片未转存
+    // 3. 有效性分类：图片未转存 / 链接失效 / 空资源 跳过（FR-001/FR-003/FR-006）
+    //    若配置关闭「推送前链接检测」，则跳过 LinkChecker 调用，仅做图片/空资源过滤
+    //
+    //    FR-006（feature 041 US3）：从 OptionCache 读 `push_require_image_forwarded`，
+    //    默认严格模式（现行行为）。设为 "false" 时进入宽松模式（不拦截图片未转存）。
+    let strict_image_check = {
+        let cache = option_cache.read().await;
+        cache
+            .get("push_require_image_forwarded")
+            .map(|v| v != "false")
+            .unwrap_or(true)
+    };
     let classify = if config.link_check_before_push {
-        match crate::services::link_check::classify_resources(db, option_cache, &resources).await {
+        match crate::services::link_check::classify_resources(
+            db,
+            option_cache,
+            &resources,
+            strict_image_check,
+        )
+        .await
+        {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!("资源有效性分类失败，降级为全部尝试推送: {e}");
@@ -725,15 +754,29 @@ pub async fn push_for_config(
         }
     } else {
         tracing::info!(
-            "推送配置 id={} 关闭了推送前链接检测，跳过 LinkChecker 调用",
-            config_id
+            "推送配置 id={} 关闭了推送前链接检测，跳过 LinkChecker 调用（strict_image_check={}）",
+            config_id,
+            strict_image_check
         );
-        crate::services::link_check::classify_without_link_check(&resources)
+        crate::services::link_check::classify_without_link_check(&resources, strict_image_check)
     };
     let skipped_image = classify.skipped_image_count();
     let skipped_link = classify.skipped_link_count();
     let skipped_empty = classify.skipped_empty_count();
     let skipped_other = classify.skipped_other_count();
+
+    // D10 可观测性日志：分类完成后标记各类跳过数
+    tracing::info!(
+        "push_for_config classify: config_id={}, total_candidate={}, valid={}, skipped_image={}, skipped_link={}, skipped_empty={}, skipped_other={}, strict_image_check={}",
+        config_id,
+        total_candidate,
+        classify.valid.len(),
+        skipped_image,
+        skipped_link,
+        skipped_empty,
+        skipped_other,
+        strict_image_check
+    );
     let valid = &classify.valid;
     let skipped_total = skipped_image + skipped_link + skipped_empty + skipped_other;
     let skipped_json = serde_json::json!({
@@ -841,6 +884,15 @@ pub async fn push_for_config(
                     &classify.skipped,
                 )
                 .await?;
+
+                // D10 可观测性日志：成功完成
+                tracing::info!(
+                    "push_for_config done: config_id={}, pushed={}, remaining={}, batch_id={}",
+                    config_id,
+                    resource_count,
+                    remaining,
+                    batch_id
+                );
 
                 Ok(serde_json::json!({
                     "status": "success",
