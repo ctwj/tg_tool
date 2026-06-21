@@ -13,6 +13,7 @@ web/dist/*
 web/build/
 web/.env.local
 web/.env.*.local
+*.tsbuildinfo
 
 # Build artifacts
 *.log
@@ -42,6 +43,8 @@ Thumbs.db
 # Data
 *.db
 *.db-journal
+*.db.bak.*
+*.db.bak
 tg_store/
 upload/
 image_cache/
