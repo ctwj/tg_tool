@@ -269,6 +269,9 @@ const Layout: React.FC = () => {
           padding: collapsed ? 0 : '0 16px',
           gap: 10,
           borderBottom: '1px solid #e5e7eb',
+          boxShadow: '4px 0 12px rgba(0, 0, 0, 0.08)',
+          position: 'relative',
+          zIndex: 2,
           cursor: 'pointer',
         }}
           onClick={() => navigate('/dashboard')}
@@ -293,7 +296,7 @@ const Layout: React.FC = () => {
                 whiteSpace: 'nowrap',
                 letterSpacing: '0.5px',
               }}>
-                控制台
+                控制中心
               </span>
             </>
           )}
