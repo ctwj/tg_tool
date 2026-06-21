@@ -145,15 +145,12 @@ const Login: React.FC = () => {
           <div style={{
             width: 56,
             height: 56,
-            borderRadius: 16,
-            background: 'linear-gradient(135deg, #0088FF, #4FC3F7)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
+            borderRadius: '50%',
+            overflow: 'hidden',
             margin: '0 auto 16px',
             boxShadow: '0 8px 24px rgba(0, 136, 255, 0.3)',
           }}>
-            <img src="/logo.svg" alt="TG tools" style={{ width: 32, height: 32 }} />
+            <img src="/logo.png" alt="TG tools" style={{ width: '100%', height: '100%', display: 'block' }} />
           </div>
           <h1 style={{ fontSize: 24, fontWeight: 700, color: '#0c4a6e', margin: 0 }}>
             TG tools
