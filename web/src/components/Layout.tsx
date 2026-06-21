@@ -259,13 +259,16 @@ const Layout: React.FC = () => {
           overflowY: 'auto',
         }}
       >
-        {/* Logo */}
+        {/* Brand */}
         <div style={{
           height: 64,
+          background: '#ffffff',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'center',
-          borderBottom: '1px solid rgba(255,255,255,0.08)',
+          justifyContent: collapsed ? 'center' : 'flex-start',
+          padding: collapsed ? 0 : '0 16px',
+          gap: 10,
+          borderBottom: '1px solid #e5e7eb',
           cursor: 'pointer',
         }}
           onClick={() => navigate('/dashboard')}
@@ -277,20 +280,22 @@ const Layout: React.FC = () => {
               style={{ width: 36, height: 36, borderRadius: 8, display: 'block' }}
             />
           ) : (
-            <div style={{
-              background: 'radial-gradient(circle at center, #ffffff 0%, #ffffff 35%, #0c4a6e 100%)',
-              borderRadius: 10,
-              padding: '8px 16px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}>
+            <>
               <img
                 src="/logo.png"
                 alt="TG tools"
-                style={{ height: 40, width: 'auto', display: 'block' }}
+                style={{ height: 36, width: 'auto', display: 'block' }}
               />
-            </div>
+              <span style={{
+                fontSize: 17,
+                fontWeight: 600,
+                color: '#0c4a6e',
+                whiteSpace: 'nowrap',
+                letterSpacing: '0.5px',
+              }}>
+                控制台
+              </span>
+            </>
           )}
         </div>
 
