@@ -262,7 +262,7 @@ const Layout: React.FC = () => {
         {/* Brand */}
         <div style={{
           height: 64,
-          backgroundImage: 'linear-gradient(to bottom, rgba(12,74,110,0) 0%, rgba(12,74,110,0) 80%, #0c4a6e 100%), linear-gradient(to right, #ffffff 0%, #ffffff 80%, #0c4a6e 100%)',
+          background: '#ffffff',
           display: 'flex',
           alignItems: 'center',
           justifyContent: collapsed ? 'center' : 'flex-start',
