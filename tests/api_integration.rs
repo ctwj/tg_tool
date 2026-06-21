@@ -537,6 +537,103 @@ async fn test_collector_crud() {
 }
 
 #[tokio::test]
+async fn test_collector_create_duplicate_channel_id_rejected() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    let body_create = |channel_id: i64, channel_name: &str| {
+        serde_json::json!({
+            "client_id": "test_client",
+            "channel_id": channel_id,
+            "channel_name": channel_name,
+            "collector_type": "origin",
+            "is_active": true,
+            "remark": ""
+        })
+        .to_string()
+    };
+
+    // 1. 创建采集器 A（channel_id=888111）→ 成功
+    let response = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/collectors",
+            &token,
+            Some(body_create(888111, "Channel A")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+
+    // 2. 再创建同 channel_id 的采集器 → 400 拒绝
+    let response = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/collectors",
+            &token,
+            Some(body_create(888111, "Channel A Dup")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+    let body = parse_body(response.into_body()).await;
+    assert_eq!(body["success"], false);
+    let msg = body["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("已存在") && msg.contains("888111"),
+        "应返回频道已存在的错误消息，实际：{msg}"
+    );
+
+    // 3. 创建不同 channel_id 的采集器 → 成功（全局唯一，不区分用户/客户端）
+    let response = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/collectors",
+            &token,
+            Some(body_create(888222, "Channel B")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+
+    // 4. 更新采集器 2 的 channel_id 为 888111（已被采集器 1 占用）→ 400 冲突
+    let response = app
+        .clone()
+        .oneshot(build_auth_request(
+            "PUT",
+            "/api/collectors/2",
+            &token,
+            Some(serde_json::json!({ "channel_id": 888111 }).to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+    let body = parse_body(response.into_body()).await;
+    let msg = body["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("占用"),
+        "更新冲突应返回被占用错误，实际：{msg}"
+    );
+
+    // 5. 更新采集器 1 自身 channel_id 为相同值（888111）→ 成功（排除自身）
+    let response = app
+        .oneshot(build_auth_request(
+            "PUT",
+            "/api/collectors/1",
+            &token,
+            Some(serde_json::json!({ "channel_id": 888111 }).to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+}
+
+#[tokio::test]
 async fn test_client_add_and_remove() {
     let db = setup_test_db().await;
     let (state, _) = make_test_state(db);

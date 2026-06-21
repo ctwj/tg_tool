@@ -76,6 +76,27 @@ pub async fn create_collector(
         return Err(AppError::BadRequest("请选择频道/群组".into()));
     }
 
+    // 频道 ID 全局去重：同一群组/频道只允许添加一次采集器，避免重复采集产生冗余消息
+    let exists: i64 = match &state.db {
+        crate::state::DbPool::Sqlite(pool) => {
+            sqlx::query_scalar("SELECT COUNT(*) FROM collectors WHERE channel_id = ?")
+                .bind(channel_id)
+                .fetch_one(pool)
+                .await?
+        }
+        crate::state::DbPool::Postgres(pool) => {
+            sqlx::query_scalar("SELECT COUNT(*) FROM collectors WHERE channel_id = $1")
+                .bind(channel_id)
+                .fetch_one(pool)
+                .await?
+        }
+    };
+    if exists > 0 {
+        return Err(AppError::BadRequest(format!(
+            "频道/群组 {channel_id} 已存在采集器，同一频道只允许添加一次"
+        )));
+    }
+
     match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
             sqlx::query("INSERT INTO collectors (user_id, client_id, channel_id, channel_name, collector_type, is_active, remark) VALUES (?, ?, ?, ?, ?, ?, ?)")
@@ -126,6 +147,37 @@ pub async fn update_collector(
     let collector_type = body.get("collector_type").and_then(|v| v.as_str());
     let is_active = body.get("is_active").and_then(|v| v.as_bool());
     let remark = body.get("remark").and_then(|v| v.as_str());
+
+    // 若更新 channel_id，检查新频道是否与其他采集器冲突（排除自身）
+    if let Some(new_channel_id) = channel_id
+        && new_channel_id != 0
+    {
+        let conflict: i64 = match &state.db {
+            crate::state::DbPool::Sqlite(pool) => {
+                sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM collectors WHERE channel_id = ? AND id != ?",
+                )
+                .bind(new_channel_id)
+                .bind(id)
+                .fetch_one(pool)
+                .await?
+            }
+            crate::state::DbPool::Postgres(pool) => {
+                sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM collectors WHERE channel_id = $1 AND id != $2",
+                )
+                .bind(new_channel_id)
+                .bind(id)
+                .fetch_one(pool)
+                .await?
+            }
+        };
+        if conflict > 0 {
+            return Err(AppError::BadRequest(format!(
+                "频道/群组 {new_channel_id} 已被其他采集器占用，同一频道只允许添加一次"
+            )));
+        }
+    }
 
     // Build dynamic SET clause
     let mut sets = Vec::new();

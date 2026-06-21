@@ -46,7 +46,7 @@ const Collectors: React.FC = () => {
       const list: Chat[] = res.data.data?.chats ?? []
       setChats(list.filter(c => c.type === 'channel' || c.type === 'group'))
     } catch (e: any) {
-      message.error('获取频道列表失败：' + (e.response?.data?.error || e.message))
+      message.error('获取频道列表失败：' + (e.response?.data?.message || e.message))
     } finally {
       setChatsLoading(false)
     }
@@ -83,7 +83,7 @@ const Collectors: React.FC = () => {
       setChats([])
       fetchCollectors()
     } catch (e: any) {
-      message.error(e.response?.data?.error || e.message || '创建失败')
+      message.error(e.response?.data?.message || e.message || '创建失败')
     }
   }
 
@@ -118,7 +118,7 @@ const Collectors: React.FC = () => {
       // 延迟刷新列表，给后台任务一些时间执行
       setTimeout(() => fetchCollectors(), 3000)
     } catch (e: any) {
-      message.error(e.response?.data?.error || e.message || '采集失败')
+      message.error(e.response?.data?.message || e.message || '采集失败')
     } finally {
       setFetching(false)
     }
