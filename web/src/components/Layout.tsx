@@ -269,9 +269,6 @@ const Layout: React.FC = () => {
           padding: collapsed ? 0 : '0 16px',
           gap: 10,
           borderBottom: '1px solid #e5e7eb',
-          boxShadow: '4px 0 12px rgba(0, 0, 0, 0.08)',
-          position: 'relative',
-          zIndex: 2,
           cursor: 'pointer',
         }}
           onClick={() => navigate('/dashboard')}
@@ -326,6 +323,7 @@ const Layout: React.FC = () => {
           alignItems: 'center',
           justifyContent: 'space-between',
           borderBottom: '1px solid #f0f0f0',
+          boxShadow: 'inset 8px 0 14px -8px rgba(0, 0, 0, 0.25)',
           height: 64,
           flexShrink: 0,
           zIndex: 10,
