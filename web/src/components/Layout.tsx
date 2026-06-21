@@ -274,14 +274,24 @@ const Layout: React.FC = () => {
             <img
               src="/favicon.png"
               alt="TG tools"
-              style={{ width: 32, height: 32, borderRadius: 8, display: 'block' }}
+              style={{ width: 36, height: 36, borderRadius: 8, display: 'block' }}
             />
           ) : (
-            <img
-              src="/logo.png"
-              alt="TG tools"
-              style={{ height: 32, width: 'auto', display: 'block' }}
-            />
+            <div style={{
+              background: '#ffffff',
+              borderRadius: 10,
+              padding: '6px 14px',
+              boxShadow: '0 2px 10px rgba(0, 0, 0, 0.25)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}>
+              <img
+                src="/logo.png"
+                alt="TG tools"
+                style={{ height: 40, width: 'auto', display: 'block' }}
+              />
+            </div>
           )}
         </div>
 
