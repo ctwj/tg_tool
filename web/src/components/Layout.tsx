@@ -278,10 +278,9 @@ const Layout: React.FC = () => {
             />
           ) : (
             <div style={{
-              background: '#ffffff',
+              background: 'radial-gradient(circle at center, #ffffff 0%, #ffffff 35%, #0c4a6e 100%)',
               borderRadius: 10,
-              padding: '6px 14px',
-              boxShadow: '0 2px 10px rgba(0, 0, 0, 0.25)',
+              padding: '8px 16px',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
