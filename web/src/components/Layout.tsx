@@ -270,26 +270,18 @@ const Layout: React.FC = () => {
         }}
           onClick={() => navigate('/dashboard')}
         >
-          <div style={{
-            width: 36,
-            height: 36,
-            borderRadius: '50%',
-            overflow: 'hidden',
-            flexShrink: 0,
-          }}>
-            <img src="/logo.png" alt="TG tools" style={{ width: '100%', height: '100%', display: 'block' }} />
-          </div>
-          {!collapsed && (
-            <span style={{
-              marginLeft: 12,
-              fontSize: 16,
-              fontWeight: 600,
-              color: '#fff',
-              whiteSpace: 'nowrap',
-              letterSpacing: '0.5px',
-            }}>
-              TG tools
-            </span>
+          {collapsed ? (
+            <img
+              src="/favicon.png"
+              alt="TG tools"
+              style={{ width: 32, height: 32, borderRadius: 8, display: 'block' }}
+            />
+          ) : (
+            <img
+              src="/logo.png"
+              alt="TG tools"
+              style={{ height: 32, width: 'auto', display: 'block' }}
+            />
           )}
         </div>
 

@@ -142,20 +142,12 @@ const Login: React.FC = () => {
       }}>
         {/* Brand */}
         <div style={{ textAlign: 'center', marginBottom: 32 }}>
-          <div style={{
-            width: 56,
-            height: 56,
-            borderRadius: '50%',
-            overflow: 'hidden',
-            margin: '0 auto 16px',
-            boxShadow: '0 8px 24px rgba(0, 136, 255, 0.3)',
-          }}>
-            <img src="/logo.png" alt="TG tools" style={{ width: '100%', height: '100%', display: 'block' }} />
-          </div>
-          <h1 style={{ fontSize: 24, fontWeight: 700, color: '#0c4a6e', margin: 0 }}>
-            TG tools
-          </h1>
-          <p style={{ fontSize: 14, color: '#6b7280', marginTop: 4 }}>
+          <img
+            src="/logo.png"
+            alt="TG tools"
+            style={{ width: 240, height: 'auto', display: 'block', margin: '0 auto 12px' }}
+          />
+          <p style={{ fontSize: 14, color: '#6b7280', marginTop: 0 }}>
             Telegram 消息转发管理平台
           </p>
         </div>
