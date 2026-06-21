@@ -274,13 +274,13 @@ const Layout: React.FC = () => {
             width: 36,
             height: 36,
             borderRadius: 10,
-            background: 'linear-gradient(135deg, #0ea5e9, #7dd3fc)',
+            background: 'linear-gradient(135deg, #0088FF, #4FC3F7)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             flexShrink: 0,
           }}>
-            <img src="/logo.svg" alt="TG tools" style={{ width: 20, height: 20 }} />
+            <img src="/logo.svg" alt="TG tools" style={{ width: 22, height: 22 }} />
           </div>
           {!collapsed && (
             <span style={{

@@ -146,14 +146,14 @@ const Login: React.FC = () => {
             width: 56,
             height: 56,
             borderRadius: 16,
-            background: 'linear-gradient(135deg, #0ea5e9, #7dd3fc)',
+            background: 'linear-gradient(135deg, #0088FF, #4FC3F7)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             margin: '0 auto 16px',
-            boxShadow: '0 8px 24px rgba(14, 165, 233, 0.3)',
+            boxShadow: '0 8px 24px rgba(0, 136, 255, 0.3)',
           }}>
-            <img src="/logo.svg" alt="TG tools" style={{ width: 28, height: 28 }} />
+            <img src="/logo.svg" alt="TG tools" style={{ width: 32, height: 32 }} />
           </div>
           <h1 style={{ fontSize: 24, fontWeight: 700, color: '#0c4a6e', margin: 0 }}>
             TG tools
@@ -220,7 +220,7 @@ const Login: React.FC = () => {
                           height: 46,
                           fontSize: 15,
                           fontWeight: 500,
-                          background: 'linear-gradient(135deg, #0ea5e9, #7dd3fc)',
+                          background: 'linear-gradient(135deg, #0088FF, #4FC3F7)',
                           border: 'none',
                         }}
                       >
@@ -271,7 +271,7 @@ const Login: React.FC = () => {
                           height: 46,
                           fontSize: 15,
                           fontWeight: 500,
-                          background: 'linear-gradient(135deg, #0ea5e9, #7dd3fc)',
+                          background: 'linear-gradient(135deg, #0088FF, #4FC3F7)',
                           border: 'none',
                         }}
                       >
