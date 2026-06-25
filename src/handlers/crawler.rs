@@ -79,7 +79,8 @@ pub async fn list_tasks(
     let select_cols = "id, name, enabled, list_urls, selectors, two_stage, \
          interval_minutes, task_concurrency, user_agent, request_delay_ms, \
          proxy, auto_link_check, block_detection_config, max_consecutive_failures, \
-         template_source, status, consecutive_failures, last_run_at, next_run_at, \
+         template_source, pagination_selector, max_pages, \
+         status, consecutive_failures, last_run_at, next_run_at, \
          created_at, updated_at";
 
     let rows: Vec<CrawlerTask> = match &state.db {
@@ -147,14 +148,16 @@ pub async fn create_task(
                 "INSERT INTO crawler_tasks (name, enabled, list_urls, selectors, two_stage, \
                  interval_minutes, task_concurrency, user_agent, request_delay_ms, proxy, \
                  auto_link_check, block_detection_config, max_consecutive_failures, \
-                 template_source, status, consecutive_failures, next_run_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, ?)",
+                 template_source, pagination_selector, max_pages, \
+                 status, consecutive_failures, next_run_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, ?)",
             )
             .bind(&body.name)
             .bind(body.enabled)
             .bind(&list_urls_json)
             .bind(&selectors_json)
-            .bind(body.two_stage)
+            // two_stage 已下线：DB 列保留兼容，强制写入 true
+            .bind(true)
             .bind(body.interval_minutes)
             .bind(body.task_concurrency)
             .bind(body.user_agent.as_deref())
@@ -164,6 +167,8 @@ pub async fn create_task(
             .bind(body.block_detection_config.as_deref())
             .bind(body.max_consecutive_failures)
             .bind(body.template_source.as_deref())
+            .bind(body.pagination_selector.as_deref())
+            .bind(body.max_pages)
             .bind(next_run_at)
             .execute(pool)
             .await
@@ -175,15 +180,17 @@ pub async fn create_task(
                 "INSERT INTO crawler_tasks (name, enabled, list_urls, selectors, two_stage, \
                  interval_minutes, task_concurrency, user_agent, request_delay_ms, proxy, \
                  auto_link_check, block_detection_config, max_consecutive_failures, \
-                 template_source, status, consecutive_failures, next_run_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'active', 0, $15) \
+                 template_source, pagination_selector, max_pages, \
+                 status, consecutive_failures, next_run_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'active', 0, $17) \
                  RETURNING id",
             )
             .bind(&body.name)
             .bind(body.enabled)
             .bind(&list_urls_json)
             .bind(&selectors_json)
-            .bind(body.two_stage)
+            // two_stage 已下线：DB 列保留兼容，强制写入 true
+            .bind(true)
             .bind(body.interval_minutes)
             .bind(body.task_concurrency)
             .bind(body.user_agent.as_deref())
@@ -193,6 +200,8 @@ pub async fn create_task(
             .bind(body.block_detection_config.as_deref())
             .bind(body.max_consecutive_failures)
             .bind(body.template_source.as_deref())
+            .bind(body.pagination_selector.as_deref())
+            .bind(body.max_pages)
             .bind(next_run_at)
             .fetch_one(pool)
             .await
@@ -250,9 +259,8 @@ pub async fn update_task(
         merged.selectors = serde_json::from_value(s.clone())
             .map_err(|e| AppError::BadRequest(format!("selectors 格式错误: {e}")))?;
     }
-    if let Some(t) = body.get("two_stage").and_then(|v| v.as_bool()) {
-        merged.two_stage = t;
-    }
+    // two_stage 已下线：忽略客户端传入，强制保持 true
+    merged.two_stage = true;
     if let Some(i) = body.get("interval_minutes").and_then(|v| v.as_i64()) {
         merged.interval_minutes = i;
     }
@@ -277,6 +285,16 @@ pub async fn update_task(
     }
     if let Some(m) = body.get("max_consecutive_failures").and_then(|v| v.as_i64()) {
         merged.max_consecutive_failures = m;
+    }
+    if let Some(s) = body.get("pagination_selector") {
+        merged.pagination_selector = if s.is_null() {
+            None
+        } else {
+            s.as_str().map(String::from)
+        };
+    }
+    if let Some(mp) = body.get("max_pages").and_then(|v| v.as_i64()) {
+        merged.max_pages = mp;
     }
     merged.validate().map_err(AppError::BadRequest)?;
 
@@ -303,13 +321,15 @@ pub async fn update_task(
                 "UPDATE crawler_tasks SET name=?, enabled=?, list_urls=?, selectors=?, \
                  two_stage=?, interval_minutes=?, task_concurrency=?, user_agent=?, \
                  request_delay_ms=?, proxy=?, auto_link_check=?, block_detection_config=?, \
-                 max_consecutive_failures=?, next_run_at=?, updated_at=? WHERE id=?",
+                 max_consecutive_failures=?, pagination_selector=?, max_pages=?, \
+                 next_run_at=?, updated_at=? WHERE id=?",
             )
             .bind(&merged.name)
             .bind(merged.enabled)
             .bind(&list_urls_json)
             .bind(&selectors_json)
-            .bind(merged.two_stage)
+            // two_stage 已下线：强制 true
+            .bind(true)
             .bind(merged.interval_minutes)
             .bind(merged.task_concurrency)
             .bind(merged.user_agent.as_deref())
@@ -318,6 +338,8 @@ pub async fn update_task(
             .bind(merged.auto_link_check)
             .bind(merged.block_detection_config.as_deref())
             .bind(merged.max_consecutive_failures)
+            .bind(merged.pagination_selector.as_deref())
+            .bind(merged.max_pages)
             .bind(next_run_at)
             .bind(now)
             .bind(id)
@@ -330,13 +352,15 @@ pub async fn update_task(
                 "UPDATE crawler_tasks SET name=$1, enabled=$2, list_urls=$3, selectors=$4, \
                  two_stage=$5, interval_minutes=$6, task_concurrency=$7, user_agent=$8, \
                  request_delay_ms=$9, proxy=$10, auto_link_check=$11, block_detection_config=$12, \
-                 max_consecutive_failures=$13, next_run_at=$14, updated_at=$15 WHERE id=$16",
+                 max_consecutive_failures=$13, pagination_selector=$14, max_pages=$15, \
+                 next_run_at=$16, updated_at=$17 WHERE id=$18",
             )
             .bind(&merged.name)
             .bind(merged.enabled)
             .bind(&list_urls_json)
             .bind(&selectors_json)
-            .bind(merged.two_stage)
+            // two_stage 已下线：强制 true
+            .bind(true)
             .bind(merged.interval_minutes)
             .bind(merged.task_concurrency)
             .bind(merged.user_agent.as_deref())
@@ -345,6 +369,8 @@ pub async fn update_task(
             .bind(merged.auto_link_check)
             .bind(merged.block_detection_config.as_deref())
             .bind(merged.max_consecutive_failures)
+            .bind(merged.pagination_selector.as_deref())
+            .bind(merged.max_pages)
             .bind(next_run_at)
             .bind(now)
             .bind(id)
@@ -623,14 +649,16 @@ pub async fn import_task(
                 "INSERT INTO crawler_tasks (name, enabled, list_urls, selectors, two_stage, \
                  interval_minutes, task_concurrency, user_agent, request_delay_ms, proxy, \
                  auto_link_check, block_detection_config, max_consecutive_failures, \
-                 template_source, status, consecutive_failures, next_run_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, ?)",
+                 template_source, pagination_selector, max_pages, \
+                 status, consecutive_failures, next_run_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, ?)",
             )
             .bind(&body.name)
             .bind(body.enabled)
             .bind(&list_urls_json)
             .bind(&selectors_json)
-            .bind(body.two_stage)
+            // two_stage 已下线：DB 列保留兼容，强制写入 true
+            .bind(true)
             .bind(body.interval_minutes)
             .bind(body.task_concurrency)
             .bind(body.user_agent.as_deref())
@@ -640,6 +668,8 @@ pub async fn import_task(
             .bind(body.block_detection_config.as_deref())
             .bind(body.max_consecutive_failures)
             .bind(body.template_source.as_deref())
+            .bind(body.pagination_selector.as_deref())
+            .bind(body.max_pages)
             .bind(next_run_at)
             .execute(pool)
             .await
@@ -651,15 +681,17 @@ pub async fn import_task(
                 "INSERT INTO crawler_tasks (name, enabled, list_urls, selectors, two_stage, \
                  interval_minutes, task_concurrency, user_agent, request_delay_ms, proxy, \
                  auto_link_check, block_detection_config, max_consecutive_failures, \
-                 template_source, status, consecutive_failures, next_run_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'active', 0, $15) \
+                 template_source, pagination_selector, max_pages, \
+                 status, consecutive_failures, next_run_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'active', 0, $17) \
                  RETURNING id",
             )
             .bind(&body.name)
             .bind(body.enabled)
             .bind(&list_urls_json)
             .bind(&selectors_json)
-            .bind(body.two_stage)
+            // two_stage 已下线：DB 列保留兼容，强制写入 true
+            .bind(true)
             .bind(body.interval_minutes)
             .bind(body.task_concurrency)
             .bind(body.user_agent.as_deref())
@@ -669,6 +701,8 @@ pub async fn import_task(
             .bind(body.block_detection_config.as_deref())
             .bind(body.max_consecutive_failures)
             .bind(body.template_source.as_deref())
+            .bind(body.pagination_selector.as_deref())
+            .bind(body.max_pages)
             .bind(next_run_at)
             .fetch_one(pool)
             .await
@@ -780,7 +814,8 @@ async fn fetch_task(state: &AppState, id: i64) -> Result<Option<CrawlerTask>, Ap
     let sql = "SELECT id, name, enabled, list_urls, selectors, two_stage, \
      interval_minutes, task_concurrency, user_agent, request_delay_ms, \
      proxy, auto_link_check, block_detection_config, max_consecutive_failures, \
-     template_source, status, consecutive_failures, last_run_at, next_run_at, \
+     template_source, pagination_selector, max_pages, \
+     status, consecutive_failures, last_run_at, next_run_at, \
      created_at, updated_at FROM crawler_tasks WHERE id = ?";
     let sql_pg = sql.replace("WHERE id = ?", "WHERE id = $1");
     Ok(match &state.db {
@@ -814,6 +849,8 @@ fn decode_task_to_input(t: &CrawlerTask) -> Result<CrawlerTaskInput, AppError> {
         block_detection_config: t.block_detection_config.clone(),
         max_consecutive_failures: t.max_consecutive_failures,
         template_source: t.template_source.clone(),
+        pagination_selector: t.pagination_selector.clone(),
+        max_pages: t.max_pages,
     })
 }
 

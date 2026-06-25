@@ -75,7 +75,8 @@ pub async fn load_task(
                 "SELECT id, name, enabled, list_urls, selectors, two_stage, \
                  interval_minutes, task_concurrency, user_agent, request_delay_ms, \
                  proxy, auto_link_check, block_detection_config, max_consecutive_failures, \
-                 template_source, status, consecutive_failures \
+                 template_source, pagination_selector, max_pages, \
+                 status, consecutive_failures \
                  FROM crawler_tasks WHERE id = ?",
             )
             .bind(task_id)
@@ -88,7 +89,8 @@ pub async fn load_task(
                 "SELECT id, name, enabled, list_urls, selectors, two_stage, \
                  interval_minutes, task_concurrency, user_agent, request_delay_ms, \
                  proxy, auto_link_check, block_detection_config, max_consecutive_failures, \
-                 template_source, status, consecutive_failures \
+                 template_source, pagination_selector, max_pages, \
+                 status, consecutive_failures \
                  FROM crawler_tasks WHERE id = $1",
             )
             .bind(task_id)
@@ -130,6 +132,8 @@ struct TaskRow {
     block_detection_config: Option<String>,
     max_consecutive_failures: i64,
     template_source: Option<String>,
+    pagination_selector: Option<String>,
+    max_pages: i64,
     status: String,
     consecutive_failures: i64,
 }
@@ -162,6 +166,12 @@ impl TaskRuntime {
     pub fn auto_link_check(&self) -> bool {
         self.row.auto_link_check
     }
+    pub fn pagination_selector(&self) -> Option<&str> {
+        self.row.pagination_selector.as_deref()
+    }
+    pub fn max_pages(&self) -> i64 {
+        self.row.max_pages
+    }
 }
 
 /// 立即运行一次任务（落库）
@@ -185,38 +195,15 @@ pub async fn run_task(task_id: i64, state: &AppState) -> Result<RunSummary, Stri
         error_message: None,
     };
 
-    // 抓所有列表页
-    let mut all_detail_links: Vec<String> = Vec::new();
-    for list_url in &task.list_urls {
-        match fetch_url(list_url, task.user_agent(), task.proxy(), state).await {
-            Ok((status_code, body, headers)) => {
-                if let Some(block) =
-                    detect_block(status_code, &body, &headers)
-                {
-                    summary.status = "blocked";
-                    summary.block_type = Some(block.as_str());
-                    summary.error_message =
-                        Some(format!("列表页 {list_url} 被拦截: {block}"));
-                    finalize_run(state, &task, started_at, &summary).await;
-                    return Ok(summary);
-                }
-                let links = extract_detail_links(
-                    &body,
-                    &task.selectors.list_item,
-                    &task.selectors.detail_link,
-                    task.selectors.detail_link_attr.as_deref(),
-                );
-                summary.crawled_count += links.len() as i64;
-                all_detail_links.extend(links);
-            }
-            Err(e) => {
-                tracing::warn!("列表页抓取失败 {list_url}: {e}");
-                summary.failed_count += 1;
-                summary.error_message = Some(format!("列表页抓取失败: {e}"));
-            }
-        }
-        sleep_request_delay(task.request_delay_ms()).await;
+    // 抓所有列表页（若配置了 next_page_selector，每个 seed URL 会自动翻页）
+    let list_result = crawl_list_pages(&task, state, &mut summary).await;
+    if let Some(block_msg) = list_result.blocked {
+        summary.status = "blocked";
+        summary.error_message = Some(block_msg);
+        finalize_run(state, &task, started_at, &summary).await;
+        return Ok(summary);
     }
+    let all_detail_links = list_result.detail_links;
 
     if all_detail_links.is_empty() {
         summary.status = if summary.failed_count > 0 { "failed" } else { "success" };
@@ -390,10 +377,140 @@ async fn sleep_request_delay(ms: u64) {
     }
 }
 
+/// `crawl_list_pages` 的返回
+pub struct ListPageResult {
+    /// 累计的详情链接（已按 list_item/detail_link 选择器抽取）
+    pub detail_links: Vec<String>,
+    /// 若中途被拦截，含可读错误信息（调用方应直接返回）
+    pub blocked: Option<String>,
+}
+
+/// 抓所有列表页 — 若任务配置了 `pagination_selector` 且非单阶段模式，
+/// 每个抓到的列表页都会扫描分页容器内的所有 `<a href>`，去重后批量扩散：
+/// - 把所有未访问的 URL 加入队列
+/// - visited 集合防止死循环
+/// - 达到 `max_pages` 上限停止（0 = 不限；含种子 URL）
+///
+/// 与"只找下一页"相比，分页选择器更通用：能一次匹配 `1 2 3 ... 末页` 所有页码，
+/// 也能兼容只有 next/prev 链接的站点。
+pub async fn crawl_list_pages(
+    task: &TaskRuntime,
+    state: &AppState,
+    summary: &mut RunSummary,
+) -> ListPageResult {
+    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut queue: std::collections::VecDeque<String> = task.list_urls.iter().cloned().collect();
+    let mut all_detail_links: Vec<String> = Vec::new();
+    let pagination_sel = task.pagination_selector().filter(|s| !s.is_empty());
+    let max_pages = task.max_pages();
+    // 自动翻页：仅当配置了 pagination_selector 时启用
+    let pagination_enabled = pagination_sel.is_some();
+
+    while let Some(url) = queue.pop_front() {
+        if !visited.insert(url.clone()) {
+            continue; // 已访问过，跳过
+        }
+        // max_pages 含种子页：当 visited 数量已达上限，停止扩散新链接
+        if max_pages > 0 && visited.len() as i64 > max_pages {
+            // 已抓够，跳过本次（仍消费 queue 中已加入的，但不再扩散）
+            // 简化：直接 break 避免继续抓取
+            break;
+        }
+        match fetch_url(&url, task.user_agent(), task.proxy(), state).await {
+            Ok((status_code, body, headers)) => {
+                if let Some(block) = detect_block(status_code, &body, &headers) {
+                    summary.block_type = Some(block.as_str());
+                    return ListPageResult {
+                        detail_links: all_detail_links,
+                        blocked: Some(format!("列表页 {url} 被拦截: {block}")),
+                    };
+                }
+                let links = extract_detail_links(
+                    &body,
+                    &task.selectors.list_item,
+                    &task.selectors.detail_link,
+                    task.selectors.detail_link_attr.as_deref(),
+                );
+                summary.crawled_count += links.len() as i64;
+                all_detail_links.extend(links);
+
+                // 分页扩散：扫描页面所有分页链接，加入队列（去重）
+                if pagination_enabled
+                    && let Some(sel) = pagination_sel
+                {
+                    let page_links = extract_pagination_urls(&body, sel);
+                    let mut new_added = 0;
+                    for href in page_links {
+                        let abs = resolve_url(&href, &url);
+                        if !visited.contains(&abs) {
+                            let total = (visited.len() + new_added) as i64;
+                            if max_pages == 0 || total < max_pages {
+                                queue.push_back(abs);
+                                new_added += 1;
+                            }
+                        }
+                    }
+                    if new_added > 0 {
+                        tracing::info!(
+                            task = task.name(),
+                            from = %url,
+                            new_pages = new_added,
+                            "crawler: pagination selector added new pages"
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("列表页抓取失败 {url}: {e}");
+                summary.failed_count += 1;
+                summary.error_message = Some(format!("列表页抓取失败: {e}"));
+            }
+        }
+        sleep_request_delay(task.request_delay_ms()).await;
+    }
+
+    ListPageResult {
+        detail_links: all_detail_links,
+        blocked: None,
+    }
+}
+
+/// 从列表页 HTML 中按 CSS 选择器找所有分页链接（去重前）
+///
+/// - 选择器命中的元素本身若是 `<a>`，直接取 href
+/// - 否则向后扫描后代 `<a>`，取 href
+/// - 自动跳过空 href
+/// - 返回顺序按 DOM 出现顺序，调用方负责去重
+pub fn extract_pagination_urls(html: &str, selector: &str) -> Vec<String> {
+    use scraper::{Html, Selector};
+    let mut out = Vec::new();
+    let document = Html::parse_document(html);
+    let Ok(sel) = Selector::parse(selector) else {
+        return out;
+    };
+    for element in document.select(&sel) {
+        // 元素本身 + 所有后代节点，统一扫描
+        for node in element.descendants() {
+            if let Some(elem) = node.value().as_element()
+                && let Some(href) = elem.attr("href")
+                && !href.is_empty()
+            {
+                out.push(href.to_string());
+            }
+        }
+    }
+    out
+}
+
 /// 解析相对 URL → 绝对 URL（基于 base）
 fn resolve_url(href: &str, base: &str) -> String {
     if href.starts_with("http://") || href.starts_with("https://") {
         return href.to_string();
+    }
+    // 纯 query 相对路径：`?page=2` → 替换 base 的 query（保留 path）
+    if let Some(rest) = href.strip_prefix('?') {
+        let path_end = base.find('?').unwrap_or(base.len());
+        return format!("{}?{rest}", &base[..path_end]);
     }
     if let Some(base_scheme_end) = base.find("://") {
         let after_scheme = &base[base_scheme_end + 3..];
@@ -1124,5 +1241,108 @@ mod tests {
         let elapsed = start.elapsed();
         println!("get_article 20 images: {elapsed:?} (SC-004 DB portion)");
         assert!(elapsed.as_millis() < 2000, "SC-004 violated: images > 2s");
+    }
+
+    // ===== 自动翻页：extract_pagination_urls =====
+
+    const PAGE_HTML_WITH_NEXT: &str = r#"<!DOCTYPE html>
+<html><body>
+  <ul class="list">
+    <li><a href="/p/1">1</a></li>
+    <li><a href="/p/2">2</a></li>
+  </ul>
+  <a class="next" href="/list?page=3">下一页 ›</a>
+</body></html>"#;
+
+    const PAGE_HTML_PAGINATION_FULL: &str = r#"<!DOCTYPE html>
+<html><body>
+  <ul class="list"><li>...</li></ul>
+  <div class="pagination">
+    <a href="/list?page=1" class="active">1</a>
+    <a href="/list?page=2">2</a>
+    <a href="/list?page=3">3</a>
+    <a href="/list?page=4">4</a>
+    <a href="/list?page=2" class="next">下一页</a>
+  </div>
+</body></html>"#;
+
+    const PAGE_HTML_LAST: &str = r#"<!DOCTYPE html>
+<html><body>
+  <ul class="list">
+    <li><a href="/p/99">99</a></li>
+  </ul>
+  <span class="no-more">已到末页</span>
+</body></html>"#;
+
+    #[test]
+    fn extract_pagination_urls_finds_single_next() {
+        // 单一 next 链接场景
+        let urls = extract_pagination_urls(PAGE_HTML_WITH_NEXT, "a.next");
+        assert_eq!(urls, vec!["/list?page=3"]);
+    }
+
+    #[test]
+    fn extract_pagination_urls_collects_all_page_links() {
+        // 分页选择器：一次性抓 1/2/3/4 + 下一页（共 5 个链接，按 DOM 顺序）
+        let urls = extract_pagination_urls(PAGE_HTML_PAGINATION_FULL, ".pagination a");
+        assert_eq!(
+            urls,
+            vec![
+                "/list?page=1",
+                "/list?page=2",
+                "/list?page=3",
+                "/list?page=4",
+                "/list?page=2", // 下一页链接（同 URL，由调用方去重）
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_pagination_urls_supports_multiple_selectors() {
+        // 第一个选择器 a[rel=next] 未命中，第二个 a.next 命中
+        let urls = extract_pagination_urls(PAGE_HTML_WITH_NEXT, "a[rel=next], a.next");
+        assert_eq!(urls, vec!["/list?page=3"]);
+    }
+
+    #[test]
+    fn extract_pagination_urls_empty_on_last_page() {
+        // 末页：没有匹配元素，返回空 Vec → 不再扩散
+        let urls = extract_pagination_urls(PAGE_HTML_LAST, "a.next");
+        assert!(urls.is_empty());
+    }
+
+    #[test]
+    fn extract_pagination_urls_invalid_selector_returns_empty() {
+        let urls = extract_pagination_urls(PAGE_HTML_WITH_NEXT, ">>>");
+        assert!(urls.is_empty());
+    }
+
+    #[test]
+    fn extract_pagination_urls_descendant_links_in_container() {
+        // 选择器命中的是容器（.pagination），后代扫描找到所有 <a>
+        const HTML: &str = r#"<div class="pagination">
+            <a href="/p/1">1</a><a href="/p/2">2</a>
+        </div>"#;
+        let urls = extract_pagination_urls(HTML, ".pagination");
+        assert_eq!(urls, vec!["/p/1", "/p/2"]);
+    }
+
+    #[test]
+    fn extract_pagination_urls_ignores_empty_href() {
+        // href="" 不应当返回
+        const HTML: &str = r#"<div class="pagination">
+            <a href="">empty</a><a href="/p/2">2</a>
+        </div>"#;
+        let urls = extract_pagination_urls(HTML, ".pagination");
+        assert_eq!(urls, vec!["/p/2"]);
+    }
+
+    #[test]
+    fn resolve_url_query_only_relative() {
+        // 自动翻页典型场景：相对的 ?page=2
+        assert_eq!(
+            resolve_url("?page=2", "https://example.com/list?page=1"),
+            "https://example.com/list?page=2"
+        );
     }
 }

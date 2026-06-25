@@ -420,7 +420,8 @@ export interface CrawlerTaskInput {
   enabled: boolean
   list_urls: string[]
   selectors: FieldSelectors
-  two_stage: boolean
+  /** 历史字段：单阶段模式已下线，后端忽略，恒为 true（保留兼容老数据导入） */
+  two_stage?: boolean
   interval_minutes: number
   task_concurrency: number
   user_agent?: string | null
@@ -430,6 +431,11 @@ export interface CrawlerTaskInput {
   block_detection_config?: string | null
   max_consecutive_failures: number
   template_source?: string | null
+  /** 自动翻页：CSS 选择器，一次性匹配页面所有分页链接（含数字页/上一页/下一页/末页）。
+   *  空/null = 未启用。引擎把所有命中的 href 去重后批量抓取 */
+  pagination_selector?: string | null
+  /** 最大抓取页数（含 list_urls 种子页），0=不限 */
+  max_pages?: number
 }
 
 export interface CrawlerTask extends CrawlerTaskInput {

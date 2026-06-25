@@ -108,6 +108,9 @@ fn generic_resource_site_config() -> CrawlerTaskInput {
         block_detection_config: None,
         max_consecutive_failures: 3,
         template_source: Some("generic_resource_site".into()),
+        // 通用资源站常见分页容器：抓所有数字 + 下一页
+        pagination_selector: Some(".pagination a, a.next, a[rel=next]".into()),
+        max_pages: 0,
     }
 }
 
@@ -167,6 +170,9 @@ fn discuz_forum_config() -> CrawlerTaskInput {
         block_detection_config: None,
         max_consecutive_failures: 3,
         template_source: Some("discuz_forum".into()),
+        // Discuz! X3.x 分页容器 .pg：抓所有页码 + next
+        pagination_selector: Some(".pg a".into()),
+        max_pages: 0,
     }
 }
 
@@ -225,6 +231,9 @@ fn wordpress_blog_config() -> CrawlerTaskInput {
         block_detection_config: None,
         max_consecutive_failures: 3,
         template_source: Some("wordpress_blog".into()),
+        // WordPress 经典/区块主题分页：抓所有数字 + next/prev
+        pagination_selector: Some(".nav-links a, .pagination a, a[rel=next]".into()),
+        max_pages: 0,
     }
 }
 
@@ -287,5 +296,38 @@ mod tests {
         assert!(json.get("site_type").is_some());
         assert!(json.get("description").is_some());
         assert!(json.get("config").is_some());
+    }
+
+    // ===== 自动翻页：内置模板预填 pagination_selector =====
+
+    #[test]
+    fn all_builtin_templates_have_pagination_selector() {
+        // 用户从内置模板创建任务即可享受自动翻页，无需手动配置
+        for t in builtin_templates() {
+            assert!(
+                t.config.pagination_selector.as_deref().is_some_and(|s| !s.is_empty()),
+                "template {} should pre-fill pagination_selector",
+                t.key
+            );
+            assert_eq!(t.config.max_pages, 0, "template {} max_pages should be 0 (unlimited)", t.key);
+        }
+    }
+
+    #[test]
+    fn discuz_template_pagination_selector_targets_pg() {
+        let t = builtin_templates().into_iter().find(|x| x.key == "discuz_forum").unwrap();
+        let sel = t.config.pagination_selector.unwrap();
+        assert!(sel.contains(".pg"), "discuz selector should target .pg container, got: {sel}");
+    }
+
+    #[test]
+    fn wordpress_template_pagination_selector_includes_rel_next() {
+        let t = builtin_templates().into_iter().find(|x| x.key == "wordpress_blog").unwrap();
+        let sel = t.config.pagination_selector.unwrap();
+        // 应该至少有一个常见 WordPress 分页 class 或 rel=next
+        assert!(
+            sel.contains("nav-links") || sel.contains("pagination") || sel.contains("rel=next"),
+            "wordpress selector should target common pagination classes, got: {sel}"
+        );
     }
 }

@@ -15,6 +15,7 @@ pub struct CrawlerTask {
     pub list_urls: String,
     /// JSON — 字段选择器配置（解析为 [`FieldSelectors`]）
     pub selectors: String,
+    /// 历史字段：单阶段模式已下线，DB 列保留兼容，值恒为 true
     pub two_stage: bool,
     pub interval_minutes: i64,
     pub task_concurrency: i64,
@@ -26,6 +27,11 @@ pub struct CrawlerTask {
     pub block_detection_config: Option<String>,
     pub max_consecutive_failures: i64,
     pub template_source: Option<String>,
+    /// CSS 选择器：一次性匹配页面所有分页链接（如 .pagination a / a[rel=next]）。
+    /// 引擎把所有命中的 href 去重后批量抓取。NULL=未启用
+    pub pagination_selector: Option<String>,
+    /// 最大抓取页数（含 list_urls 中的种子页），0 表示不限
+    pub max_pages: i64,
     pub status: String,
     pub consecutive_failures: i64,
     pub last_run_at: Option<NaiveDateTime>,
@@ -44,6 +50,7 @@ pub struct CrawlerTaskInput {
     pub enabled: bool,
     pub list_urls: Vec<String>,
     pub selectors: FieldSelectors,
+    /// 历史字段：单阶段模式已下线，DB 列保留兼容；序列化/反序列化兼容老数据，新代码强制 true
     #[serde(default = "default_true")]
     pub two_stage: bool,
     #[serde(default = "default_interval")]
@@ -64,6 +71,13 @@ pub struct CrawlerTaskInput {
     pub max_consecutive_failures: i64,
     #[serde(default)]
     pub template_source: Option<String>,
+    /// CSS 选择器：一次性匹配页面所有分页链接（如 .pagination a / a[rel=next]）。
+    /// 空/None = 未启用自动翻页
+    #[serde(default)]
+    pub pagination_selector: Option<String>,
+    /// 最大抓取页数（0=不限）
+    #[serde(default)]
+    pub max_pages: i64,
 }
 
 fn default_true() -> bool {
@@ -107,14 +121,15 @@ impl CrawlerTaskInput {
         if self.task_concurrency < 1 {
             return Err("task_concurrency 必须 >= 1".into());
         }
-        // 两阶段抓取需要 list_item + detail_link；单阶段需要至少一个字段选择器
-        if self.two_stage
-            && (self.selectors.list_item.is_empty() || self.selectors.detail_link.is_empty())
-        {
-            return Err("两阶段抓取必须配置 list_item + detail_link 选择器".into());
+        // 单阶段模式已下线，所有任务按两阶段抓取，list_item + detail_link 必填
+        if self.selectors.list_item.is_empty() || self.selectors.detail_link.is_empty() {
+            return Err("必须配置 list_item + detail_link 选择器".into());
         }
         if self.max_consecutive_failures < 1 {
             return Err("max_consecutive_failures 必须 >= 1".into());
+        }
+        if self.max_pages < 0 {
+            return Err("max_pages 必须 >= 0（0 表示不限）".into());
         }
         Ok(())
     }
