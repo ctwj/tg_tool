@@ -96,6 +96,12 @@ pub struct AppState {
     pub scheduler: crate::services::scheduler::SchedulerHandle,
     pub extract_scheduler: crate::services::scheduler::ExtractSchedulerHandle,
     pub forward_scheduler: crate::services::forward_queue::ForwardSchedulerHandle,
+    /// 爬虫调度器（feature 042-web-crawler-collector）
+    pub crawler_scheduler:
+        crate::services::crawler::scheduler::CrawlerSchedulerHandle,
+    /// 爬虫图片上传 worker（feature 042 T023）
+    pub crawler_image_uploader:
+        crate::services::crawler::image_uploader::ImageUploaderHandle,
     pub peer_cache: PeerCache,
     pub rate_limiter: crate::middleware::rate_limit::RateLimiter,
     pub captcha_store: CaptchaStore,
@@ -126,6 +132,8 @@ impl AppState {
             scheduler: crate::services::scheduler::create_scheduler(),
             extract_scheduler: crate::services::scheduler::create_extract_scheduler(),
             forward_scheduler: crate::services::forward_queue::create_forward_scheduler(),
+            crawler_scheduler: crate::services::crawler::create_scheduler(),
+            crawler_image_uploader: crate::services::crawler::image_uploader::create_uploader(),
             peer_cache: Arc::new(RwLock::new(HashMap::new())),
             rate_limiter,
             captcha_store: Arc::new(DashMap::new()),

@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod client;
 pub mod collector;
+pub mod crawler;
 pub mod file;
 pub mod image;
 pub mod image_forward;

@@ -55,6 +55,7 @@ src/
 │   ├── user.rs          # 用户管理
 │   ├── file.rs          # 文件上传/下载
 │   ├── option.rs        # 系统配置
+│   ├── crawler.rs       # 爬虫采集：任务/文章/历史 CRUD + 测试运行 + 模板
 │   └── misc.rs          # 系统状态
 ├── services/            # 业务逻辑层
 │   ├── tg_manager.rs    # 客户端生命周期管理（connect/disconnect/update loop）
@@ -66,6 +67,16 @@ src/
 │   ├── image_proxy.rs   # 图片代理缓存（下载、缓存、TTL、并发控制）
 │   ├── push.rs          # 批量推送 + 消息分析管线
 │   ├── scheduler.rs     # 定时推送调度器
+│   ├── crawler/         # 爬虫采集子系统（feature 042）
+│   │   ├── mod.rs             # 子模块入口 + 公共导出
+│   │   ├── url_normalize.rs   # URL 规范化（去 utm、参数排序、相对→绝对）
+│   │   ├── pan_detector.rs    # 9 平台网盘识别 + 提取码关联（PanCheck 对齐）
+│   │   ├── block_detector.rs  # 反爬拦截识别（403/429/503 + 登录墙 + 验证码）
+│   │   ├── extractor.rs       # HTML 字段提取（CSS 选择器 + 正则后处理）
+│   │   ├── scheduler.rs       # 任务调度（30s tick + Semaphore 全局并发）
+│   │   ├── engine.rs          # 单任务抓取引擎（列表页 → 详情页 → 落库）
+│   │   ├── image_uploader.rs  # 图片下载 → 上传图床异步管线
+│   │   └── templates.rs       # 内置 + 自定义站点模板（Discuz / WordPress / 通用）
 │   └── crypto.rs        # JWT/密码哈希
 ├── middleware/
 │   ├── auth.rs          # Bearer Token / Session Cookie 认证
@@ -82,8 +93,12 @@ src/
 
 - **TgManager**: 全局客户端管理器，注入到 AppState，管理 grammers-client 实例生命周期
 - **TgClientEntry**: 内存中的客户端状态（status/handle/client/login_token/password_token/session_path）
-- **OptionCache**: 系统配置缓存（tg_app_id/tg_app_hash/proxy_url/图床配置/推送配置）
+- **OptionCache**: 系统配置缓存（tg_app_id/tg_app_hash/proxy_url/图床配置/推送配置/crawler_global_concurrency/ImageGroupChatId 等）
 - **auth_guard**: 统一认证中间件，public 路由无需认证，protected 路由需 Bearer Token
+- **CrawlerScheduler**: 爬虫任务调度（30s tick + 全局 Semaphore 并发上限，默认 3，可配 `crawler_global_concurrency`）；与推送调度分离
+- **CrawlerImageUploader**: 异步图片管线（30s tick 扫描 `crawler_article_images.status IN ('pending','failed')`，下载 → 落盘 `image_cache_dir/crawler/` → grammers `upload_file` + `send_message` 到图床群组 A → 写回 `image_message_id`），与两阶段转存解耦
+- **PanDetector**: 9 平台网盘识别（quark/uc/baidu/tianyi/123pan/115/aliyun/xunlei/mobile），与 `src/services/link_checker.rs:65` 的 PanCheck 完全对齐
+- **BlockDetector**: 反爬拦截感知（HTTP 403/429/503 + 登录墙关键词 + 验证码关键词 + Cloudflare challenge）；连续 `max_consecutive_failures` 次失败自动 `status='auto_blocked'`
 
 ## API Routes
 
@@ -103,18 +118,31 @@ src/
 - `/api/users` — 用户管理
 - `/api/files` — 文件管理
 - `/api/options` — 系统配置
+- `/api/crawler/tasks` — 爬虫任务 CRUD + 启停 + 立即运行 + test_run 预览 + 内置/自定义模板（feature 042）
+- `/api/crawler/articles` — 爬虫文章列表/详情/编辑/删除/批量删除/重试图片/触发链接校验（管理员）
+- `/api/crawler/histories` — 爬虫运行历史列表/详情/统计（成功率/拦截细分/连续失败任务）
+- `/api/status` 的 `crawler` 字段 — 爬虫调度状态（scheduler_running/active_tasks/auto_blocked_tasks/next_run_at/scan_interval_secs/pending_uploads）
 
 用户角色层级：CommonUser(1) < Admin(10) < Root(100)
 
 ## Testing
 
 ```bash
-cargo test                          # 全部测试（76 单元 + 40 集成）
+cargo test                          # 全部测试（320 单元 + 8 集成，含 crawler 子系统）
 cargo test --test api_integration   # 仅集成测试
 cargo test -- --nocapture           # 显示 println! 输出
+cargo clippy --all-targets -- -D warnings  # 零警告（CI 必过）
 ```
 
 测试使用 SQLite 内存数据库，集成测试通过 `tower::ServiceExt` 模拟 HTTP 请求。
+
+### Crawler 子系统关键测试覆盖
+- `services::crawler::engine::tests::upsert_article_idempotent_on_repeated_calls` — SC-005：100 次重复抓取同 URL，DB 中仅 1 行（UNIQUE 索引 + SELECT-or-UPDATE 生效）
+- `services::crawler::pan_detector::tests::*` — 9 平台识别 + 提取码 + 直链白名单
+- `services::crawler::extractor::tests::*` — CSS 选择器 + 正则后处理 + 单字段失败不中断
+- `services::crawler::url_normalize::tests::*` — 去 utm/参数排序/相对→绝对
+- `services::crawler::block_detector::tests::*` — 5 类拦截信号识别
+- `services::crawler::templates::tests::*` — 内置模板（Discuz / WordPress / 通用）选择器可用
 
 ## Rust 重写状态
 
@@ -125,6 +153,7 @@ cargo test -- --nocapture           # 显示 println! 输出
 - ✅ 频道消息全量采集 + 图片上传图床
 - ✅ 定时推送调度 + 消息分析管线
 - ✅ API 路由保护（auth 中间件）
+- ✅ 爬虫采集子系统（specs/042-web-crawler-collector）：配置驱动多站点爬虫 + 9 平台网盘识别 + 反爬拦截感知 + 异步图片上传管线 + 文章/历史管理 UI
 
 <!-- SPECKIT START -->
 - [Telegram 核心功能集成](specs/002-telegram-core-integration/plan.md) — 客户端连接、认证、消息收发、转发、采集、推送
@@ -157,4 +186,5 @@ shell commands, and other important information, read the current plan:
 - [推送调度间隔与推送配置同步 Plan](specs/039-push-schedule-interval-sync/plan.md) — 修复推送间隔修改后监控页不更新：SchedulerState 提升 config_last_run 共享 + /api/status 扩展 push_configs 数组 + 前端"推送调度"卡片改单卡片内列表（区分扫描周期与配置间隔）
 - [转发队列死信自动清理 Plan](specs/040-forward-failed-cleanup/plan.md) — 死信（失败≥5次）即时清除：mark_task_failed 事务化，清空 extracted_resources.img + 删除 forward_tasks 行；零 schema 变更，单函数签名扩展 + 两调用点同步改
 - [推送候选集漏数据修复 Plan](specs/041-fix-push-empty-filter/plan.md) — 修复"DB 有未推送数据但推送显示没有"：废弃候选 SQL 入口 A 的 is_pushed 全局过滤（多配置语义错配，FR-009）+ insert_push_status_batch ON CONFLICT DO UPDATE 修复 failed→pushed 转换 + 候选 SQL 加 ORDER BY + SkipReason 扩展 5 类 + OptionCache 严格/宽松开关；零 schema 变更
+- [爬虫采集子系统 已实现](specs/042-web-crawler-collector/plan.md) — 配置驱动的多网站爬虫（已完成 Phase 1-7）：CSS 选择器+正则两阶段抓取、9 平台网盘识别（PanCheck 对齐，`pan_detector.rs`）、独立 crawler_* 表（migrations 020-024）、任务级自动 PanCheck 校验、图片走"下载→上传图床"新路径（`image_uploader.rs`，不复用两阶段转存）、拦截感知（403/429/503+登录墙/验证码）+ 连续失败自动停用、全局并发上限 3（`crawler_global_concurrency`）任务级可降、source_type 取任务名为推送接入预留；调度状态注入 `/api/status.crawler`；菜单：爬虫采集 → 任务管理/文章管理/运行历史
 <!-- SPECKIT END -->

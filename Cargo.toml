@@ -47,6 +47,9 @@ tracing-appender = "0.2"
 rust-embed = { version = "8", optional = true }
 mime_guess = "2"
 
+# HTML parsing (crawler feature 042)
+scraper = "0.22"
+
 # Captcha
 captcha-rs = "0.5"
 image = { version = "0.25", default-features = false, features = ["png"] }

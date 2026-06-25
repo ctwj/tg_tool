@@ -279,6 +279,57 @@ pub fn build_router(state: AppState) -> Router {
             "/image-forward/retry-all",
             post(handlers::image_forward::retry_all),
         )
+        // Crawler (feature 042) — 任务 CRUD + run/test + 模板/导入导出
+        .route(
+            "/crawler/tasks",
+            get(handlers::crawler::list_tasks).post(handlers::crawler::create_task),
+        )
+        .route("/crawler/tasks/import", post(handlers::crawler::import_task))
+        .route("/crawler/templates", get(handlers::crawler::list_templates))
+        .route(
+            "/crawler/tasks/{id}",
+            get(handlers::crawler::get_task)
+                .put(handlers::crawler::update_task)
+                .delete(handlers::crawler::delete_task),
+        )
+        .route("/crawler/tasks/{id}/toggle", put(handlers::crawler::toggle_task))
+        .route("/crawler/tasks/{id}/run", post(handlers::crawler::run_task))
+        .route("/crawler/tasks/{id}/test", post(handlers::crawler::test_task))
+        .route("/crawler/tasks/{id}/export", get(handlers::crawler::export_task))
+        .route(
+            "/crawler/tasks/{id}/save-as-template",
+            post(handlers::crawler::save_as_template),
+        )
+        // Crawler — 文章端点（US2）
+        .route(
+            "/crawler/articles",
+            get(handlers::crawler::list_articles),
+        )
+        .route("/crawler/articles/batch-delete", post(handlers::crawler::batch_delete_articles))
+        .route(
+            "/crawler/articles/{id}",
+            get(handlers::crawler::get_article_detail)
+                .put(handlers::crawler::update_article)
+                .delete(handlers::crawler::delete_article),
+        )
+        .route(
+            "/crawler/articles/{id}/links/check",
+            post(handlers::crawler::check_article_links),
+        )
+        .route(
+            "/crawler/articles/{id}/images/{image_id}/retry",
+            post(handlers::crawler::retry_image),
+        )
+        // Crawler — 历史与统计端点（US3）
+        .route("/crawler/histories/stats", get(handlers::crawler::get_history_stats))
+        .route(
+            "/crawler/histories",
+            get(handlers::crawler::list_histories),
+        )
+        .route(
+            "/crawler/histories/{id}",
+            get(handlers::crawler::get_history_detail),
+        )
         .layer(middleware::from_fn(admin_guard))
         .layer(middleware::from_fn(auth_guard))
         .layer(axum::Extension(state.clone()));

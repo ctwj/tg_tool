@@ -393,3 +393,194 @@ export interface QueueStatusResponse {
   tasks: ForwardTask[]
   failed_tasks: ForwardTask[]
 }
+
+// ===== Crawler (feature 042) =====
+
+export interface FieldSelector {
+  css: string
+  attr?: string | null
+  regex?: string | null
+}
+
+export interface FieldSelectors {
+  list_item: string
+  detail_link: string
+  detail_link_attr?: string | null
+  title: FieldSelector
+  content: FieldSelector
+  category: FieldSelector
+  tags: FieldSelector
+  images: FieldSelector
+  pan_links: FieldSelector
+  direct_links: FieldSelector
+}
+
+export interface CrawlerTaskInput {
+  name: string
+  enabled: boolean
+  list_urls: string[]
+  selectors: FieldSelectors
+  two_stage: boolean
+  interval_minutes: number
+  task_concurrency: number
+  user_agent?: string | null
+  request_delay_ms: number
+  proxy?: string | null
+  auto_link_check: boolean
+  block_detection_config?: string | null
+  max_consecutive_failures: number
+  template_source?: string | null
+}
+
+export interface CrawlerTask extends CrawlerTaskInput {
+  id: number
+  status: string  // 'active' | 'paused' | 'auto_blocked' | 'deleted'
+  consecutive_failures: number
+  last_run_at: string | null
+  next_run_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CrawlerTemplate {
+  key: string
+  name: string
+  site_type: string
+  description: string
+  config: CrawlerTaskInput
+}
+
+// 测试运行预览（不落库）
+export interface CrawlerTestPreview {
+  list_count: number
+  preview_count: number
+  articles: Array<{
+    source_url: string
+    title: string | null
+    content_snippet: string | null
+    pan_links: Array<{ platform: string; url: string; extract_code: string | null }>
+    direct_links: string[]
+    images: string[]
+    field_warnings: string[]
+  }>
+  selector_validation: {
+    list_item_ok: boolean
+    detail_link_ok: boolean
+    missing_fields: string[]
+  }
+}
+
+// ─── 文章相关（US2） ─────────────────────────────────────────────────────
+export interface CrawlerArticleListItem {
+  id: number
+  task_id: number | null
+  source_type: string
+  title: string | null
+  category: string | null
+  thumbnail: string | null
+  pan_link_count: number
+  direct_link_count: number
+  image_count: number
+  is_edited: boolean
+  crawled_at: string
+}
+
+export interface CrawlerArticleLink {
+  id: number
+  article_id: number
+  link_type: 'pan' | 'direct'
+  platform: string | null
+  url: string
+  url_canonical: string
+  extract_code: string | null
+  validity_status: 'valid' | 'invalid' | 'pending' | 'unknown'
+  validity_reason: string | null
+  last_checked_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CrawlerArticleImage {
+  id: number
+  article_id: number
+  original_url: string
+  url_canonical: string
+  local_path: string | null
+  image_message_id: number | null
+  file_id: string | null
+  status: 'pending' | 'downloaded' | 'uploading' | 'uploaded' | 'failed'
+  retry_count: number
+  last_error: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CrawlerArticleDetail {
+  id: number
+  task_id: number | null
+  source_type: string
+  source_url: string
+  source_url_canonical: string
+  title: string | null
+  content: string | null
+  category: string | null
+  tags: string | null
+  is_edited: boolean
+  crawled_at: string
+  created_at: string
+  updated_at: string
+  // 展平字段
+  links: CrawlerArticleLink[]
+  images: CrawlerArticleImage[]
+  task_name: string | null
+}
+
+// ─── 历史与统计（US3） ──────────────────────────────────────────────────
+export interface CrawlerRunHistory {
+  id: number
+  task_id: number
+  task_name: string
+  started_at: string
+  finished_at: string | null
+  duration_ms: number | null
+  status: 'success' | 'partial' | 'failed' | 'blocked'
+  block_type: string | null
+  crawled_count: number
+  new_count: number
+  skipped_count: number
+  failed_count: number
+  error_message: string | null
+  created_at: string
+}
+
+export interface CrawlerRunHistoryDetail {
+  // 展平 CrawlerRunHistory 字段
+  id: number
+  task_id: number
+  task_name: string
+  started_at: string
+  finished_at: string | null
+  duration_ms: number | null
+  status: 'success' | 'partial' | 'failed' | 'blocked'
+  block_type: string | null
+  crawled_count: number
+  new_count: number
+  skipped_count: number
+  failed_count: number
+  error_message: string | null
+  created_at: string
+  // 详情扩展
+  blocked_response_excerpt: string | null
+}
+
+export interface CrawlerHistoryStats {
+  total_runs: number
+  success: number
+  partial: number
+  failed: number
+  blocked: number
+  block_breakdown: Record<string, number>
+  last_run_at: string | null
+  auto_blocked_tasks: number
+}
+

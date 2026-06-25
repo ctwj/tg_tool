@@ -18,6 +18,9 @@ import Settings from './pages/Settings'
 import ApiStatus from './pages/ApiStatus'
 import Scheduler from './pages/Scheduler'
 import ForwardQueue from './pages/ForwardQueue'
+import CrawlerTasks from './pages/CrawlerTasks'
+import CrawlerResources from './pages/CrawlerResources'
+import CrawlerHistory from './pages/CrawlerHistory'
 import './index.css'
 
 function App() {
@@ -65,6 +68,9 @@ function App() {
             <Route path="push" element={<Push />} />
             <Route path="scheduler" element={<Scheduler />} />
             <Route path="forward-queue" element={<ForwardQueue />} />
+            <Route path="crawler/tasks" element={<CrawlerTasks />} />
+            <Route path="crawler/resources" element={<CrawlerResources />} />
+            <Route path="crawler/history" element={<CrawlerHistory />} />
             <Route path="resources" element={<Resources />} />
             <Route path="users" element={<Users />} />
             <Route path="files" element={<Files />} />

@@ -15,6 +15,7 @@ import {
   MenuUnfoldOutlined,
   FieldTimeOutlined,
   PictureOutlined,
+  GlobalOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useLocation, Outlet } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
@@ -53,6 +54,16 @@ const menuItems = [
     ],
   },
   {
+    key: 'group-crawler',
+    icon: <GlobalOutlined />,
+    label: '爬虫采集',
+    children: [
+      { key: '/crawler/tasks', icon: <GlobalOutlined />, label: '采集任务' },
+      { key: '/crawler/resources', icon: <DatabaseOutlined />, label: '爬虫资源' },
+      { key: '/crawler/history', icon: <FieldTimeOutlined />, label: '爬虫历史' },
+    ],
+  },
+  {
     key: 'group-system',
     icon: <SettingOutlined />,
     label: '系统管理',
@@ -74,6 +85,9 @@ const PATH_TO_GROUP: Record<string, string> = {
   '/collectors': 'group-collect',
   '/resources': 'group-collect',
   '/push': 'group-collect',
+  '/crawler/tasks': 'group-crawler',
+  '/crawler/resources': 'group-crawler',
+  '/crawler/history': 'group-crawler',
   '/files': 'group-system',
   '/users': 'group-system',
   '/settings': 'group-system',
@@ -93,6 +107,9 @@ const pageTitles: Record<string, string> = {
   '/files': '文件管理',
   '/settings': '系统设置',
   '/api-status': 'API 状态',
+  '/crawler/tasks': '爬虫任务',
+  '/crawler/resources': '爬虫资源',
+  '/crawler/history': '爬虫历史',
 }
 
 // 根据路径获取当前标题（支持子路径）
@@ -104,6 +121,10 @@ const getTitle = (pathname: string) => {
 // 根据路径获取侧边栏选中的 key（子路径选中父菜单项）
 const getMenuKey = (pathname: string) => {
   if (pathname.startsWith('/collectors/')) return '/collectors'
+  if (pathname === '/crawler/tasks') return '/crawler/tasks'
+  if (pathname === '/crawler/resources') return '/crawler/resources'
+  if (pathname === '/crawler/history') return '/crawler/history'
+  if (pathname.startsWith('/crawler/')) return '/crawler/tasks'
   return pathname
 }
 

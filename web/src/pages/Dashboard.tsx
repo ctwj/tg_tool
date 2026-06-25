@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
-import { Card, Col, Row, Typography, Tag, Space, Button, Skeleton } from 'antd'
-import { ApiOutlined, SendOutlined, CloudDownloadOutlined, RocketOutlined, CheckCircleOutlined, LinkOutlined } from '@ant-design/icons'
+import { Card, Col, Row, Typography, Tag, Space, Button, Skeleton, Badge } from 'antd'
+import { ApiOutlined, SendOutlined, CloudDownloadOutlined, RocketOutlined, CheckCircleOutlined, LinkOutlined, GlobalOutlined, WarningOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import apiClient from '../api/client'
 
@@ -16,6 +16,14 @@ interface DashboardData {
     extract_next_run: string | null
     push_running: boolean
     push_next_run: string | null
+  }
+  crawler?: {
+    scheduler_running: boolean
+    active_tasks: number
+    auto_blocked_tasks: number
+    next_run_at: string | null
+    scan_interval_secs: number
+    pending_uploads: number
   }
 }
 
@@ -275,6 +283,124 @@ const Dashboard: React.FC = () => {
                 </Text>
               )}
             </Space>
+          </Card>
+        </Col>
+      </Row>
+
+      {/* 爬虫概览（feature 042，T051） */}
+      <Row gutter={16} style={{ marginTop: 16 }}>
+        <Col span={24}>
+          <Card
+            loading={loading && !data}
+            title={
+              <Space
+                style={{ cursor: 'pointer' }}
+                onClick={() => navigate('/crawler/history')}
+              >
+                <GlobalOutlined style={{ color: '#0ea5e9' }} />
+                <span style={{ fontWeight: 600, color: '#0c4a6e' }}>爬虫概览</span>
+                {(data?.crawler?.auto_blocked_tasks ?? 0) > 0 && (
+                  <Badge count={data?.crawler?.auto_blocked_tasks ?? 0} size="small" />
+                )}
+              </Space>
+            }
+            extra={
+              <Button type="link" size="small" onClick={() => navigate('/crawler/history')}>
+                查看历史
+              </Button>
+            }
+            style={{
+              borderRadius: 12,
+              border: (data?.crawler?.auto_blocked_tasks ?? 0) > 0
+                ? '2px solid #ef4444' : undefined,
+            }}
+            styles={{ body: { padding: '16px 24px' } }}
+          >
+            <Row gutter={16}>
+              <Col span={6}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div className="stat-icon" style={{ background: '#e0f2fe', color: '#0ea5e9' }}>
+                    <GlobalOutlined />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 2 }}>调度状态</div>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: '#0c4a6e' }}>
+                      {data?.crawler?.scheduler_running ? (
+                        <Tag color="green">运行中</Tag>
+                      ) : (
+                        <Tag>未运行</Tag>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </Col>
+              <Col span={6}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div className="stat-icon" style={{ background: '#dcfce7', color: '#10b981' }}>
+                    <CheckCircleOutlined />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 2 }}>活跃任务</div>
+                    <div style={{ fontSize: 24, fontWeight: 700, color: '#0c4a6e', lineHeight: 1 }}>
+                      {data?.crawler?.active_tasks ?? 0}
+                    </div>
+                  </div>
+                </div>
+              </Col>
+              <Col span={6}>
+                <div
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 12,
+                    cursor: (data?.crawler?.auto_blocked_tasks ?? 0) > 0 ? 'pointer' : 'default',
+                  }}
+                  onClick={() => {
+                    if ((data?.crawler?.auto_blocked_tasks ?? 0) > 0) navigate('/crawler/tasks')
+                  }}
+                >
+                  <div
+                    className="stat-icon"
+                    style={{
+                      background: (data?.crawler?.auto_blocked_tasks ?? 0) > 0 ? '#fee2e2' : '#f3f4f6',
+                      color: (data?.crawler?.auto_blocked_tasks ?? 0) > 0 ? '#ef4444' : '#9ca3af',
+                    }}
+                  >
+                    <WarningOutlined />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 2 }}>自动停用</div>
+                    <div
+                      style={{
+                        fontSize: 24, fontWeight: 700, lineHeight: 1,
+                        color: (data?.crawler?.auto_blocked_tasks ?? 0) > 0 ? '#ef4444' : '#0c4a6e',
+                      }}
+                    >
+                      {data?.crawler?.auto_blocked_tasks ?? 0}
+                    </div>
+                  </div>
+                </div>
+              </Col>
+              <Col span={6}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div className="stat-icon" style={{ background: '#fef3c7', color: '#f59e0b' }}>
+                    <CloudDownloadOutlined />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 2 }}>待上传图片</div>
+                    <div style={{ fontSize: 24, fontWeight: 700, color: '#0c4a6e', lineHeight: 1 }}>
+                      {data?.crawler?.pending_uploads ?? 0}
+                    </div>
+                  </div>
+                </div>
+              </Col>
+            </Row>
+            {data?.crawler?.next_run_at && (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px dashed #e5e7eb' }}>
+                <Text type="secondary" style={{ fontSize: 13 }}>
+                  最近下次运行: <Text strong>{data.crawler.next_run_at}</Text>
+                  {' '}(扫描周期 {data.crawler.scan_interval_secs}s)
+                </Text>
+              </div>
+            )}
           </Card>
         </Col>
       </Row>

@@ -280,6 +280,11 @@ async fn main() {
         }
     }
 
+    // Crawler 子系统启动（feature 042）— 调度器 + 图片上传 worker + 恢复 active 任务排程
+    tgTool::services::crawler::scheduler::recover_active_tasks_schedule(&state).await;
+    tgTool::services::crawler::scheduler::start_scheduler(state.clone()).await;
+    tgTool::services::crawler::image_uploader::start_uploader(state.clone()).await;
+
     // Build router
     let app = tgTool::routes::build_router(state.clone())
         .layer(tgTool::middleware::cors::cors_layer())
@@ -680,6 +685,66 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::debug!("SQLite migration 019 applied (no-op)");
                 }
             }
+            // Migration 020: crawler_tasks（feature 042-web-crawler-collector）
+            {
+                let m20 = include_str!("../migrations/020_crawler_tasks_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m20).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run SQLite migration 020: {e}");
+                    }
+                    tracing::debug!("SQLite migration 020 skipped (already applied)");
+                } else {
+                    tracing::info!("SQLite migration 020 applied (crawler_tasks)");
+                }
+            }
+            // Migration 021: crawler_articles
+            {
+                let m21 = include_str!("../migrations/021_crawler_articles_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m21).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run SQLite migration 021: {e}");
+                    }
+                    tracing::debug!("SQLite migration 021 skipped (already applied)");
+                } else {
+                    tracing::info!("SQLite migration 021 applied (crawler_articles)");
+                }
+            }
+            // Migration 022: crawler_article_links
+            {
+                let m22 = include_str!("../migrations/022_crawler_article_links_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m22).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run SQLite migration 022: {e}");
+                    }
+                    tracing::debug!("SQLite migration 022 skipped (already applied)");
+                } else {
+                    tracing::info!("SQLite migration 022 applied (crawler_article_links)");
+                }
+            }
+            // Migration 023: crawler_article_images
+            {
+                let m23 = include_str!("../migrations/023_crawler_article_images_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m23).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run SQLite migration 023: {e}");
+                    }
+                    tracing::debug!("SQLite migration 023 skipped (already applied)");
+                } else {
+                    tracing::info!("SQLite migration 023 applied (crawler_article_images)");
+                }
+            }
+            // Migration 024: crawler_run_histories
+            {
+                let m24 = include_str!("../migrations/024_crawler_run_histories_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m24).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run SQLite migration 024: {e}");
+                    }
+                    tracing::debug!("SQLite migration 024 skipped (already applied)");
+                } else {
+                    tracing::info!("SQLite migration 024 applied (crawler_run_histories)");
+                }
+            }
         }
         DbPool::Postgres(pool) => {
             let migration_sql = include_str!("../migrations/001_init_postgres.sql");
@@ -950,6 +1015,66 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::warn!("PostgreSQL migration 019 skipped: {e}");
                 } else {
                     tracing::info!("PostgreSQL migration 019 applied (data_count -> BIGINT)");
+                }
+            }
+            // Migration 020: crawler_tasks（feature 042-web-crawler-collector）
+            {
+                let m20 = include_str!("../migrations/020_crawler_tasks_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m20).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run PostgreSQL migration 020: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 020 skipped (already applied)");
+                } else {
+                    tracing::info!("PostgreSQL migration 020 applied (crawler_tasks)");
+                }
+            }
+            // Migration 021: crawler_articles
+            {
+                let m21 = include_str!("../migrations/021_crawler_articles_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m21).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run PostgreSQL migration 021: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 021 skipped (already applied)");
+                } else {
+                    tracing::info!("PostgreSQL migration 021 applied (crawler_articles)");
+                }
+            }
+            // Migration 022: crawler_article_links
+            {
+                let m22 = include_str!("../migrations/022_crawler_article_links_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m22).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run PostgreSQL migration 022: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 022 skipped (already applied)");
+                } else {
+                    tracing::info!("PostgreSQL migration 022 applied (crawler_article_links)");
+                }
+            }
+            // Migration 023: crawler_article_images
+            {
+                let m23 = include_str!("../migrations/023_crawler_article_images_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m23).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run PostgreSQL migration 023: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 023 skipped (already applied)");
+                } else {
+                    tracing::info!("PostgreSQL migration 023 applied (crawler_article_images)");
+                }
+            }
+            // Migration 024: crawler_run_histories
+            {
+                let m24 = include_str!("../migrations/024_crawler_run_histories_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m24).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run PostgreSQL migration 024: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 024 skipped (already applied)");
+                } else {
+                    tracing::info!("PostgreSQL migration 024 applied (crawler_run_histories)");
                 }
             }
         }
