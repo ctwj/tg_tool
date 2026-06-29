@@ -115,6 +115,7 @@ const pageTitles: Record<string, string> = {
 // 根据路径获取当前标题（支持子路径）
 const getTitle = (pathname: string) => {
   if (pathname.startsWith('/collectors/') && pathname.endsWith('/history')) return '采集记录'
+  if (pathname.startsWith('/crawler/configurator')) return '爬虫字段配置器'
   return pageTitles[pathname] || 'TG tools'
 }
 

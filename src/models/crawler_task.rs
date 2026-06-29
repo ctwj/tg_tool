@@ -1,9 +1,10 @@
-//! CrawlerTask / CrawlerTaskInput 模型（feature 042）
+//! CrawlerTask / CrawlerTaskInput 模型（feature 043-crawler-configurator）
+//!
+//! 043 已删除旧 `selectors` JSON 列（直接取代 042 抓取路径），字段配置由新表
+//! `crawler_task_field_nodes` 承载（见 data-model.md E1/E3）。
 
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
-
-use crate::services::crawler::extractor::FieldSelectors;
 
 /// 爬虫任务 — 每条记录代表一个独立的网站爬虫配置
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -13,8 +14,6 @@ pub struct CrawlerTask {
     pub enabled: bool,
     /// JSON 数组（字符串形式）— 列表页 URL 列表
     pub list_urls: String,
-    /// JSON — 字段选择器配置（解析为 [`FieldSelectors`]）
-    pub selectors: String,
     /// 历史字段：单阶段模式已下线，DB 列保留兼容，值恒为 true
     pub two_stage: bool,
     pub interval_minutes: i64,
@@ -32,6 +31,8 @@ pub struct CrawlerTask {
     pub pagination_selector: Option<String>,
     /// 最大抓取页数（含 list_urls 中的种子页），0 表示不限
     pub max_pages: i64,
+    /// 043 US5：字段树 pagination 字段驱动的最大翻页深度，默认 10（FR-022）；0=不限
+    pub max_pagination_depth: i64,
     pub status: String,
     pub consecutive_failures: i64,
     pub last_run_at: Option<NaiveDateTime>,
@@ -43,13 +44,15 @@ pub struct CrawlerTask {
 /// 创建/更新任务时的输入 body（不含 id/时间戳/status 计数字段）
 ///
 /// 用于 `POST /api/crawler/tasks`、`PUT /api/crawler/tasks/{id}`、`POST /api/crawler/tasks/import`
+///
+/// **043 变更**：移除 `selectors` 字段（DB 列已删），字段配置通过独立的
+/// `/api/crawler/tasks/{id}/field-nodes` CRUD 管理。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrawlerTaskInput {
     pub name: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub list_urls: Vec<String>,
-    pub selectors: FieldSelectors,
     /// 历史字段：单阶段模式已下线，DB 列保留兼容；序列化/反序列化兼容老数据，新代码强制 true
     #[serde(default = "default_true")]
     pub two_stage: bool,
@@ -78,6 +81,9 @@ pub struct CrawlerTaskInput {
     /// 最大抓取页数（0=不限）
     #[serde(default)]
     pub max_pages: i64,
+    /// 043 US5：字段树 pagination 字段驱动的最大翻页深度，默认 10（FR-022）；0=不限
+    #[serde(default = "default_ten")]
+    pub max_pagination_depth: i64,
 }
 
 fn default_true() -> bool {
@@ -95,6 +101,9 @@ fn default_interval() -> i64 {
 fn default_delay() -> i64 {
     1000
 }
+fn default_ten() -> i64 {
+    10
+}
 
 impl CrawlerTaskInput {
     /// 将 list_urls 序列化为 JSON 字符串（DB 存储）
@@ -102,12 +111,9 @@ impl CrawlerTaskInput {
         serde_json::to_string(&self.list_urls).unwrap_or_else(|_| "[]".to_string())
     }
 
-    /// 将 selectors 序列化为 JSON 字符串（DB 存储）
-    pub fn selectors_json(&self) -> String {
-        serde_json::to_string(&self.selectors).unwrap_or_else(|_| "{}".to_string())
-    }
-
     /// 校验输入合法性（返回 first-error）
+    ///
+    /// **043 变更**：移除 selectors 校验（字段树由 `/field-nodes` 独立 CRUD 校验）。
     pub fn validate(&self) -> Result<(), String> {
         if self.name.trim().is_empty() {
             return Err("任务名不能为空".into());
@@ -121,15 +127,14 @@ impl CrawlerTaskInput {
         if self.task_concurrency < 1 {
             return Err("task_concurrency 必须 >= 1".into());
         }
-        // 单阶段模式已下线，所有任务按两阶段抓取，list_item + detail_link 必填
-        if self.selectors.list_item.is_empty() || self.selectors.detail_link.is_empty() {
-            return Err("必须配置 list_item + detail_link 选择器".into());
-        }
         if self.max_consecutive_failures < 1 {
             return Err("max_consecutive_failures 必须 >= 1".into());
         }
         if self.max_pages < 0 {
             return Err("max_pages 必须 >= 0（0 表示不限）".into());
+        }
+        if self.max_pagination_depth < 0 {
+            return Err("max_pagination_depth 必须 >= 0（0 表示不限）".into());
         }
         Ok(())
     }

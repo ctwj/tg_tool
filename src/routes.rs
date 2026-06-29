@@ -285,7 +285,12 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers::crawler::list_tasks).post(handlers::crawler::create_task),
         )
         .route("/crawler/tasks/import", post(handlers::crawler::import_task))
+        .route("/crawler/tasks/from-template", post(handlers::crawler::create_task_from_template))
+        .route("/crawler/tasks/fetch-source", post(handlers::crawler::fetch_source))
+        .route("/crawler/tasks/fetch-detail-sample", post(handlers::crawler::fetch_detail_sample))
+        .route("/crawler/tasks/field-probe", post(handlers::crawler::field_probe))
         .route("/crawler/templates", get(handlers::crawler::list_templates))
+        .route("/crawler/task-templates", get(handlers::crawler::list_task_templates))
         .route(
             "/crawler/tasks/{id}",
             get(handlers::crawler::get_task)
@@ -296,9 +301,33 @@ pub fn build_router(state: AppState) -> Router {
         .route("/crawler/tasks/{id}/run", post(handlers::crawler::run_task))
         .route("/crawler/tasks/{id}/test", post(handlers::crawler::test_task))
         .route("/crawler/tasks/{id}/export", get(handlers::crawler::export_task))
+        // Crawler — 字段树 CRUD (feature 043, US1 T025)
         .route(
-            "/crawler/tasks/{id}/save-as-template",
-            post(handlers::crawler::save_as_template),
+            "/crawler/tasks/{id}/field-tree",
+            get(handlers::crawler::get_field_tree),
+        )
+        .route(
+            "/crawler/tasks/{id}/field-nodes",
+            post(handlers::crawler::create_field_node),
+        )
+        .route(
+            "/crawler/tasks/{id}/field-nodes/reorder",
+            put(handlers::crawler::reorder_field_nodes),
+        )
+        .route(
+            "/crawler/tasks/{id}/field-nodes/{node_id}",
+            put(handlers::crawler::update_field_node)
+                .delete(handlers::crawler::delete_field_node),
+        )
+        // Crawler — 字段命中率统计 (feature 043, Phase 8 T058 / FR-027)
+        .route(
+            "/crawler/tasks/{id}/field-stats",
+            get(handlers::crawler::get_task_field_stats),
+        )
+        // Crawler — 预置字段库 (feature 043, US1 T024)
+        .route(
+            "/crawler/field-library",
+            get(handlers::crawler::list_field_library),
         )
         // Crawler — 文章端点（US2）
         .route(

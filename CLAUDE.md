@@ -67,16 +67,20 @@ src/
 │   ├── image_proxy.rs   # 图片代理缓存（下载、缓存、TTL、并发控制）
 │   ├── push.rs          # 批量推送 + 消息分析管线
 │   ├── scheduler.rs     # 定时推送调度器
-│   ├── crawler/         # 爬虫采集子系统（feature 042）
+│   ├── crawler/         # 爬虫采集子系统（feature 042 + 043 字段配置器）
 │   │   ├── mod.rs             # 子模块入口 + 公共导出
 │   │   ├── url_normalize.rs   # URL 规范化（去 utm、参数排序、相对→绝对）
 │   │   ├── pan_detector.rs    # 9 平台网盘识别 + 提取码关联（PanCheck 对齐）
 │   │   ├── block_detector.rs  # 反爬拦截识别（403/429/503 + 登录墙 + 验证码）
-│   │   ├── extractor.rs       # HTML 字段提取（CSS 选择器 + 正则后处理）
+│   │   ├── field_schema.rs    # [043] 字段树 schema：Scope/FieldType/SourceLayer/ExtractorMode/Rule 6 模式/PostProcessor/FieldNodeSpec + 校验
+│   │   ├── source_layer.rs    # [043] 4 tab 源码素材抓取（header/html/script/meta）+ fetch_detail_sample（US3）
+│   │   ├── extractor.rs       # [043，取代 042 旧版] 6 模式字段提取（css/regex/prefix_suffix/json_path/meta_attr/header_field）+ 后处理链
+│   │   ├── probe.rs           # [043] 字段验证探针 run_probe（含父子嵌套 US2 + 结构化 ProbeError）
+│   │   ├── preset_library.rs  # [043] ≥20 类预置字段库常量（与 crawler_field_library 表种子一致）
 │   │   ├── scheduler.rs       # 任务调度（30s tick + Semaphore 全局并发）
-│   │   ├── engine.rs          # 单任务抓取引擎（列表页 → 详情页 → 落库）
+│   │   ├── engine.rs          # [043 重写] 单任务抓取引擎（字段树驱动两阶段 list/detail + 分页遍历 US5 → 落库 crawler_article_field_values）
 │   │   ├── image_uploader.rs  # 图片下载 → 上传图床异步管线
-│   │   └── templates.rs       # 内置 + 自定义站点模板（Discuz / WordPress / 通用）
+│   │   └── templates.rs       # [043 重写] 内置字段树预置模板（Discuz / WordPress / 通用，同名取代 042 旧版）
 │   └── crypto.rs        # JWT/密码哈希
 ├── middleware/
 │   ├── auth.rs          # Bearer Token / Session Cookie 认证
@@ -118,8 +122,12 @@ src/
 - `/api/users` — 用户管理
 - `/api/files` — 文件管理
 - `/api/options` — 系统配置
-- `/api/crawler/tasks` — 爬虫任务 CRUD + 启停 + 立即运行 + test_run 预览 + 内置/自定义模板（feature 042）
-- `/api/crawler/articles` — 爬虫文章列表/详情/编辑/删除/批量删除/重试图片/触发链接校验（管理员）
+- `/api/crawler/tasks` — 爬虫任务 CRUD + 启停 + 立即运行 + test_run 预览 + 内置/自定义模板（feature 042）+ 导入/导出/从模板创建（feature 043）
+- `/api/crawler/tasks/{id}/field-tree` `/field-nodes` `/field-nodes/reorder` `/field-nodes/{node_id}` — [043] 字段树 CRUD（list/detail 双作用域 + 父子嵌套 + UNIQUE/节点数/rule 一致性校验）
+- `/api/crawler/tasks/{id}/field-stats` — [043] 字段命中率统计（FR-027：healthy/degraded/stale_warning 三态）
+- `/api/crawler/tasks/fetch-source` `/fetch-detail-sample` `/field-probe` — [043] 4 tab 素材拉取 + 详情样本（US3）+ 字段验证探针（结构化 ProbeError）
+- `/api/crawler/field-library` `/task-templates` `/tasks/from-template` — [043] 预置字段库 + 字段树模板（Discuz / WordPress / 通用）
+- `/api/crawler/articles` — 爬虫文章列表/详情（含 extra_fields 嵌套结构 + field_stats）/编辑/删除/批量删除/重试图片/触发链接校验（管理员）
 - `/api/crawler/histories` — 爬虫运行历史列表/详情/统计（成功率/拦截细分/连续失败任务）
 - `/api/status` 的 `crawler` 字段 — 爬虫调度状态（scheduler_running/active_tasks/auto_blocked_tasks/next_run_at/scan_interval_secs/pending_uploads）
 
@@ -128,7 +136,7 @@ src/
 ## Testing
 
 ```bash
-cargo test                          # 全部测试（320 单元 + 8 集成，含 crawler 子系统）
+cargo test                          # 全部测试（495 单元 + 79 集成，含 crawler 子系统 042 + 043）
 cargo test --test api_integration   # 仅集成测试
 cargo test -- --nocapture           # 显示 println! 输出
 cargo clippy --all-targets -- -D warnings  # 零警告（CI 必过）
@@ -138,11 +146,16 @@ cargo clippy --all-targets -- -D warnings  # 零警告（CI 必过）
 
 ### Crawler 子系统关键测试覆盖
 - `services::crawler::engine::tests::upsert_article_idempotent_on_repeated_calls` — SC-005：100 次重复抓取同 URL，DB 中仅 1 行（UNIQUE 索引 + SELECT-or-UPDATE 生效）
+- `services::crawler::engine::tests::find_next_page_url_*` — [043 US5] 分页字段定位 + 字段树类型索引
 - `services::crawler::pan_detector::tests::*` — 9 平台识别 + 提取码 + 直链白名单
-- `services::crawler::extractor::tests::*` — CSS 选择器 + 正则后处理 + 单字段失败不中断
+- `services::crawler::extractor::tests::*` — [043] 6 模式（CSS / 正则 / 前后缀 / JSON Path / meta 属性 / 响应头）+ 后处理链 + 单字段失败不中断
+- `services::crawler::source_layer::tests::*` — [043] 4 tab 素材解析 + `<script>` JSON 抽取 + `<meta>` 解析
+- `services::crawler::probe::tests::*` — [043] 字段验证探针 + 父子嵌套命中 + 6 类 ProbeError 分类
+- `services::crawler::field_schema::tests::*` — [043] name 正则 + 6 模式 rule 校验 + scope 唯一性
 - `services::crawler::url_normalize::tests::*` — 去 utm/参数排序/相对→绝对
 - `services::crawler::block_detector::tests::*` — 5 类拦截信号识别
-- `services::crawler::templates::tests::*` — 内置模板（Discuz / WordPress / 通用）选择器可用
+- `services::crawler::templates::tests::*` — [043 重写] 3 内置字段树模板（Discuz / WordPress / 通用）可被 validate 通过
+- `handlers::crawler::field_stats_tests::*` — [043 Phase 8] 命中率 classify 三态边界（healthy ≥0.80 / degraded 0.10~0.80 / stale_warning <0.10）
 
 ## Rust 重写状态
 
@@ -153,7 +166,7 @@ cargo clippy --all-targets -- -D warnings  # 零警告（CI 必过）
 - ✅ 频道消息全量采集 + 图片上传图床
 - ✅ 定时推送调度 + 消息分析管线
 - ✅ API 路由保护（auth 中间件）
-- ✅ 爬虫采集子系统（specs/042-web-crawler-collector）：配置驱动多站点爬虫 + 9 平台网盘识别 + 反爬拦截感知 + 异步图片上传管线 + 文章/历史管理 UI
+- ✅ 爬虫采集子系统（specs/042-web-crawler-collector + 043-crawler-configurator）：配置驱动多站点爬虫 + 可视化字段配置器（4 tab 源码 + 字段树 + 6 模式 + 字段验证探针 + 命中率面板）+ 9 平台网盘识别 + 反爬拦截感知 + 异步图片上传管线 + 文章/历史管理 UI
 
 <!-- SPECKIT START -->
 - [Telegram 核心功能集成](specs/002-telegram-core-integration/plan.md) — 客户端连接、认证、消息收发、转发、采集、推送
@@ -187,4 +200,5 @@ shell commands, and other important information, read the current plan:
 - [转发队列死信自动清理 Plan](specs/040-forward-failed-cleanup/plan.md) — 死信（失败≥5次）即时清除：mark_task_failed 事务化，清空 extracted_resources.img + 删除 forward_tasks 行；零 schema 变更，单函数签名扩展 + 两调用点同步改
 - [推送候选集漏数据修复 Plan](specs/041-fix-push-empty-filter/plan.md) — 修复"DB 有未推送数据但推送显示没有"：废弃候选 SQL 入口 A 的 is_pushed 全局过滤（多配置语义错配，FR-009）+ insert_push_status_batch ON CONFLICT DO UPDATE 修复 failed→pushed 转换 + 候选 SQL 加 ORDER BY + SkipReason 扩展 5 类 + OptionCache 严格/宽松开关；零 schema 变更
 - [爬虫采集子系统 已实现](specs/042-web-crawler-collector/plan.md) — 配置驱动的多网站爬虫（已完成 Phase 1-7）：CSS 选择器+正则两阶段抓取、9 平台网盘识别（PanCheck 对齐，`pan_detector.rs`）、独立 crawler_* 表（migrations 020-024）、任务级自动 PanCheck 校验、图片走"下载→上传图床"新路径（`image_uploader.rs`，不复用两阶段转存）、拦截感知（403/429/503+登录墙/验证码）+ 连续失败自动停用、全局并发上限 3（`crawler_global_concurrency`）任务级可降、source_type 取任务名为推送接入预留；调度状态注入 `/api/status.crawler`；菜单：爬虫采集 → 任务管理/文章管理/运行历史
+- [爬虫可视化字段配置器 已实现](specs/043-crawler-configurator/plan.md) — **直接取代 042 旧抓取路径**（项目尚未上线，无旧数据需保留）：左侧 4 tab 源码（header/html/script/meta）+ 右侧字段树（list/detail 双作用域，父子嵌套链接卡片）+ ≥ 20 类预置字段库勾选 + 6 种匹配模式（CSS/正则/前后缀/JSON Path/meta/响应头）+ 字段验证探针 + 字段命中率面板（FR-027）+ 分页字段遍历（US5，max_pagination_depth 默认 10）；删除 042 旧 `extractor.rs`/`FieldSelectors`/`selectors` 列/`/test-selectors` API/旧 3 个内置模板，由新 `extractor.rs`（多模式）+ `field_schema.rs` + `source_layer.rs` + `probe.rs` + `templates.rs`（字段树预置模板，Discuz/WordPress/通用重生）+ `preset_library.rs` 同名替换；migrations 026 删旧 selectors 列、027-029 新增字段树/字段库/文章扩展值三张表、030 新增 max_pagination_depth 列；新增依赖 `serde_json_path`；测试：495 单元 + 79 集成全过，`cargo clippy --all-targets -- -D warnings` 零警告
 <!-- SPECKIT END -->

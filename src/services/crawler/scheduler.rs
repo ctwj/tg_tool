@@ -4,9 +4,10 @@
 //! 30s tick，扫描 `status='active' AND next_run_at <= now()`，
 //! 通过 `tokio::sync::Semaphore(全局并发上限)` 控制并发。
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::state::{AppState, DbPool};
@@ -19,6 +20,8 @@ pub struct CrawlerSchedulerState {
     pub started_at: Option<std::time::Instant>,
     pub handle: Option<tokio::task::JoinHandle<()>>,
     pub cancel: Option<CancellationToken>,
+    /// 正在运行的任务 ID 集合（防同任务被并发 spawn 多份）
+    pub running_tasks: Arc<Mutex<HashSet<i64>>>,
 }
 
 /// 全局共享句柄（参考现有 `SchedulerHandle` 模式）
@@ -32,6 +35,7 @@ pub fn create_scheduler() -> CrawlerSchedulerHandle {
         started_at: None,
         handle: None,
         cancel: None,
+        running_tasks: Arc::new(Mutex::new(HashSet::new())),
     }))
 }
 
@@ -96,39 +100,64 @@ async fn tick(state: &AppState) -> Result<(), String> {
         global_concurrency
     );
 
+    // 运行中任务集合（防同任务被多个 tick 并发 spawn）
+    let running_set = {
+        let s = state.crawler_scheduler.read().await;
+        s.running_tasks.clone()
+    };
+
     for task in due {
+        // 检查并原子标记 — 同任务已 spawn 则跳过
+        {
+            let mut guard = running_set.lock().await;
+            if !guard.insert(task.id) {
+                tracing::info!(
+                    "Task {} ({}) still running, skip this tick",
+                    task.id, task.name
+                );
+                continue;
+            }
+        }
         let sem = sem.clone();
         let state = state.clone();
         let task_id = task.id;
         let task_name = task.name.clone();
+        let running_set_clone = running_set.clone();
         tokio::spawn(async move {
-            // 抢占全局并发 permit（无超时等待 — 下次 tick 自动补漏）
-            let permit = match sem.acquire_owned().await {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::warn!(
-                        "Task {task_id} ({task_name}) acquire permit failed: {e}"
-                    );
-                    return;
+            // 用 async 块包装：确保任何退出路径（Ok/Err）都执行 finally 移除标记
+            let inner = async {
+                // 抢占全局并发 permit（无超时等待 — 下次 tick 自动补漏）
+                let permit = match sem.acquire_owned().await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!(
+                            "Task {task_id} ({task_name}) acquire permit failed: {e}"
+                        );
+                        return;
+                    }
+                };
+                // 执行抓取
+                let result =
+                    crate::services::crawler::engine::run_task(task_id, &state).await;
+                match result {
+                    Ok(summary) => {
+                        tracing::info!(
+                            "Task {task_id} ({task_name}) done: status={} crawled={} new={} failed={}",
+                            summary.status, summary.crawled_count, summary.new_count, summary.failed_count
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Task {task_id} ({task_name}) engine error: {e}"
+                        );
+                    }
                 }
+                drop(permit);
             };
-            // 执行抓取
-            let result =
-                crate::services::crawler::engine::run_task(task_id, &state).await;
-            match result {
-                Ok(summary) => {
-                    tracing::info!(
-                        "Task {task_id} ({task_name}) done: status={} crawled={} new={} failed={}",
-                        summary.status, summary.crawled_count, summary.new_count, summary.failed_count
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Task {task_id} ({task_name}) engine error: {e}"
-                    );
-                }
-            }
-            drop(permit);
+            inner.await;
+            // finally: 无论正常/异常都从运行集合移除（panic 时此处不执行，
+            // 但 tokio task panic 罕见，且下次重启 recover 会重新调度）
+            running_set_clone.lock().await.remove(&task_id);
         });
     }
     Ok(())
@@ -182,17 +211,21 @@ async fn global_concurrency(state: &AppState) -> i64 {
         .max(1)
 }
 
-/// 启动期：扫描所有 active 任务，重算 next_run_at = max(last_run_at + interval, now())
+/// 启动期：扫描所有 active 任务，重算 next_run_at = now() + interval_minutes
 ///
-/// 防止重启后旧 next_run_at 已过导致立刻刷抓
+/// 防止重启后旧 next_run_at 已过导致立刻刷抓。
+/// **只在 next_run_at 已过期或为 NULL 时才推进**——刚跑完任务的 next_run_at 在未来，
+/// 不应被本函数覆盖（避免抹掉 finalize_run 写入的正确调度时间）。
 pub async fn recover_active_tasks_schedule(state: &AppState) {
     let now = chrono::Utc::now().naive_utc();
     let updated = match &state.db {
         DbPool::Sqlite(pool) => {
+            // SQLite datetime('now', '+N minutes') 返回 UTC ISO 字符串，与 NaiveDateTime 兼容
             sqlx::query(
                 "UPDATE crawler_tasks \
-                 SET next_run_at = MAX(COALESCE(last_run_at, created_at), ?) \
-                 WHERE status = 'active' AND enabled = 1",
+                 SET next_run_at = datetime('now', '+' || interval_minutes || ' minutes') \
+                 WHERE status = 'active' AND enabled = 1 \
+                   AND (next_run_at IS NULL OR next_run_at <= ?)",
             )
             .bind(now)
             .execute(pool)
@@ -201,12 +234,13 @@ pub async fn recover_active_tasks_schedule(state: &AppState) {
             .unwrap_or(0)
         }
         DbPool::Postgres(pool) => {
+            // CURRENT_TIMESTAMP 返回 timestamptz，但 SQLite 列是 timestamp without tz，
+            // Postgres 此处列也是 timestamp without tz —— 用 NOW() AT TIME ZONE 'UTC' 取 UTC naive
             sqlx::query(
                 "UPDATE crawler_tasks \
-                 SET next_run_at = (CASE \
-                     WHEN COALESCE(last_run_at, created_at) > $1 THEN COALESCE(last_run_at, created_at) \
-                     ELSE $1 END) \
-                 WHERE status = 'active' AND enabled = TRUE",
+                 SET next_run_at = (NOW() AT TIME ZONE 'UTC') + (interval_minutes || ' minutes')::INTERVAL \
+                 WHERE status = 'active' AND enabled = TRUE \
+                   AND (next_run_at IS NULL OR next_run_at <= $1)",
             )
             .bind(now)
             .execute(pool)
@@ -216,6 +250,6 @@ pub async fn recover_active_tasks_schedule(state: &AppState) {
         }
     };
     if updated > 0 {
-        tracing::info!("Recovered {updated} active crawler tasks schedule");
+        tracing::info!("Recovered {updated} active crawler tasks schedule (advanced next_run_at to now + interval)");
     }
 }

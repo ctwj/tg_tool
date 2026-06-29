@@ -1,28 +1,26 @@
 import React, { useEffect, useState, useMemo } from 'react'
 import {
   Table, Button, Modal, Form, Input, InputNumber, Select, Switch, Space,
-  message, Tag, Popconfirm, Drawer, Tooltip, Typography, Alert, Descriptions, Empty, Spin,
-  Card, Collapse,
+  message, Tag, Popconfirm, Drawer, Tooltip, Typography, Alert, Empty,
+  Card, Collapse, Progress,
 } from 'antd'
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, PlayCircleOutlined,
-  ThunderboltOutlined, ExportOutlined, ImportOutlined, SaveOutlined, ReloadOutlined,
-  BookOutlined, BulbOutlined, LinkOutlined,
-  SettingOutlined, GlobalOutlined, ClockCircleOutlined, CodeOutlined, ControlOutlined,
-  FastForwardOutlined, RobotOutlined,
+  ExportOutlined, ImportOutlined, SaveOutlined, ReloadOutlined,
+  LinkOutlined,
+  SettingOutlined, GlobalOutlined, ClockCircleOutlined,
+  ControlOutlined, BarChartOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
+import { useNavigate } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import { useTableScrollY } from '../hooks/useTableScroll'
 import * as crawlerApi from '../api/crawler'
-import type {
-  CrawlerTask, CrawlerTaskInput, CrawlerTemplate, CrawlerTestPreview, FieldSelectors,
-} from '../types'
+import type { CrawlerTask, CrawlerTaskInput, CrawlerTemplate, FieldStat } from '../types'
 
-const { TextArea } = Input
-const { Text, Paragraph } = Typography
+const { Text } = Typography
 
-// 统一 Card 样式：让 6 个分组有明显的视觉边界
+// 统一 Card 样式：让分组有明显的视觉边界
 const CARD_STYLE: React.CSSProperties = {
   marginBottom: 16,
   borderColor: '#e5e7eb',
@@ -34,65 +32,14 @@ const CARD_HEAD_STYLE: React.CSSProperties = {
 }
 const CARD_BODY_STYLE: React.CSSProperties = { paddingTop: 18 }
 
-// ---------- 默认值与工具 ----------
-const DEFAULT_SELECTORS: FieldSelectors = {
-  list_item: '',
-  detail_link: '',
-  detail_link_attr: 'href',
-  title: { css: '', attr: null, regex: null },
-  content: { css: '', attr: 'html', regex: null },
-  category: { css: '', attr: null, regex: null },
-  tags: { css: '', attr: null, regex: null },
-  images: { css: '', attr: 'src', regex: null },
-  pan_links: { css: '', attr: 'href', regex: null },
-  direct_links: { css: '', attr: 'href', regex: null },
-}
-
 const DEFAULT_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
-
-// AI 辅助提取提示词：用户复制到 Claude / ChatGPT，让其自动 fetch 站点 HTML 产出 crawler config（两阶段模式专用）
-const AI_SELECTOR_PROMPT = `你是 CSS 选择器专家。我会给你一个目标站点的列表页 URL（域名或分页地址），请按【两阶段抓取】模型，自行抓取该 URL 与一条样本详情页，分析后返回 crawler task 配置所需的全部 CSS 选择器。
-
-两阶段抓取流程：列表页按 list_item 选择器切成多条记录 → 每条按 detail_link 取详情页 URL → 抓详情页后按字段选择器提取 title/content/images/pan_links 等。
-
-严格只输出以下 JSON（不要 markdown 代码块、不要解释、不要前后缀文字）：
-{
-  "list_item": "【列表页】每条文章卡片/行的最外层容器选择器，如 .post-list .post-item",
-  "detail_link": "【列表页内、list_item 范围内】详情页链接的选择器，通常是 a 标签，如 a.detail-title",
-  "detail_link_attr": "取链接用的属性名，默认 href；若链接放在 data-url 等自定义属性则填该属性名",
-  "title":          { "css": "【详情页】文章标题选择器" },
-  "content":        { "css": "【详情页】正文最外层容器选择器（含段落+图片+链接的整体，不要只取单个 <p>）" },
-  "category":       { "css": "【详情页】分类选择器；找不到填 null" },
-  "tags":           { "css": "【详情页】标签选择器；找不到填 null" },
-  "images":         { "css": "【详情页正文内】图片选择器，如 .content img；找不到填 null" },
-  "pan_links":      { "css": "【详情页正文内】网盘链接选择器，如 .content a[href*=\\"pan.baidu\\"]；找不到填 null" },
-  "direct_links":   { "css": "【详情页正文内】直链选择器（非网盘的下载链接，如 magnet:/ed2k:/直链）；找不到填 null" },
-  "pagination_selector": "【列表页】分页选择器，一次匹配页面所有数字页/上一页/下一页/末页的 <a>，如 .pagination a / .pg a / .nav-links a；未启用翻页填空字符串",
-  "max_pages": 0
-}
-
-判定规则：
-1. list_item 与 detail_link 是必填项；找不到请明确返回 null 并说明原因
-2. 网盘链接识别这些域名：pan.baidu.com / www.aliyundrive.com / aliyun.com / pan.quark.cn / 123pan.com / 115.com / cloud.189.cn / pc.qq.com（uc）
-3. 选择器优先级：稳定的 class > 结构路径 > 标签；避免用 nth-child / inline-style 等易碎选择器
-4. 正文 content 必须取文章主体最外层容器，能一次性覆盖段落+图片+网盘链接，便于下游字段（images/pan_links/direct_links）在其内部查找
-5. pagination_selector 引擎会自动去重扩散抓取，所以只需给一个能匹配所有分页 a 标签的选择器即可
-
-执行要求：
-1. 你已具备联网/fetch 能力（如 WebFetch / web_reader）：请直接抓取我提供的列表页 URL 取 HTML；若该页有详情链接，请再抓一条详情页样本用于字段校验
-2. 若你的运行环境无法联网，请明确告诉用户「请把列表页 view-source 内容贴给我」并暂停
-3. 拿到 HTML 后基于实际 DOM 给出最稳定的选择器组合
-4. 若站点需要 JS 渲染才能看到正文（HTML 里没有文章节点），请明确告知用户「该站需 JS 渲染，CSS 选择器无法命中」，让用户考虑换站
-
-目标站点列表页 URL：<在此粘贴列表页 URL，如 https://example.com/list 或 https://example.com/forumdisplay.php?fid=1>`
 
 function emptyInput(): CrawlerTaskInput {
   return {
     name: '',
     enabled: true,
     list_urls: [''],
-    selectors: { ...DEFAULT_SELECTORS },
     two_stage: true,
     interval_minutes: 30,
     task_concurrency: 1,
@@ -103,8 +50,7 @@ function emptyInput(): CrawlerTaskInput {
     block_detection_config: '',
     max_consecutive_failures: 3,
     template_source: '',
-    pagination_selector: '',
-    max_pages: 0,
+    max_pagination_depth: 10,
   }
 }
 
@@ -117,6 +63,7 @@ const STATUS_META: Record<string, { color: string; text: string }> = {
 
 // ---------- 主组件 ----------
 const CrawlerTasks: React.FC = () => {
+  const navigate = useNavigate()
   const [tasks, setTasks] = useState<CrawlerTask[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
@@ -131,23 +78,15 @@ const CrawlerTasks: React.FC = () => {
 
   const [templates, setTemplates] = useState<CrawlerTemplate[]>([])
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false)
-  // T054: "保存为模板"弹窗
-  const [saveTplOpen, setSaveTplOpen] = useState(false)
-  const [saveTplLoading, setSaveTplLoading] = useState(false)
-  const [saveTplForm] = Form.useForm<{ name: string; description?: string }>()
 
-  const [testOpen, setTestOpen] = useState(false)
-  const [testLoading, setTestLoading] = useState(false)
-  const [testPreview, setTestPreview] = useState<CrawlerTestPreview | null>(null)
-  const [testTaskId, setTestTaskId] = useState<number | null>(null)
-
-  // UX: 保存按钮 loading + CSS 选择器速查弹窗
   const [submitLoading, setSubmitLoading] = useState(false)
-  const [cssHelpOpen, setCssHelpOpen] = useState(false)
-  // AI 结果解析弹窗
-  const [aiResultOpen, setAiResultOpen] = useState(false)
-  const [aiResultText, setAiResultText] = useState('')
 
+  // 字段命中率统计 Modal（FR-027 / T059）
+  const [statsOpen, setStatsOpen] = useState(false)
+  const [statsTask, setStatsTask] = useState<CrawlerTask | null>(null)
+  const [statsRows, setStatsRows] = useState<FieldStat[]>([])
+  const [statsDays, setStatsDays] = useState(30)
+  const [statsLoading, setStatsLoading] = useState(false)
 
   const { containerRef: tableContainerRef, scrollY: tableScrollY } = useTableScrollY()
 
@@ -189,21 +128,31 @@ const CrawlerTasks: React.FC = () => {
 
   const openEdit = (task: CrawlerTask) => {
     setEditing(task)
-    // 把任务字段塞回 form
+    // API 返回的 list_urls 是 JSON 字符串（DB 原样），塞进 form 前需解析
+    let parsedListUrls: string[] = ['']
+    const rawListUrls = (task as any).list_urls
+    if (typeof rawListUrls === 'string') {
+      try {
+        const arr = JSON.parse(rawListUrls)
+        if (Array.isArray(arr) && arr.length > 0) parsedListUrls = arr.filter((s: any) => typeof s === 'string')
+      } catch { /* 用默认 */ }
+    } else if (Array.isArray(rawListUrls) && rawListUrls.length > 0) {
+      parsedListUrls = rawListUrls
+    }
     form.setFieldsValue({
       ...task,
+      list_urls: parsedListUrls,
       proxy: task.proxy ?? '',
       user_agent: task.user_agent ?? DEFAULT_USER_AGENT,
       block_detection_config: task.block_detection_config ?? '',
       template_source: task.template_source ?? '',
-      pagination_selector: task.pagination_selector ?? '',
-      max_pages: task.max_pages ?? 0,
-      list_urls: task.list_urls.length > 0 ? task.list_urls : [''],
+      max_pagination_depth: task.max_pagination_depth ?? 10,
     } as any)
     setEditorOpen(true)
   }
 
-  const handleSubmit = async () => {
+  // onSubmitSuccess: 创建/更新成功后的回调（用于"保存并进入字段配置器"场景跳转）
+  const handleSubmit = async (onSuccess?: (task: CrawlerTask) => void) => {
     let values: CrawlerTaskInput
     try {
       const raw = await form.validateFields()
@@ -215,8 +164,7 @@ const CrawlerTasks: React.FC = () => {
         user_agent: raw.user_agent?.trim() || null,
         block_detection_config: raw.block_detection_config?.trim() || null,
         template_source: raw.template_source?.trim() || null,
-        pagination_selector: raw.pagination_selector?.trim() || null,
-        max_pages: raw.max_pages ?? 0,
+        max_pagination_depth: raw.max_pagination_depth ?? 10,
       }
       if (values.list_urls.length === 0) {
         message.warning('请至少填写一个列表页 URL')
@@ -227,15 +175,21 @@ const CrawlerTasks: React.FC = () => {
     }
     setSubmitLoading(true)
     try {
+      let saved: CrawlerTask
       if (editing) {
-        await crawlerApi.updateTask(editing.id, values)
+        const res = await crawlerApi.updateTask(editing.id, values)
+        if (!res.success || !res.data) throw new Error(res.message ?? '更新失败')
+        saved = res.data
         message.success('任务已更新')
       } else {
-        await crawlerApi.createTask(values)
+        const res = await crawlerApi.createTask(values)
+        if (!res.success || !res.data) throw new Error(res.message ?? '创建失败')
+        saved = res.data
         message.success('任务已创建')
       }
       setEditorOpen(false)
       fetchTasks()
+      if (onSuccess) onSuccess(saved)
     } catch (e: any) {
       message.error('保存失败: ' + (e.message ?? ''))
     } finally {
@@ -243,70 +197,14 @@ const CrawlerTasks: React.FC = () => {
     }
   }
 
-  // AI 结果解析：把 AI 返回的 JSON 字符串解析后填入表单
-  // 容忍 markdown ```json 围栏 / 前后多余文字
-  const handleParseAiResult = () => {
-    const raw = (aiResultText || '').trim()
-    if (!raw) {
-      message.warning('请先粘贴 AI 返回的 JSON')
-      return
-    }
-    // 抽取最外层 { ... } 块，去掉 ```json 围栏 / 解释性前后缀
-    let jsonStr = raw
-    const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)
-    if (fenceMatch) {
-      jsonStr = fenceMatch[1].trim()
-    } else {
-      const firstBrace = raw.indexOf('{')
-      const lastBrace = raw.lastIndexOf('}')
-      if (firstBrace >= 0 && lastBrace > firstBrace) {
-        jsonStr = raw.slice(firstBrace, lastBrace + 1)
-      }
-    }
-    let parsed: Record<string, any>
-    try {
-      parsed = JSON.parse(jsonStr)
-    } catch (e: any) {
-      message.error('JSON 解析失败：' + (e.message ?? '未知错误') + '。请确认粘贴的是完整 JSON')
-      return
-    }
-    // 兼容嵌套 { css: "..." } / 裸字符串 / null
-    const pickCss = (v: any): string => {
-      if (v == null) return ''
-      if (typeof v === 'string') return v
-      if (typeof v === 'object' && typeof v.css === 'string') return v.css
-      return ''
-    }
-    const nextSelectors: FieldSelectors = {
-      list_item: typeof parsed.list_item === 'string' ? parsed.list_item : '',
-      detail_link: typeof parsed.detail_link === 'string' ? parsed.detail_link : '',
-      detail_link_attr: typeof parsed.detail_link_attr === 'string' && parsed.detail_link_attr
-        ? parsed.detail_link_attr : 'href',
-      title:     { css: pickCss(parsed.title),     attr: null, regex: null },
-      content:   { css: pickCss(parsed.content),   attr: pickCss(parsed.content) ? 'html' : null, regex: null },
-      category:  { css: pickCss(parsed.category),  attr: null, regex: null },
-      tags:      { css: pickCss(parsed.tags),      attr: null, regex: null },
-      images:    { css: pickCss(parsed.images),    attr: 'src', regex: null },
-      pan_links: { css: pickCss(parsed.pan_links), attr: 'href', regex: null },
-      direct_links: { css: pickCss(parsed.direct_links), attr: 'href', regex: null },
-    }
-    form.setFieldsValue({
-      selectors: nextSelectors,
-      pagination_selector: typeof parsed.pagination_selector === 'string'
-        ? parsed.pagination_selector : '',
-      max_pages: typeof parsed.max_pages === 'number' ? parsed.max_pages : 0,
-    } as any)
-    const hitFields = [
-      nextSelectors.list_item && 'list_item',
-      nextSelectors.detail_link && 'detail_link',
-      nextSelectors.title.css && 'title',
-      nextSelectors.content.css && 'content',
-      nextSelectors.pan_links.css && 'pan_links',
-      parsed.pagination_selector && 'pagination',
-    ].filter(Boolean)
-    message.success(`已填入 ${hitFields.length} 个字段：${hitFields.join(' / ') || '（未识别到有效字段）'}`)
-    setAiResultOpen(false)
-    setAiResultText('')
+  /** 跳转到字段配置器（带 taskId 与首个 list_url） */
+  const goToConfigurator = (task: CrawlerTask) => {
+    const firstUrl = parseListUrls((task as any).list_urls)[0] ?? ''
+    const qs = new URLSearchParams({
+      taskId: String(task.id),
+      ...(firstUrl ? { listUrl: firstUrl } : {}),
+    })
+    navigate(`/crawler/configurator?${qs.toString()}`)
   }
 
   // ---------- 操作 ----------
@@ -331,19 +229,6 @@ const CrawlerTasks: React.FC = () => {
       await crawlerApi.runTask(task.id)
       message.success(`任务「${task.name}」已触发，请稍后查看历史记录`)
     } catch (e: any) { message.error('触发失败: ' + (e.message ?? '')) }
-  }
-
-  const handleTest = async (task: CrawlerTask) => {
-    setTestTaskId(task.id)
-    setTestOpen(true)
-    setTestPreview(null)
-    setTestLoading(true)
-    try {
-      const res = await crawlerApi.testTask(task.id, 3)
-      setTestPreview(res.data ?? null)
-    } catch (e: any) {
-      message.error('测试失败: ' + (e.message ?? ''))
-    } finally { setTestLoading(false) }
   }
 
   const handleExport = async (task: CrawlerTask) => {
@@ -391,34 +276,38 @@ const CrawlerTasks: React.FC = () => {
       user_agent: cfg.user_agent ?? DEFAULT_USER_AGENT,
       block_detection_config: cfg.block_detection_config ?? '',
       template_source: cfg.template_source ?? tpl.key,
-      pagination_selector: cfg.pagination_selector ?? '',
-      max_pages: cfg.max_pages ?? 0,
+      max_pagination_depth: cfg.max_pagination_depth ?? 10,
     } as any)
     setTemplatePickerOpen(false)
     setEditorOpen(true)
-    message.info(`已应用模板「${tpl.name}」，请调整 list_urls 与选择器`)
+    message.info(`已应用模板「${tpl.name}」，请调整 list_urls 与字段配置`)
   }
 
-  // T054: 把当前编辑中的任务另存为自定义模板
-  const handleSaveAsTemplate = async () => {
-    if (!editing) {
-      message.warning('请先保存任务再另存为模板')
-      return
-    }
+  // ---------- 字段命中率统计（FR-027） ----------
+  const openStats = async (task: CrawlerTask) => {
+    setStatsTask(task)
+    setStatsOpen(true)
+    setStatsDays(30)
+    await fetchStats(task.id, 30)
+  }
+
+  const fetchStats = async (taskId: number, days: number) => {
+    setStatsLoading(true)
     try {
-      const v = await saveTplForm.validateFields()
-      setSaveTplLoading(true)
-      await crawlerApi.saveAsTemplate(editing.id, v.name, v.description)
-      message.success(`模板「${v.name}」已保存`)
-      setSaveTplOpen(false)
-      saveTplForm.resetFields()
-      fetchTemplates() // 刷新模板列表
+      const res = await crawlerApi.getTaskFieldStats(taskId, days)
+      setStatsRows(res.data?.stats ?? [])
     } catch (e: any) {
-      if (e?.errorFields) return
-      message.error('保存模板失败: ' + (e?.message ?? ''))
+      message.error('获取字段命中率失败: ' + (e.message ?? ''))
+      setStatsRows([])
     } finally {
-      setSaveTplLoading(false)
+      setStatsLoading(false)
     }
+  }
+
+  const onStatsDaysChange = async (days: number | null) => {
+    if (!statsTask || !days) return
+    setStatsDays(days)
+    await fetchStats(statsTask.id, days)
   }
 
   // ---------- 表格列 ----------
@@ -466,17 +355,26 @@ const CrawlerTasks: React.FC = () => {
         : <Text type="secondary">0</Text>,
     },
     {
-      title: '操作', key: 'actions', width: 280, fixed: 'right' as const,
+      title: '操作', key: 'actions', width: 340, fixed: 'right' as const,
       render: (_: any, r: CrawlerTask) => (
         <Space size={4} wrap>
-          <Tooltip title="编辑">
+          <Button
+            type="primary"
+            ghost
+            size="small"
+            icon={<ControlOutlined />}
+            onClick={() => goToConfigurator(r)}
+          >
+            字段配置
+          </Button>
+          <Tooltip title="编辑任务元信息">
             <Button type="text" size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
-          </Tooltip>
-          <Tooltip title="测试运行（不落库）">
-            <Button type="text" size="small" icon={<ThunderboltOutlined />} onClick={() => handleTest(r)} />
           </Tooltip>
           <Tooltip title="立即运行">
             <Button type="text" size="small" icon={<PlayCircleOutlined />} onClick={() => handleRun(r)} />
+          </Tooltip>
+          <Tooltip title="字段命中率">
+            <Button type="text" size="small" icon={<BarChartOutlined />} onClick={() => openStats(r)} />
           </Tooltip>
           <Tooltip title="导出 JSON 配置">
             <Button type="text" size="small" icon={<ExportOutlined />} onClick={() => handleExport(r)} />
@@ -509,7 +407,7 @@ const CrawlerTasks: React.FC = () => {
           placeholder="搜索任务名/模板"
           allowClear
           style={{ width: 240 }}
-          onSearch={(v) => { setKeyword(v); setPage(1); }}
+          onSearch={(v) => { setKeyword(v); setPage(1) }}
         />
         <Select
           placeholder="状态筛选"
@@ -535,7 +433,7 @@ const CrawlerTasks: React.FC = () => {
         loading={loading}
         dataSource={tasks}
         columns={columns as any}
-        scroll={{ x: 1100, y: tableScrollY }}
+        scroll={{ x: 1200, y: tableScrollY }}
         size="middle"
         pagination={{
           current: page, pageSize, total,
@@ -554,17 +452,10 @@ const CrawlerTasks: React.FC = () => {
         extra={(
           <Space size={8}>
             <Button onClick={() => setEditorOpen(false)}>取消</Button>
-            {editing ? (
-              <Tooltip title="将当前任务配置存为可复用的自定义模板">
-                <Button icon={<SaveOutlined />} onClick={() => setSaveTplOpen(true)}>
-                  另存为模板
-                </Button>
-              </Tooltip>
-            ) : null}
             <Button
               type="primary"
               loading={submitLoading}
-              onClick={handleSubmit}
+              onClick={() => handleSubmit()}
             >
               保存
             </Button>
@@ -577,78 +468,6 @@ const CrawlerTasks: React.FC = () => {
           layout="vertical"
           initialValues={emptyInput() as any}
         >
-          {/* 快速开始引导 */}
-          {!editing && (
-            <Alert
-              type="info" showIcon
-              icon={<BulbOutlined />}
-              style={{ marginBottom: 16 }}
-              message="第一次配置？建议的 5 步流程"
-              description={(
-                <div style={{ fontSize: 13, lineHeight: 1.8 }}>
-                  <ol style={{ margin: 0, paddingLeft: 18 }}>
-                    <li>从「从模板创建」选一个相近模板（如：通用资源站 / Discuz 论坛 / WordPress 博客）</li>
-                    <li>填入任务名（会作为文章的 <code>source_type</code> 标识）和列表页 URL</li>
-                    <li>用「测试运行」验证选择器命中（不写库），看预览效果</li>
-                    <li>根据预览调整字段选择器（标题/正文/网盘链接/图片 等）</li>
-                    <li>「立即运行」正式抓取 → 进「爬虫资源」查看结果</li>
-                  </ol>
-                  <Collapse
-                    ghost
-                    size="small"
-                    style={{ marginTop: 8, marginLeft: -8 }}
-                    items={[{
-                      key: 'ai',
-                      label: (
-                        <span style={{ fontSize: 13 }}>
-                          <RobotOutlined style={{ color: '#7c3aed', marginRight: 6 }} />
-                          找不到选择器？用 Claude / ChatGPT 等 AI 工具辅助提取
-                          <Text type="secondary" style={{ fontSize: 12, marginLeft: 6 }}>
-                            （点开复制提示词）
-                          </Text>
-                        </span>
-                      ),
-                      children: (
-                        <div>
-                          <Paragraph style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>
-                            把下面的提示词复制到 Claude / ChatGPT 等 AI 工具，把 <code>目标站点列表页 URL</code> 换成你的实际地址（域名或分页 URL），AI 会自动抓取页面分析并输出本表单所需的 JSON 配置。
-                          </Paragraph>
-                          <Paragraph
-                            copyable={{
-                              text: AI_SELECTOR_PROMPT,
-                              tooltips: ['复制提示词', '已复制到剪贴板！'],
-                            }}
-                            style={{ marginBottom: 0 }}
-                          >
-                            <pre
-                              style={{
-                                margin: 0, maxHeight: 240, overflow: 'auto',
-                                padding: 12, fontSize: 12, lineHeight: 1.6,
-                                background: '#f9fafb', border: '1px solid #e5e7eb',
-                                borderRadius: 6, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                              }}
-                            >
-                              {AI_SELECTOR_PROMPT}
-                            </pre>
-                          </Paragraph>
-                          <Button
-                            type="primary"
-                            ghost
-                            icon={<ImportOutlined />}
-                            style={{ marginTop: 8 }}
-                            onClick={() => setAiResultOpen(true)}
-                          >
-                            读取 AI 结果填入表单
-                          </Button>
-                        </div>
-                      ),
-                    }]}
-                  />
-                </div>
-              )}
-            />
-          )}
-
           {/* Section 1: 基本信息 */}
           <Card
             size="small"
@@ -693,10 +512,9 @@ const CrawlerTasks: React.FC = () => {
               message="要抓取的入口页面，可填多个（如分页 page=1,2,3）"
               description={(
                 <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: '#6b7280', lineHeight: 1.7 }}>
-                  <li>每个 URL 都会按 <code>list_item</code> 选择器解析为多条详情链接</li>
-                  <li>支持分页：把每一页的完整 URL 都列出来即可</li>
-                  <li><b>启用下方「自动翻页」后，只需填第一页 URL</b>，引擎按分页选择器自动抓所有页</li>
-                  <li>需要登录的站点建议先用代理 + 自定义 Cookie（v2）</li>
+                  <li>每个 URL 都会被解析为多条详情链接</li>
+                  <li>无需分页：把每一页的完整 URL 都列出来即可</li>
+                  <li><b>需要自动翻页</b>：只需填第一页 URL，再到字段配置器新增 <code>pagination</code> 字段配分页规则（见下方 ②.b）</li>
                 </ul>
               )}
             />
@@ -729,182 +547,71 @@ const CrawlerTasks: React.FC = () => {
             style={CARD_STYLE}
             headStyle={CARD_HEAD_STYLE}
             bodyStyle={CARD_BODY_STYLE}
-            title={<span><FastForwardOutlined style={{ color: '#0ea5e9', marginRight: 6 }} />②.b 自动翻页（可选）</span>}
+            title={<span>②.b 自动翻页（可选）</span>}
           >
             <Alert
-              type="warning" showIcon
+              type="info" showIcon
               style={{ marginBottom: 12 }}
-              message="启用后，列表页 URL 只需填第一页"
+              message="分页规则在「字段配置器」里配置，不在这里填"
               description={(
                 <div style={{ fontSize: 12, lineHeight: 1.7, color: '#6b7280' }}>
-                  引擎抓每页时，会按「分页选择器」从 HTML 中找出所有分页链接（数字页 / 上一页 / 下一页 / 末页），
-                  <b>去重后批量扩散</b>抓取，直到 <b>选择器失配</b> 或 <b>所有 URL 都已访问过</b>。
-                  建议第一次测试时配合「测试运行」验证，并用「最大页数」限制防失控。
+                  自动翻页是一项需要验证的<b>数据</b>，应在抓取列表页源码后再配置：<br />
+                  ① 任务保存后进入「字段配置器」 → 输入列表 URL → 点继续抓源码<br />
+                  ② 在右侧字段树「列表页字段」下新增字段，name 选 <code>pagination</code>（自动联动为分页指针类型）<br />
+                  ③ 填 CSS 选择器（如 <code>.pagination a</code>、<code>.pg a</code>）匹配分页链接，点「验证」确认命中<br />
+                  ④ 验证无误后保存字段树，引擎即按此规则链式翻页（命中值作为下一页 URL，去重后扩散抓取）
                 </div>
               )}
             />
-            <Space wrap size="middle" style={{ display: 'flex' }}>
-              <Form.Item
-                label="分页选择器"
-                name="pagination_selector"
-                style={{ flex: 1, minWidth: 360 }}
-                tooltip={(
-                  <div>
-                    <div>CSS 选择器，一次性匹配页面所有分页链接（含数字页 + 上下页 + 末页）。
-                      引擎会去重后批量抓取。常见写法：</div>
-                    <ul style={{ margin: '4px 0', paddingLeft: 16 }}>
-                      <li><code>.pagination a</code> — 通用分页容器内所有 a（推荐）</li>
-                      <li><code>.pg a</code> — Discuz 分页容器</li>
-                      <li><code>.nav-links a</code> — WordPress 经典主题分页</li>
-                      <li><code>a[rel=next], a[rel=prev]</code> — 只有上下页的站点</li>
-                    </ul>
-                    <div>留空 = 不启用自动翻页，仅抓 list_urls 列出的 URL</div>
-                    <div>多个用英文逗号分隔，会合并匹配</div>
-                  </div>
-                )}
-                extra="留空 = 不启用；匹配页面所有分页 a 标签（引擎自动去重）"
-              >
-                <Input placeholder="如：.pagination a 或 .pg a" style={{ width: '100%' }} />
-              </Form.Item>
-              <Form.Item
-                label="最大页数"
-                name="max_pages"
-                tooltip="0 = 不限（靠选择器失配 / URL 去重自然停止）。建议测试期填 3-5 防止失控"
-                extra="页（0=不限，含种子页）"
-              >
-                <InputNumber min={0} max={10000} style={{ width: 150 }} />
-              </Form.Item>
-            </Space>
+            <Form.Item
+              label="翻页深度上限"
+              name="max_pagination_depth"
+              tooltip="字段配置器中 field_type=pagination 字段触发链式翻页时的最大页数（含种子页）。0=不限，默认 10。测试期建议填 3-5 防失控"
+              extra="页（0=不限，默认 10；为安全阀，防止抓取失控）"
+            >
+              <InputNumber min={0} max={10000} style={{ width: 200 }} />
+            </Form.Item>
           </Card>
 
-          {/* Section 3: 字段选择器（CSS） */}
+          {/* Section 3: 字段配置（提示 + 入口） */}
           <Card
             size="small"
             style={CARD_STYLE}
             headStyle={CARD_HEAD_STYLE}
             bodyStyle={CARD_BODY_STYLE}
-            title={(
-              <Space>
-                <span><CodeOutlined style={{ color: '#0ea5e9', marginRight: 6 }} />③ 字段选择器（CSS）</span>
-                <Tooltip title="查看 CSS 选择器写法示例">
-                  <Button
-                    type="link" size="small" icon={<BookOutlined />}
-                    style={{ padding: 0, height: 'auto' }}
-                    onClick={() => setCssHelpOpen(true)}
-                  >
-                    选择器速查
-                  </Button>
-                </Tooltip>
-              </Space>
-            )}
+            title={<span>③ 字段配置</span>}
           >
             <Alert
-              type="warning" showIcon
+              type="info" showIcon
               style={{ marginBottom: 12 }}
-              message="选择器写法示例"
+              message="可视化字段配置器：4 tab 源码预览 + 字段树（list/detail 双作用域）+ 20+ 预置字段库 + 6 种匹配模式"
               description={(
-                <div style={{ fontSize: 12, lineHeight: 1.7 }}>
-                  类选择器：<code>.post-title</code> ／ ID：<code>#main</code> ／ 后代：<code>.list .item</code><br />
-                  标签属性：<code>a.detail</code>（class=detail 的 a 标签）／ 多个匹配取第一个
+                <div style={{ fontSize: 12, lineHeight: 1.7, color: '#6b7280' }}>
+                  043 重构：原 042 内联 CSS 选择器表单已下线。任务保存后，进入「字段配置」可视化编辑器，
+                  支持 4 tab 源码预览（header/html/script/meta）+ 字段树（list/detail 双作用域，父子嵌套链接卡片）+
+                  20+ 预置字段库 + 6 种匹配模式（CSS / 正则 / 前后缀 / JSON Path / meta 属性 / 响应头）。
                 </div>
               )}
             />
-
-            <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
-              必填：list_item + detail_link
-            </Typography.Text>
-            <Space wrap size="middle" style={{ display: 'flex', marginBottom: 8 }}>
-              <Form.Item
-                label="列表项选择器"
-                name={['selectors', 'list_item']}
-                rules={[{ required: true, message: 'list_item 必填：列表页中每一项的容器' }]}
-                style={{ flex: 1, minWidth: 280 }}
-                tooltip="列表页中，每一条文章记录的外层容器（HTML 节点）。每个匹配到的节点都会生成一条文章"
-                extra="示例：.post-list .post-item"
+            {editing ? (
+              <Button
+                type="primary"
+                icon={<ControlOutlined />}
+                onClick={() => goToConfigurator(editing)}
               >
-                <Input placeholder=".post-list .post-item" />
-              </Form.Item>
-              <Form.Item
-                label="详情链接"
-                name={['selectors', 'detail_link']}
-                rules={[{ required: true, message: 'detail_link 必填' }]}
-                style={{ flex: 1, minWidth: 280 }}
-                tooltip="从 list_item 容器内取详情页 URL 的元素（通常是 <a> 标签）"
-                extra="必填"
+                进入字段配置器
+              </Button>
+            ) : (
+              <Button
+                type="primary"
+                ghost
+                icon={<ControlOutlined />}
+                onClick={() => handleSubmit((saved) => goToConfigurator(saved))}
+                loading={submitLoading}
               >
-                <Input placeholder="a.detail-link" />
-              </Form.Item>
-              <Form.Item
-                label="链接属性"
-                name={['selectors', 'detail_link_attr']}
-                style={{ width: 180 }}
-                tooltip="取哪个属性作为 URL，默认 href。少数站点用 data-href"
-              >
-                <Input placeholder="href" />
-              </Form.Item>
-            </Space>
-
-            <Typography.Text type="secondary" style={{ display: 'block', margin: '12px 0 8px' }}>
-              详情页字段（从详情页提取）
-            </Typography.Text>
-            <Space wrap size="middle" style={{ display: 'flex' }}>
-              <Form.Item
-                label="标题"
-                name={['selectors', 'title', 'css']}
-                style={{ flex: 1, minWidth: 260 }}
-                tooltip="详情页中标题元素的选择器"
-              >
-                <Input placeholder="h1.post-title" />
-              </Form.Item>
-              <Form.Item
-                label="正文"
-                name={['selectors', 'content', 'css']}
-                style={{ flex: 1, minWidth: 260 }}
-                tooltip="详情页正文的容器，会提取内部文本/HTML"
-              >
-                <Input placeholder=".post-content" />
-              </Form.Item>
-              <Form.Item
-                label="分类"
-                name={['selectors', 'category', 'css']}
-                style={{ flex: 1, minWidth: 260 }}
-                tooltip="可选：文章分类面包屑"
-              >
-                <Input placeholder=".post-category" />
-              </Form.Item>
-              <Form.Item
-                label="标签"
-                name={['selectors', 'tags', 'css']}
-                style={{ flex: 1, minWidth: 260 }}
-                tooltip="可选：标签容器，内部多个子节点会作为多个标签"
-              >
-                <Input placeholder=".post-tags" />
-              </Form.Item>
-              <Form.Item
-                label="图片"
-                name={['selectors', 'images', 'css']}
-                style={{ flex: 1, minWidth: 260 }}
-                tooltip="详情页正文内所有图片元素，会走异步上传管线"
-              >
-                <Input placeholder=".post-content img" />
-              </Form.Item>
-              <Form.Item
-                label="网盘链接"
-                name={['selectors', 'pan_links', 'css']}
-                style={{ flex: 1, minWidth: 260 }}
-                tooltip="详情页中的网盘链接（quark/baidu/123pan 等 9 平台会自动识别并提取码）"
-              >
-                <Input placeholder=".download-links a" />
-              </Form.Item>
-              <Form.Item
-                label="直链"
-                name={['selectors', 'direct_links', 'css']}
-                style={{ flex: 1, minWidth: 260 }}
-                tooltip="可选：直接下载链接（.zip/.rar/.pdf 等）"
-              >
-                <Input placeholder=".direct-download a" />
-              </Form.Item>
-            </Space>
+                保存并进入字段配置器
+              </Button>
+            )}
           </Card>
 
           {/* Section 4: 调度与并发 */}
@@ -966,7 +673,7 @@ const CrawlerTasks: React.FC = () => {
               name="user_agent"
               tooltip="HTTP 请求头 User-Agent。留空使用默认（Chrome 桌面版）。部分站点会对 UA 做指纹识别"
             >
-              <TextArea rows={2} placeholder={DEFAULT_USER_AGENT} />
+              <Input.TextArea rows={2} placeholder={DEFAULT_USER_AGENT} />
             </Form.Item>
             <Form.Item
               label="代理"
@@ -1013,7 +720,7 @@ const CrawlerTasks: React.FC = () => {
                     name="block_detection_config"
                     tooltip="覆盖默认的反爬检测阈值。JSON 格式。例如：{&quot;empty_threshold_chars&quot;: 200}"
                   >
-                    <TextArea
+                    <Input.TextArea
                       rows={3}
                       placeholder='留空走默认；示例：{"empty_threshold_chars": 200, "block_keywords": ["登录", "验证码"]}'
                     />
@@ -1032,7 +739,97 @@ const CrawlerTasks: React.FC = () => {
         </Form>
       </Drawer>
 
-      {/* 模板选择（T054 增强：内置 + 自定义分组） */}
+      {/* 字段命中率统计 Modal（FR-027） */}
+      <Modal
+        title={statsTask ? `字段命中率 — ${statsTask.name}` : '字段命中率'}
+        open={statsOpen}
+        onCancel={() => setStatsOpen(false)}
+        footer={null}
+        width={860}
+        destroyOnClose
+      >
+        <Space style={{ marginBottom: 12, width: '100%', justifyContent: 'space-between' }} wrap>
+          <Space>
+            <Text type="secondary">统计窗口：</Text>
+            <Select<number>
+              value={statsDays}
+              onChange={onStatsDaysChange}
+              size="small"
+              style={{ width: 110 }}
+              options={[
+                { value: 7, label: '近 7 天' },
+                { value: 14, label: '近 14 天' },
+                { value: 30, label: '近 30 天' },
+                { value: 90, label: '近 90 天' },
+              ]}
+            />
+          </Space>
+          <Tooltip title="命中率 < 10% 的字段会被标红，提示规则可能过期">
+            <Tag color="warning" style={{ margin: 0 }}>规则可能过期 &lt; 10%</Tag>
+          </Tooltip>
+        </Space>
+        <Table
+          rowKey={(r) => `${r.field_node_id ?? 'null'}-${r.field_path}`}
+          loading={statsLoading}
+          dataSource={statsRows}
+          size="small"
+          pagination={false}
+          scroll={{ y: 480 }}
+          locale={{ emptyText: <Empty description="暂无字段抓取记录（任务可能未运行过）" /> }}
+          columns={[
+            {
+              title: '字段', dataIndex: 'field_path', ellipsis: true,
+              render: (path: string, r: FieldStat) => (
+                <Space direction="vertical" size={0} style={{ width: '100%' }}>
+                  <Text strong style={{ fontSize: 13 }}>
+                    {r.field_display_name ?? r.field_name ?? path.split('/').pop() ?? path}
+                  </Text>
+                  <Text type="secondary" style={{ fontSize: 11, fontFamily: 'monospace' }}>{path}</Text>
+                </Space>
+              ),
+            },
+            {
+              title: '命中 / 总数', width: 120, align: 'center' as const,
+              render: (_: any, r: FieldStat) => (
+                <Text>
+                  <Text strong>{r.hit_articles}</Text>
+                  <Text type="secondary"> / {r.total_articles}</Text>
+                </Text>
+              ),
+            },
+            {
+              title: '命中率', width: 180,
+              render: (_: any, r: FieldStat) => {
+                const pct = Math.round(r.hit_rate * 100)
+                const color = r.status === 'healthy' ? '#10b981'
+                  : r.status === 'degraded' ? '#f59e0b' : '#ef4444'
+                return (
+                  <Progress
+                    percent={pct}
+                    size="small"
+                    strokeColor={color}
+                    format={(p) => `${p}%`}
+                  />
+                )
+              },
+            },
+            {
+              title: '状态', width: 130,
+              render: (_: any, r: FieldStat) => {
+                if (r.status === 'healthy') return <Tag color="success">健康</Tag>
+                if (r.status === 'degraded') return <Tag color="warning">退化</Tag>
+                return (
+                  <Tooltip title="命中率 &lt; 10%，建议复核 CSS 选择器 / 来源层是否变更">
+                    <Tag color="error" style={{ cursor: 'help' }}>规则可能过期</Tag>
+                  </Tooltip>
+                )
+              },
+            },
+          ]}
+        />
+      </Modal>
+
+      {/* 模板选择 */}
       <Modal
         title="从模板创建"
         open={templatePickerOpen}
@@ -1041,7 +838,7 @@ const CrawlerTasks: React.FC = () => {
         width={640}
       >
         {templates.length === 0 ? (
-          <Empty description="暂无可用模板" />
+          <Empty description="暂无可用模板（043 字段树模板将在 US1 T037 重建）" />
         ) : (
           (() => {
             const builtin = templates.filter(t => !t.key.startsWith('custom_'))
@@ -1080,9 +877,9 @@ const CrawlerTasks: React.FC = () => {
                           <Button type="primary" size="small">使用</Button>
                         </Space>
                         {tpl.description && (
-                          <Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
+                          <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
                             {tpl.description}
-                          </Paragraph>
+                          </Typography.Paragraph>
                         )}
                       </div>
                     ))}
@@ -1099,191 +896,22 @@ const CrawlerTasks: React.FC = () => {
           })()
         )}
       </Modal>
-
-      {/* T054: 保存为模板弹窗 */}
-      <Modal
-        title="另存为自定义模板"
-        open={saveTplOpen}
-        onCancel={() => setSaveTplOpen(false)}
-        onOk={handleSaveAsTemplate}
-        confirmLoading={saveTplLoading}
-        okText="保存"
-        cancelText="取消"
-      >
-        <Form form={saveTplForm} layout="vertical" preserve={false}>
-          <Form.Item
-            name="name"
-            label="模板名称"
-            rules={[{ required: true, message: '请输入模板名' }]}
-          >
-            <Input placeholder="如：我的资源站模板" />
-          </Form.Item>
-          <Form.Item name="description" label="描述（可选）">
-            <Input.TextArea rows={3} placeholder="模板用途、适配站点说明" />
-          </Form.Item>
-          <Alert
-            type="info" showIcon
-            message="模板将存储在系统配置中，可在新建任务时复用。同名模板会被覆盖。"
-          />
-        </Form>
-      </Modal>
-
-      {/* 测试预览 */}
-      <Modal
-        title={testTaskId ? `任务 #${testTaskId} 测试预览（不落库）` : '测试预览'}
-        open={testOpen}
-        onCancel={() => setTestOpen(false)}
-        footer={null}
-        width={900}
-      >
-        {testLoading ? (
-          <div style={{ textAlign: 'center', padding: 48 }}><Spin tip="抓取中..." /></div>
-        ) : testPreview ? (
-          <>
-            {testPreview.selector_validation.missing_fields.length > 0 && (
-              <Alert
-                style={{ marginBottom: 12 }}
-                type="warning"
-                showIcon
-                message={`以下选择器未命中: ${testPreview.selector_validation.missing_fields.join(', ')}`}
-              />
-            )}
-            <Descriptions size="small" column={3} bordered style={{ marginBottom: 12 }}>
-              <Descriptions.Item label="列表页条数">{testPreview.list_count}</Descriptions.Item>
-              <Descriptions.Item label="实际预览">{testPreview.preview_count}</Descriptions.Item>
-              <Descriptions.Item label="list_item">{testPreview.selector_validation.list_item_ok ? '✓' : '✗'}</Descriptions.Item>
-            </Descriptions>
-            {testPreview.articles.length === 0 ? (
-              <Empty description="未抓到任何条目 — 请检查 list_item / detail_link 选择器" />
-            ) : (
-              <Space direction="vertical" style={{ width: '100%' }} size="middle">
-                {testPreview.articles.map((a, i) => (
-                  <div key={i} style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 12 }}>
-                    <Text strong>{a.title ?? '(无标题)'}</Text>
-                    <br />
-                    <Text type="secondary" style={{ fontSize: 12 }}>{a.source_url}</Text>
-                    {a.content_snippet && (
-                      <Paragraph type="secondary" ellipsis={{ rows: 2 }} style={{ marginTop: 8, marginBottom: 0 }}>
-                        {a.content_snippet}
-                      </Paragraph>
-                    )}
-                    <Space wrap style={{ marginTop: 8 }}>
-                      {a.pan_links.map((p, j) => (
-                        <Tag key={`p${j}`} color="blue">{p.platform}{p.extract_code ? ` · ${p.extract_code}` : ''}</Tag>
-                      ))}
-                      {a.direct_links.map((_, j) => (
-                        <Tag key={`d${j}`} color="geekblue">直链#{j + 1}</Tag>
-                      ))}
-                      {a.images.length > 0 && <Tag color="purple">图 ×{a.images.length}</Tag>}
-                      {a.field_warnings.map((w, j) => (
-                        <Tag key={`w${j}`} color="warning">{w}</Tag>
-                      ))}
-                    </Space>
-                  </div>
-                ))}
-              </Space>
-            )}
-          </>
-        ) : (
-          <Empty description="无预览数据" />
-        )}
-      </Modal>
-
-      {/* CSS 选择器速查 */}
-      <Modal
-        title="CSS 选择器速查"
-        open={cssHelpOpen}
-        onCancel={() => setCssHelpOpen(false)}
-        footer={<Button type="primary" onClick={() => setCssHelpOpen(false)}>明白了</Button>}
-        width={720}
-      >
-        <Typography.Paragraph type="secondary">
-          CSS 选择器告诉爬虫「页面里哪些位置的字段需要抓」。下面是最常用的写法：
-        </Typography.Paragraph>
-
-        <Descriptions column={1} size="small" bordered>
-          <Descriptions.Item label=".classname">
-            <Text code>.post-title</Text> 选中所有 <code>class="post-title"</code> 的元素
-          </Descriptions.Item>
-          <Descriptions.Item label="#id">
-            <Text code>#main</Text> 选中 <code>id="main"</code> 的元素（页面内唯一）
-          </Descriptions.Item>
-          <Descriptions.Item label="tagname">
-            <Text code>a</Text> / <Text code>img</Text> 选中所有 a / img 标签
-          </Descriptions.Item>
-          <Descriptions.Item label="A B（后代）">
-            <Text code>.list .item</Text> 选中 .list 内部所有 .item（任意层级）
-          </Descriptions.Item>
-          <Descriptions.Item label="A &gt; B（直接子代）">
-            <Text code>.list &gt; .item</Text> 只选 .list 直接子节点中的 .item
-          </Descriptions.Item>
-          <Descriptions.Item label="A.className">
-            <Text code>a.detail-link</Text> 选 class=detail-link 的 a 标签
-          </Descriptions.Item>
-          <Descriptions.Item label="A[attr]">
-            <Text code>a[href]</Text> 选带 href 属性的 a 标签；<Text code>input[type=text]</Text> 选文本框
-          </Descriptions.Item>
-          <Descriptions.Item label="多选 A, B">
-            <Text code>.title, .name</Text> 同时匹配 .title 或 .name
-          </Descriptions.Item>
-        </Descriptions>
-
-        <Typography.Paragraph style={{ marginTop: 16 }}>
-          <Typography.Text strong>如何找到页面里使用的选择器？</Typography.Text>
-        </Typography.Paragraph>
-        <ol style={{ paddingLeft: 20, lineHeight: 1.8 }}>
-          <li>用 Chrome 打开目标站点的列表页 / 详情页</li>
-          <li>右键点要抓的元素 → <code>检查</code>（Inspect）</li>
-          <li>在 DevTools 看元素的 <code>class=</code> / <code>id=</code></li>
-          <li>组合出选择器，填到表单，用「测试运行」验证</li>
-        </ol>
-
-        <Alert
-          type="warning" showIcon
-          style={{ marginTop: 12 }}
-          message="匹配多条时取第一个"
-          description="除 list_item 是匹配多条外，其他字段（标题/正文/分类...）匹配到多条时只取第一个。需要精确匹配请在选择器里加上层级的限定。"
-        />
-      </Modal>
-
-      {/* AI 结果解析弹窗 */}
-      <Modal
-        title={(
-          <span>
-            <RobotOutlined style={{ color: '#7c3aed', marginRight: 6 }} />
-            粘贴 AI 返回的 JSON，自动填入表单
-          </span>
-        )}
-        open={aiResultOpen}
-        onCancel={() => { setAiResultOpen(false); setAiResultText('') }}
-        onOk={handleParseAiResult}
-        okText="解析并填入"
-        cancelText="取消"
-        width={720}
-        destroyOnClose
-      >
-        <Alert
-          type="info" showIcon
-          style={{ marginBottom: 12 }}
-          message="把 AI 输出的完整 JSON 粘贴到下方文本框（包含 ```json 代码块也可以，会自动剥离）"
-          description={(
-            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: '#6b7280' }}>
-              <li>支持裸 JSON / <code>```json ... ```</code> 代码块 / 带解释文字的混合输出</li>
-              <li><code>null</code> 字段会被跳过，<code>pagination_selector</code> 空字符串等同未启用</li>
-              <li>解析成功后会覆盖当前表单的选择器字段，请先确认表单内容可被替换</li>
-            </ul>
-          )}
-        />
-        <TextArea
-          rows={16}
-          value={aiResultText}
-          onChange={(e) => setAiResultText(e.target.value)}
-          placeholder={'示例：\n{\n  "list_item": ".post-list .post-item",\n  "detail_link": "a.title",\n  "title": { "css": "h1.art-title" },\n  "content": { "css": ".article-body" },\n  "pan_links": { "css": ".article-body a[href*=\\"pan.baidu\\"]" },\n  "pagination_selector": ".pagination a",\n  "max_pages": 0\n}'}
-          style={{ fontFamily: 'monospace', fontSize: 12 }}
-        />
-      </Modal>
     </div>
   )
+}
+
+/** 从任务的 list_urls 字段（可能是 JSON 字符串、字符串数组或换行分隔字符串）解析出 URL 列表 */
+function parseListUrls(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.filter((s): s is string => typeof s === 'string')
+  if (typeof raw === 'string') {
+    try {
+      const v = JSON.parse(raw)
+      if (Array.isArray(v)) return v.filter((s): s is string => typeof s === 'string')
+    } catch {
+      return raw.split('\n').map((s) => s.trim()).filter(Boolean)
+    }
+  }
+  return []
 }
 
 export default CrawlerTasks

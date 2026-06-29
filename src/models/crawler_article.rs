@@ -22,6 +22,9 @@ pub struct CrawlerArticle {
     pub crawled_at: NaiveDateTime,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
+    /// 043：列表页字段聚合 JSON（migration 029），可空（旧文章）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_fields_json: Option<String>,
 }
 
 /// 列表页展示项（含子表聚合 count + 首图）
@@ -39,6 +42,9 @@ pub struct CrawlerArticleListItem {
     pub image_count: i64,
     pub is_edited: bool,
     pub crawled_at: NaiveDateTime,
+    /// 043：列表页字段聚合 JSON（migration 029）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_fields_json: Option<String>,
 }
 
 /// 详情（含 links + images 数组）

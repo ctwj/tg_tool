@@ -14,9 +14,13 @@
 pub mod block_detector;
 pub mod engine;
 pub mod extractor;
+pub mod field_schema;
 pub mod image_uploader;
 pub mod pan_detector;
+pub mod preset_library;
+pub mod probe;
 pub mod scheduler;
+pub mod source_layer;
 pub mod templates;
 pub mod url_normalize;
 

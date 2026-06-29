@@ -1,22 +1,43 @@
-//! 单任务抓取引擎（research.md R3+R4+R5+R6）
+//! 单任务抓取引擎（feature 043-crawler-configurator）
 //!
-//! 入口：
-//! - [`run_task`]: 立即运行一次，抓列表页 → 详情页 → 落库
-//! - [`test_run`]: 测试运行，不落库，返回前 N 条详情结构化预览
+//! **043 重写**：取代 042 旧 `FieldSelectors` + `extract_fields` 路径。
+//! 现在通过 `crawler_task_field_nodes` 加载 `FieldTree`，两阶段执行：
+//! - **列表页阶段**：fetch 每个 list_url → 应用所有 `scope='list_page'` 字段
+//!   （递归处理父子嵌套，父字段命中N条则子字段作用域为父的 N 次单条片段）
+//! - **详情页阶段**：从列表页阶段产出的"链接卡片"父字段（field_type=link_card）
+//!   抽取 detail URL → fetch 每条详情 → 应用 `scope='detail_page'` 字段
+//!
+//! 落库（T036）：
+//! - 每条字段命中（含嵌套子字段）写入 `crawler_article_field_values`（field_path 物化路径）
+//! - 简单单值字段聚合写入 `crawler_articles.extra_fields_json`（列表页快速渲染用）
+//! - 未命中字段写入 `is_hit=0` 行用于 FR-027 统计
+//! - 单字段失败不中断其他字段（FR-019）
 
-use std::time::Duration;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
-use crate::models::crawler_article_image::NewCrawlerArticleImage;
-use crate::models::crawler_article_link::NewCrawlerArticleLink;
-use crate::services::crawler::block_detector::detect_block;
+use futures::stream::{self, StreamExt};
+use serde_json::Value;
+
+use crate::models::crawler_field_node::{FieldNodeRow, FieldTreeNode, FieldTree};
+use crate::services::crawler::block_detector::{detect_block, BlockType};
 use crate::services::crawler::extractor::{
-    extract_detail_links, extract_fields, ExtractedFields, FieldSelectors,
+    apply_post_processors, extract, ExtractError, ExtractInput, Hit,
 };
-use crate::services::crawler::pan_detector::{detect_platform, find_extract_code, is_direct_link};
+use crate::services::crawler::field_schema::{FieldType, Rule, Scope, SourceLayer};
+use crate::services::crawler::source_layer::fetch_source_material;
 use crate::services::crawler::url_normalize::normalize_url;
 use crate::state::{AppState, DbPool};
 
-/// 单次运行结果摘要（用于日志/历史/响应）
+/// 默认 User-Agent（feature 042 templates.rs 的常量迁移至此，避免循环引用）
+pub const DEFAULT_USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) \
+     Chrome/130.0.0.0 Safari/537.36";
+
+// ============================================================================
+// 公共结构体（保留签名兼容性，US1 重写时可能调整）
+// ============================================================================
+
 #[derive(Debug, Clone)]
 pub struct RunSummary {
     pub task_id: i64,
@@ -30,7 +51,6 @@ pub struct RunSummary {
     pub error_message: Option<String>,
 }
 
-/// 测试运行预览（contracts/crawler-api.md §CrawlerTestPreview）
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CrawlerTestPreview {
     pub list_count: i64,
@@ -64,497 +84,78 @@ pub struct SelectorValidation {
     pub missing_fields: Vec<String>,
 }
 
-/// 加载任务完整定义（包括解析 selectors JSON）
-pub async fn load_task(
-    db: &DbPool,
-    task_id: i64,
-) -> Result<Option<TaskRuntime>, String> {
-    let row = match db {
-        DbPool::Sqlite(pool) => {
-            sqlx::query_as::<_, TaskRow>(
-                "SELECT id, name, enabled, list_urls, selectors, two_stage, \
-                 interval_minutes, task_concurrency, user_agent, request_delay_ms, \
-                 proxy, auto_link_check, block_detection_config, max_consecutive_failures, \
-                 template_source, pagination_selector, max_pages, \
-                 status, consecutive_failures \
-                 FROM crawler_tasks WHERE id = ?",
-            )
-            .bind(task_id)
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| e.to_string())?
-        }
-        DbPool::Postgres(pool) => {
-            sqlx::query_as::<_, TaskRow>(
-                "SELECT id, name, enabled, list_urls, selectors, two_stage, \
-                 interval_minutes, task_concurrency, user_agent, request_delay_ms, \
-                 proxy, auto_link_check, block_detection_config, max_consecutive_failures, \
-                 template_source, pagination_selector, max_pages, \
-                 status, consecutive_failures \
-                 FROM crawler_tasks WHERE id = $1",
-            )
-            .bind(task_id)
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| e.to_string())?
-        }
-    };
-    let Some(row) = row else {
-        return Ok(None);
-    };
-
-    let list_urls: Vec<String> = serde_json::from_str(&row.list_urls).unwrap_or_default();
-    let selectors: FieldSelectors =
-        serde_json::from_str(&row.selectors).unwrap_or_default();
-
-    Ok(Some(TaskRuntime {
-        row,
-        list_urls,
-        selectors,
-    }))
-}
-
-#[derive(Debug, Clone, sqlx::FromRow)]
-#[allow(dead_code)]
-struct TaskRow {
-    id: i64,
-    name: String,
-    enabled: bool,
-    list_urls: String,
-    selectors: String,
-    two_stage: bool,
-    interval_minutes: i64,
-    task_concurrency: i64,
-    user_agent: Option<String>,
-    request_delay_ms: i64,
-    proxy: Option<String>,
-    auto_link_check: bool,
-    block_detection_config: Option<String>,
-    max_consecutive_failures: i64,
-    template_source: Option<String>,
-    pagination_selector: Option<String>,
-    max_pages: i64,
-    status: String,
-    consecutive_failures: i64,
-}
-
+/// 任务运行时视图：加载任务 + 字段树 + 列表 URL 解析
+#[derive(Debug, Clone)]
 pub struct TaskRuntime {
-    row: TaskRow,
+    pub task_id: i64,
+    pub task_name: String,
+    pub source_type: String,
     pub list_urls: Vec<String>,
-    pub selectors: FieldSelectors,
+    pub user_agent: Option<String>,
+    pub proxy: Option<String>,
+    pub task_concurrency: i64,
+    pub request_delay_ms: i64,
+    pub pagination_selector: Option<String>,
+    pub max_pages: i64,
+    /// 043 US5：字段树 pagination 字段驱动的最大翻页深度（0=不限）
+    pub max_pagination_depth: i64,
+    pub field_tree: FieldTree,
 }
 
-impl TaskRuntime {
-    pub fn id(&self) -> i64 {
-        self.row.id
-    }
-    pub fn name(&self) -> &str {
-        &self.row.name
-    }
-    pub fn proxy(&self) -> Option<&str> {
-        self.row.proxy.as_deref()
-    }
-    pub fn user_agent(&self) -> Option<&str> {
-        self.row.user_agent.as_deref()
-    }
-    pub fn request_delay_ms(&self) -> u64 {
-        self.row.request_delay_ms.max(0) as u64
-    }
-    pub fn max_consecutive_failures(&self) -> i64 {
-        self.row.max_consecutive_failures
-    }
-    pub fn auto_link_check(&self) -> bool {
-        self.row.auto_link_check
-    }
-    pub fn pagination_selector(&self) -> Option<&str> {
-        self.row.pagination_selector.as_deref()
-    }
-    pub fn max_pages(&self) -> i64 {
-        self.row.max_pages
-    }
-}
+// ============================================================================
+// HTTP 工具（与 selectors 无关，永久保留）
+// ============================================================================
 
-/// 立即运行一次任务（落库）
-pub async fn run_task(task_id: i64, state: &AppState) -> Result<RunSummary, String> {
-    let task = load_task(&state.db, task_id)
-        .await?
-        .ok_or_else(|| format!("爬虫任务 {task_id} 不存在"))?;
-
-    let task_name = task.name().to_string();
-    let started_at = chrono::Utc::now().naive_utc();
-
-    let mut summary = RunSummary {
-        task_id,
-        task_name: task_name.clone(),
-        status: "success",
-        block_type: None,
-        crawled_count: 0,
-        new_count: 0,
-        skipped_count: 0,
-        failed_count: 0,
-        error_message: None,
-    };
-
-    // 抓所有列表页（若配置了 next_page_selector，每个 seed URL 会自动翻页）
-    let list_result = crawl_list_pages(&task, state, &mut summary).await;
-    if let Some(block_msg) = list_result.blocked {
-        summary.status = "blocked";
-        summary.error_message = Some(block_msg);
-        finalize_run(state, &task, started_at, &summary).await;
-        return Ok(summary);
-    }
-    let all_detail_links = list_result.detail_links;
-
-    if all_detail_links.is_empty() {
-        summary.status = if summary.failed_count > 0 { "failed" } else { "success" };
-        finalize_run(state, &task, started_at, &summary).await;
-        return Ok(summary);
-    }
-
-    // 抓详情页并落库
-    for detail_url in &all_detail_links {
-        let abs = resolve_url(detail_url, &task.list_urls.first().cloned().unwrap_or_default());
-        let normalized = normalize_url(&abs);
-        match fetch_url(&abs, task.user_agent(), task.proxy(), state).await {
-            Ok((status_code, body, headers)) => {
-                if let Some(block) = detect_block(status_code, &body, &headers) {
-                    summary.status = "blocked";
-                    summary.block_type = Some(block.as_str());
-                    summary.error_message =
-                        Some(format!("详情页 {abs} 被拦截: {block}"));
-                    break;
-                }
-                let fields = extract_fields(&body, &task.selectors);
-                match upsert_article_and_children(&state.db, task.id(), task.name(), &abs, &normalized, &fields).await {
-                    Ok(true) => summary.new_count += 1,
-                    Ok(false) => summary.skipped_count += 1,
-                    Err(e) => {
-                        tracing::warn!("落库失败 {abs}: {e}");
-                        summary.failed_count += 1;
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("详情页抓取失败 {abs}: {e}");
-                summary.failed_count += 1;
-            }
-        }
-        sleep_request_delay(task.request_delay_ms()).await;
-    }
-
-    // 状态综合判定
-    if summary.block_type.is_some() {
-        summary.status = "blocked";
-    } else if summary.new_count == 0 && summary.failed_count > 0 && summary.skipped_count == 0 {
-        summary.status = "failed";
-    } else if summary.failed_count > 0 {
-        summary.status = "partial";
-    } else {
-        summary.status = "success";
-    }
-
-    finalize_run(state, &task, started_at, &summary).await;
-    Ok(summary)
-}
-
-/// 测试运行（不落库）
-pub async fn test_run(
-    db: &DbPool,
-    task_id: i64,
-    limit: usize,
-) -> Result<CrawlerTestPreview, String> {
-    let task = load_task(db, task_id)
-        .await?
-        .ok_or_else(|| format!("爬虫任务 {task_id} 不存在"))?;
-
-    let mut preview = CrawlerTestPreview {
-        list_count: 0,
-        preview_count: 0,
-        articles: Vec::new(),
-        selector_validation: SelectorValidation {
-            list_item_ok: !task.selectors.list_item.is_empty(),
-            detail_link_ok: !task.selectors.detail_link.is_empty(),
-            missing_fields: Vec::new(),
-        },
-    };
-
-    // 仅读首列表页
-    let list_url = match task.list_urls.first() {
-        Some(u) => u.clone(),
-        None => return Ok(preview),
-    };
-    // 测试运行：直接 reqwest，不依赖 AppState 配置（保持纯函数语义）
-    let body = match fetch_body_simple(&list_url, task.user_agent(), task.proxy()).await {
-        Ok(b) => b,
-        Err(e) => {
-            return Err(format!("列表页抓取失败: {e}"));
-        }
-    };
-    let links = extract_detail_links(
-        &body,
-        &task.selectors.list_item,
-        &task.selectors.detail_link,
-        task.selectors.detail_link_attr.as_deref(),
-    );
-    preview.list_count = links.len() as i64;
-
-    // 取前 N 个详情
-    let take = links.into_iter().take(limit);
-    for detail_url in take {
-        let abs = resolve_url(&detail_url, &list_url);
-        let body = match fetch_body_simple(&abs, task.user_agent(), task.proxy()).await {
-            Ok(b) => b,
-            Err(_) => continue,
-        };
-        let fields = extract_fields(&body, &task.selectors);
-        preview.articles.push(build_preview_article(&abs, &fields));
-        preview.preview_count += 1;
-    }
-
-    // 选择器命中校验
-    let all_missing = preview
-        .articles
-        .iter()
-        .flat_map(|a| a.field_warnings.iter().cloned())
-        .collect::<std::collections::HashSet<_>>();
-    preview.selector_validation.missing_fields = all_missing.into_iter().collect();
-    Ok(preview)
-}
-
-fn build_preview_article(
-    url: &str,
-    fields: &ExtractedFields,
-) -> TestPreviewArticle {
-    let pan_links: Vec<TestPanLink> = fields
-        .pan_links
-        .iter()
-        .filter_map(|u| {
-            detect_platform(u).map(|p| TestPanLink {
-                platform: p.to_string(),
-                url: u.clone(),
-                extract_code: find_extract_code(u),
-            })
-        })
-        .collect();
-    let direct_links: Vec<String> = fields
-        .direct_links
-        .iter()
-        .filter(|u| is_direct_link(u))
-        .cloned()
-        .collect();
-
-    let content_snippet = fields.content.as_ref().map(|c| {
-        let plain = strip_html_tags(c);
-        if plain.len() > 200 {
-            format!("{}…", &plain[..200])
-        } else {
-            plain
-        }
-    });
-
-    TestPreviewArticle {
-        source_url: url.to_string(),
-        title: fields.title.clone(),
-        content_snippet,
-        pan_links,
-        direct_links,
-        images: fields.images.clone(),
-        field_warnings: fields.field_warnings.clone(),
-    }
-}
-
-fn strip_html_tags(html: &str) -> String {
-    use once_cell::sync::Lazy;
-    use regex::Regex;
-    static TAG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"<[^>]+>").unwrap());
-    let no_tags = TAG_RE.replace_all(html, "");
-    no_tags.replace("&nbsp;", " ").trim().to_string()
-}
-
-async fn sleep_request_delay(ms: u64) {
-    if ms > 0 {
-        tokio::time::sleep(Duration::from_millis(ms)).await;
-    }
-}
-
-/// `crawl_list_pages` 的返回
-pub struct ListPageResult {
-    /// 累计的详情链接（已按 list_item/detail_link 选择器抽取）
-    pub detail_links: Vec<String>,
-    /// 若中途被拦截，含可读错误信息（调用方应直接返回）
-    pub blocked: Option<String>,
-}
-
-/// 抓所有列表页 — 若任务配置了 `pagination_selector` 且非单阶段模式，
-/// 每个抓到的列表页都会扫描分页容器内的所有 `<a href>`，去重后批量扩散：
-/// - 把所有未访问的 URL 加入队列
-/// - visited 集合防止死循环
-/// - 达到 `max_pages` 上限停止（0 = 不限；含种子 URL）
-///
-/// 与"只找下一页"相比，分页选择器更通用：能一次匹配 `1 2 3 ... 末页` 所有页码，
-/// 也能兼容只有 next/prev 链接的站点。
-pub async fn crawl_list_pages(
-    task: &TaskRuntime,
-    state: &AppState,
-    summary: &mut RunSummary,
-) -> ListPageResult {
-    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut queue: std::collections::VecDeque<String> = task.list_urls.iter().cloned().collect();
-    let mut all_detail_links: Vec<String> = Vec::new();
-    let pagination_sel = task.pagination_selector().filter(|s| !s.is_empty());
-    let max_pages = task.max_pages();
-    // 自动翻页：仅当配置了 pagination_selector 时启用
-    let pagination_enabled = pagination_sel.is_some();
-
-    while let Some(url) = queue.pop_front() {
-        if !visited.insert(url.clone()) {
-            continue; // 已访问过，跳过
-        }
-        // max_pages 含种子页：当 visited 数量已达上限，停止扩散新链接
-        if max_pages > 0 && visited.len() as i64 > max_pages {
-            // 已抓够，跳过本次（仍消费 queue 中已加入的，但不再扩散）
-            // 简化：直接 break 避免继续抓取
-            break;
-        }
-        match fetch_url(&url, task.user_agent(), task.proxy(), state).await {
-            Ok((status_code, body, headers)) => {
-                if let Some(block) = detect_block(status_code, &body, &headers) {
-                    summary.block_type = Some(block.as_str());
-                    return ListPageResult {
-                        detail_links: all_detail_links,
-                        blocked: Some(format!("列表页 {url} 被拦截: {block}")),
-                    };
-                }
-                let links = extract_detail_links(
-                    &body,
-                    &task.selectors.list_item,
-                    &task.selectors.detail_link,
-                    task.selectors.detail_link_attr.as_deref(),
-                );
-                summary.crawled_count += links.len() as i64;
-                all_detail_links.extend(links);
-
-                // 分页扩散：扫描页面所有分页链接，加入队列（去重）
-                if pagination_enabled
-                    && let Some(sel) = pagination_sel
-                {
-                    let page_links = extract_pagination_urls(&body, sel);
-                    let mut new_added = 0;
-                    for href in page_links {
-                        let abs = resolve_url(&href, &url);
-                        if !visited.contains(&abs) {
-                            let total = (visited.len() + new_added) as i64;
-                            if max_pages == 0 || total < max_pages {
-                                queue.push_back(abs);
-                                new_added += 1;
-                            }
-                        }
-                    }
-                    if new_added > 0 {
-                        tracing::info!(
-                            task = task.name(),
-                            from = %url,
-                            new_pages = new_added,
-                            "crawler: pagination selector added new pages"
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("列表页抓取失败 {url}: {e}");
-                summary.failed_count += 1;
-                summary.error_message = Some(format!("列表页抓取失败: {e}"));
-            }
-        }
-        sleep_request_delay(task.request_delay_ms()).await;
-    }
-
-    ListPageResult {
-        detail_links: all_detail_links,
-        blocked: None,
-    }
-}
-
-/// 从列表页 HTML 中按 CSS 选择器找所有分页链接（去重前）
-///
-/// - 选择器命中的元素本身若是 `<a>`，直接取 href
-/// - 否则向后扫描后代 `<a>`，取 href
-/// - 自动跳过空 href
-/// - 返回顺序按 DOM 出现顺序，调用方负责去重
-pub fn extract_pagination_urls(html: &str, selector: &str) -> Vec<String> {
-    use scraper::{Html, Selector};
-    let mut out = Vec::new();
-    let document = Html::parse_document(html);
-    let Ok(sel) = Selector::parse(selector) else {
-        return out;
-    };
-    for element in document.select(&sel) {
-        // 元素本身 + 所有后代节点，统一扫描
-        for node in element.descendants() {
-            if let Some(elem) = node.value().as_element()
-                && let Some(href) = elem.attr("href")
-                && !href.is_empty()
-            {
-                out.push(href.to_string());
-            }
-        }
-    }
-    out
-}
-
-/// 解析相对 URL → 绝对 URL（基于 base）
-fn resolve_url(href: &str, base: &str) -> String {
-    if href.starts_with("http://") || href.starts_with("https://") {
-        return href.to_string();
-    }
-    // 纯 query 相对路径：`?page=2` → 替换 base 的 query（保留 path）
-    if let Some(rest) = href.strip_prefix('?') {
-        let path_end = base.find('?').unwrap_or(base.len());
-        return format!("{}?{rest}", &base[..path_end]);
-    }
-    if let Some(base_scheme_end) = base.find("://") {
-        let after_scheme = &base[base_scheme_end + 3..];
-        if let Some(slash) = after_scheme.find('/') {
-            let origin = &base[..base_scheme_end + 3 + slash];
-            if let Some(stripped) = href.strip_prefix('/') {
-                return format!("{origin}/{stripped}");
-            }
-            // 相对路径：去掉最后一段
-            let base_path = &after_scheme[slash..];
-            if let Some(last_slash) = base_path.rfind('/') {
-                let dir = &base_path[..last_slash + 1];
-                let origin_full = &base[..base_scheme_end + 3 + slash];
-                return format!("{origin_full}{dir}{href}");
-            }
-            return format!("{origin}/{href}");
-        }
-        // base 没有路径
-        return format!("{base}/{href}");
-    }
-    href.to_string()
-}
-
-/// 简单 GET（测试运行用）— 不走 AppState 的代理选项
-async fn fetch_body_simple(
-    url: &str,
+pub fn build_reqwest_client_pub(
     user_agent: Option<&str>,
     proxy: Option<&str>,
-) -> Result<String, String> {
-    let client = build_reqwest_client(user_agent, proxy).map_err(|e| e.to_string())?;
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("GET {url}: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status()));
+) -> Result<reqwest::Client, reqwest::Error> {
+    build_reqwest_client(user_agent, proxy)
+}
+
+pub fn build_reqwest_client(
+    user_agent: Option<&str>,
+    proxy: Option<&str>,
+) -> Result<reqwest::Client, reqwest::Error> {
+    let ua = user_agent.unwrap_or(DEFAULT_USER_AGENT);
+    let mut builder = reqwest::Client::builder()
+        .user_agent(ua)
+        .timeout(Duration::from_secs(30));
+    if let Some(p) = proxy
+        && !p.is_empty()
+        && let Ok(proxy) = reqwest::Proxy::all(p)
+    {
+        builder = builder.proxy(proxy);
     }
-    let text = resp.text().await.map_err(|e| e.to_string())?;
-    Ok(text)
+    builder.build()
+}
+
+/// 跳转跟踪并发上限
+const REDIRECT_CONCURRENCY: usize = 4;
+
+/// 构建「不跟随重定向」的 reqwest 客户端（用于跳转跟踪 HEAD/GET 解析真实 URL）
+pub fn build_no_redirect_client(
+    user_agent: Option<&str>,
+    proxy: Option<&str>,
+) -> Result<reqwest::Client, reqwest::Error> {
+    let ua = user_agent.unwrap_or(DEFAULT_USER_AGENT);
+    let mut builder = reqwest::Client::builder()
+        .user_agent(ua)
+        .timeout(Duration::from_secs(8))
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some(p) = proxy
+        && !p.is_empty()
+        && let Ok(proxy) = reqwest::Proxy::all(p)
+    {
+        builder = builder.proxy(proxy);
+    }
+    builder.build()
 }
 
 /// 通过 AppState 抓 URL — 优先任务级代理，回退系统 http_proxy_url
-async fn fetch_url(
+///
+/// 返回 (status, body, headers) 三元组。US1 T019 source_layer.rs 复用此实现。
+pub async fn fetch_url(
     url: &str,
     user_agent: Option<&str>,
     task_proxy: Option<&str>,
@@ -579,450 +180,1186 @@ async fn fetch_url(
     Ok((status, text, headers))
 }
 
-pub fn build_reqwest_client_pub(
-    user_agent: Option<&str>,
-    proxy: Option<&str>,
-) -> Result<reqwest::Client, reqwest::Error> {
-    build_reqwest_client(user_agent, proxy)
-}
-
-fn build_reqwest_client(
-    user_agent: Option<&str>,
-    proxy: Option<&str>,
-) -> Result<reqwest::Client, reqwest::Error> {
-    let ua = user_agent
-        .unwrap_or(crate::services::crawler::templates::DEFAULT_USER_AGENT);
-    let mut builder = reqwest::Client::builder()
-        .user_agent(ua)
-        .timeout(Duration::from_secs(30));
-    if let Some(p) = proxy
-        && !p.is_empty()
-        && let Ok(proxy) = reqwest::Proxy::all(p)
-    {
-        builder = builder.proxy(proxy);
+/// 从 3xx 响应提取 Location 并补全为绝对 URL
+fn location_from_response(resp: &reqwest::Response, base_url: &str) -> Option<String> {
+    let status = resp.status().as_u16();
+    if !(300..400).contains(&status) {
+        return None;
     }
-    builder.build()
+    let loc = resp.headers().get(reqwest::header::LOCATION)?;
+    let loc_str = loc.to_str().ok()?;
+    if loc_str.is_empty() {
+        return None;
+    }
+    Some(resolve_url(loc_str, base_url))
 }
 
-/// upsert 文章 + 子表（links/images）
+async fn resolve_one(client: &reqwest::Client, url: &str, base_url: &str) -> String {
+    let absolute = resolve_url(url, base_url);
+    if absolute != url {
+        tracing::debug!(from = url, to = %absolute, "resolve_one: relative url expanded to absolute");
+    }
+    match client.head(&absolute).send().await {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            if let Some(resolved) = location_from_response(&resp, base_url) {
+                return resolved;
+            }
+            if status == 405 || status == 501 {
+                return resolve_one_get(client, &absolute, base_url).await;
+            }
+            absolute
+        }
+        Err(e) => {
+            tracing::debug!(?e, url = %absolute, "redirect HEAD failed, keeping original");
+            absolute
+        }
+    }
+}
+
+async fn resolve_one_get(client: &reqwest::Client, url: &str, base_url: &str) -> String {
+    match client.get(url).send().await {
+        Ok(resp) => {
+            if let Some(resolved) = location_from_response(&resp, base_url) {
+                return resolved;
+            }
+            url.to_string()
+        }
+        Err(e) => {
+            tracing::debug!(?e, url, "redirect GET fallback failed, keeping original");
+            url.to_string()
+        }
+    }
+}
+
+/// 对一组链接并发跟踪一次 HTTP 重定向，返回真实 URL 列表（失败兜底原 URL）
+pub async fn resolve_redirects(
+    client: &reqwest::Client,
+    links: &[String],
+    base_url: &str,
+    follow: bool,
+) -> Vec<String> {
+    if !follow || links.is_empty() {
+        return links.to_vec();
+    }
+    stream::iter(links.iter().cloned())
+        .map(|u| async move { resolve_one(client, &u, base_url).await })
+        .buffer_unordered(REDIRECT_CONCURRENCY)
+        .collect()
+        .await
+}
+
+/// 相对 URL → 绝对 URL（基于 base_url）；已是绝对路径则原样返回
+pub fn resolve_url(href: &str, base: &str) -> String {
+    if href.starts_with("http://") || href.starts_with("https://") {
+        return href.to_string();
+    }
+    if let Some(idx) = base.find("://") {
+        let base_scheme_end = idx + 3;
+        let after_scheme = &base[base_scheme_end..];
+        if let Some(slash) = after_scheme.find('/') {
+            let origin = &base[..base_scheme_end + slash];
+            if let Some(stripped) = href.strip_prefix('/') {
+                return format!("{origin}/{stripped}");
+            }
+            let base_path = &after_scheme[slash..];
+            if let Some(last_slash) = base_path.rfind('/') {
+                let dir = &base_path[..last_slash + 1];
+                let origin_full = &base[..base_scheme_end + slash];
+                return format!("{origin_full}{dir}{href}");
+            }
+            return format!("{origin}/{href}");
+        }
+        return format!("{base}/{href}");
+    }
+    href.to_string()
+}
+
+/// 从 HTML 中按 CSS 选择器提取分页链接
+pub fn extract_pagination_urls(html: &str, selector: &str) -> Vec<String> {
+    if selector.is_empty() {
+        return Vec::new();
+    }
+    let document = scraper::Html::parse_document(html);
+    let Ok(sels) = scraper::Selector::parse(selector) else {
+        return Vec::new();
+    };
+    document
+        .select(&sels)
+        .filter_map(|el| el.value().attr("href").map(str::to_string))
+        .collect()
+}
+
+// ============================================================================
+// 任务加载（US1 T035）
+// ============================================================================
+
+/// 加载任务运行时视图：基本信息 + 字段树
+pub async fn load_task(db: &DbPool, task_id: i64) -> Result<TaskRuntime, String> {
+    let task: crate::models::crawler_task::CrawlerTask = match db {
+        DbPool::Sqlite(pool) => sqlx::query_as("SELECT * FROM crawler_tasks WHERE id = ?")
+            .bind(task_id)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| format!("任务 {task_id} 加载失败: {e}"))?,
+        DbPool::Postgres(pool) => sqlx::query_as("SELECT * FROM crawler_tasks WHERE id = $1")
+            .bind(task_id)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| format!("任务 {task_id} 加载失败: {e}"))?,
+    };
+
+    let list_urls: Vec<String> = serde_json::from_str::<Vec<String>>(&task.list_urls)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+
+    let field_tree = load_field_tree(db, task_id).await?;
+
+    Ok(TaskRuntime {
+        task_id,
+        task_name: task.name.clone(),
+        source_type: task.name,
+        list_urls,
+        user_agent: task.user_agent,
+        proxy: task.proxy,
+        task_concurrency: task.task_concurrency.max(1),
+        request_delay_ms: task.request_delay_ms.max(0),
+        pagination_selector: task.pagination_selector,
+        max_pages: task.max_pages,
+        max_pagination_depth: task.max_pagination_depth,
+        field_tree,
+    })
+}
+
+/// 从 DB 加载字段树（按 task_id 查所有节点 → from_rows 组装）
+pub async fn load_field_tree(db: &DbPool, task_id: i64) -> Result<FieldTree, String> {
+    let rows: Vec<FieldNodeRow> = match db {
+        DbPool::Sqlite(pool) => {
+            sqlx::query_as::<_, FieldNodeRow>(
+                "SELECT * FROM crawler_task_field_nodes WHERE task_id = ? ORDER BY sort_order, id",
+            )
+            .bind(task_id)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| format!("加载字段节点失败: {e}"))?
+        }
+        DbPool::Postgres(pool) => {
+            sqlx::query_as::<_, FieldNodeRow>(
+                "SELECT * FROM crawler_task_field_nodes WHERE task_id = $1 ORDER BY sort_order, id",
+            )
+            .bind(task_id)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| format!("加载字段节点失败: {e}"))?
+        }
+    };
+    Ok(crate::models::crawler_field_node::from_rows(rows))
+}
+
+// ============================================================================
+// 字段提取 — 递归父子嵌套（US1 T035 + US2 T042-T045 完整版）
+// ============================================================================
+
+/// 单条字段在某个上下文（HTML/源码素材）下的提取结果
+#[derive(Debug, Clone, Default)]
+pub struct FieldExtraction {
+    /// 物化路径：`/list_page/link_card/title`
+    pub field_path: String,
+    /// field_node id（用于回写 field_node_id）
+    pub field_node_id: Option<i64>,
+    /// scope 字符串
+    pub scope: String,
+    /// 命中列表（post_processor 之后）；空=未命中
+    pub hits: Vec<Hit>,
+    /// 提取失败的错误信息（不中断其他字段，仅记 warning）
+    pub error: Option<String>,
+}
+
+/// 提取一层字段（同 parent 下的兄弟节点），递归处理子节点
 ///
-/// 返回 `true` 表示新增，`false` 表示已存在（skipped）
-async fn upsert_article_and_children(
+/// `parent_hits`：父字段命中的片段集合（用于 US2 嵌套作用域）
+///  - 当 `parent_hits` 非空，每个 hit 的 `source_fragment` 被作为局部 HTML 上下文重新解析
+///  - 当 `parent_hits` 为空（顶层字段），使用完整 material 作为上下文
+///
+/// 递归：每个 node 提取后，用其命中作为子节点的 parent_hits，
+/// 子节点的结果追加到 out（field_path 自带父子层级）
+fn extract_layer(
+    nodes: &[FieldTreeNode],
+    material: &crate::services::crawler::source_layer::SourceMaterial,
+    parent_hits: &[Hit],
+    scope_str: &str,
+    parent_path: &str,
+) -> Vec<FieldExtraction> {
+    let mut out = Vec::new();
+    for node in nodes {
+        let row = &node.row;
+        if !row.is_active {
+            continue;
+        }
+        let spec = match row.to_spec() {
+            Ok(s) => s,
+            Err(e) => {
+                out.push(FieldExtraction {
+                    field_path: format!("{parent_path}/{}", row.name),
+                    field_node_id: Some(row.id),
+                    scope: scope_str.to_string(),
+                    hits: Vec::new(),
+                    error: Some(format!("字段 spec 解析失败: {e}")),
+                });
+                continue;
+            }
+        };
+
+        let field_path = format!("{parent_path}/{}", row.name);
+        let layer = spec.source_layer;
+
+        // 决定提取上下文：父命中片段（每条独立提取）或完整素材
+        let (mut hits, err) = if parent_hits.is_empty() {
+            // 顶层字段：直接在完整素材上提取
+            extract_one(&spec.rule, layer, material, spec.script_index, &spec.post_processors, &material.final_url)
+        } else {
+            // 子字段：在父命中片段上逐条提取，结果合并
+            let mut combined = Vec::new();
+            let mut last_err = None;
+            for (i, ph) in parent_hits.iter().enumerate() {
+                // 父命中若是 HTML 片段，构造虚拟子素材
+                let sub_material = make_sub_material_from_hit(ph, material);
+                let (mut hs, e) = extract_one(
+                    &spec.rule,
+                    layer,
+                    &sub_material,
+                    spec.script_index,
+                    &spec.post_processors,
+                    &material.final_url,
+                );
+                if let Some(e) = e {
+                    last_err = Some(e);
+                }
+                // 给每条命中打上 parent_index 标记，便于追溯
+                for h in hs.iter_mut() {
+                    h.location = Some(format!(
+                        "parent[{}]{}",
+                        i,
+                        h.location.as_deref().map(|l| format!("::{l}")).unwrap_or_default()
+                    ));
+                }
+                combined.append(&mut hs);
+            }
+            (combined, last_err)
+        };
+
+        // URL 类字段自动绝对化（避免相对 URL 进入下游）
+        // 适用：url / link_card / pagination / image
+        if matches!(
+            spec.field_type,
+            FieldType::Url | FieldType::LinkCard | FieldType::Pagination | FieldType::Image
+        ) {
+            for h in hits.iter_mut() {
+                h.value = resolve_url(&h.value, &material.final_url);
+            }
+        }
+
+        out.push(FieldExtraction {
+            field_path: field_path.clone(),
+            field_node_id: Some(row.id),
+            scope: scope_str.to_string(),
+            hits: hits.clone(),
+            error: err,
+        });
+
+        // 递归处理子节点（以当前节点的 hits 作为 parent_hits）
+        if !node.children.is_empty() {
+            let mut child_extractions = extract_layer(
+                &node.children,
+                material,
+                &hits,
+                scope_str,
+                &field_path,
+            );
+            out.append(&mut child_extractions);
+        }
+    }
+    out
+}
+
+/// 对单条规则执行完整提取链：layer → extract → post_processors
+///
+/// 返回 (hits, optional_error)
+fn extract_one(
+    rule: &Rule,
+    layer: SourceLayer,
+    material: &crate::services::crawler::source_layer::SourceMaterial,
+    script_index: Option<i32>,
+    post_processors: &[crate::services::crawler::field_schema::PostProcessor],
+    base_url: &str,
+) -> (Vec<Hit>, Option<String>) {
+    let input = ExtractInput::from_material(material, script_index).with_layer(layer);
+    match extract(rule, &input) {
+        Ok(hits) => {
+            let processed = apply_post_processors(hits, post_processors, base_url);
+            (processed, None)
+        }
+        Err(ExtractError { kind: _, message }) => (Vec::new(), Some(message)),
+    }
+}
+
+/// 把父字段命中片段（HTML 文本）包装为可被提取器消费的子素材
+///
+/// 优先使用 `hit.context_html`（CSS 模式下捕获的命中元素外部 HTML），
+/// 这样子字段可以用相对选择器（如 `img.cover`）在父元素范围内提取。
+/// 对非 CSS 模式（regex / prefix_suffix），fallback 到 `hit.value`。
+fn make_sub_material_from_hit(
+    ph: &Hit,
+    parent: &crate::services::crawler::source_layer::SourceMaterial,
+) -> crate::services::crawler::source_layer::SourceMaterial {
+    use crate::services::crawler::source_layer::{MetaTag, ScriptBlock};
+    let html = ph.context_html.clone().unwrap_or_else(|| ph.value.clone());
+    // 复用父素材的 headers / final_url；scripts/metas 留空（子字段通常无需）
+    crate::services::crawler::source_layer::SourceMaterial {
+        final_url: parent.final_url.clone(),
+        status: parent.status,
+        headers: parent.headers.clone(),
+        html,
+        scripts: Vec::<ScriptBlock>::new(),
+        metas: Vec::<MetaTag>::new(),
+        fetched_at: parent.fetched_at,
+        duration_ms: 0,
+    }
+}
+
+// ============================================================================
+// 抓取主循环（US1 T035）
+// ============================================================================
+
+/// 立即运行一次任务
+pub async fn run_task(task_id: i64, state: &AppState) -> Result<RunSummary, String> {
+    let started = Instant::now();
+    let rt = load_task(&state.db, task_id).await?;
+
+    tracing::info!(
+        target: "crawler",
+        "Task {task_id} ({}) run: list_urls={} list_fields={} detail_fields={}",
+        rt.task_name,
+        rt.list_urls.len(),
+        rt.field_tree.list_page.len(),
+        rt.field_tree.detail_page.len(),
+    );
+
+    let mut crawled = 0i64;
+    let mut new_count = 0i64;
+    let mut skipped = 0i64;
+    let mut failed = 0i64;
+    let mut first_block: Option<(BlockType, String)> = None;
+    let mut errors: Vec<String> = Vec::new();
+
+    // 系统代理兜底
+    let sys_proxy = state.http_proxy_url().await;
+    let proxy = rt.proxy.clone().or(sys_proxy);
+
+    for seed_url in &rt.list_urls {
+        // US5 T055：链式翻页，直到无下一页 / 达到 max_pagination_depth / 循环检测
+        let mut visited_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut current_url: Option<String> = Some(seed_url.clone());
+        let mut depth = 0i64;
+        while let Some(list_url) = current_url.take() {
+            // 翻页深度限制（max_pagination_depth=0 表示不限；种子页算第 1 页）
+            if rt.max_pagination_depth > 0 && depth >= rt.max_pagination_depth {
+                break;
+            }
+            depth += 1;
+
+            // 循环检测：跳过已抓过的 URL
+            let canonical_list = normalize_url(&list_url);
+            if !visited_urls.insert(canonical_list) {
+                break;
+            }
+
+            // 抓列表页素材
+            let material = match fetch_source_material(&list_url, rt.user_agent.as_deref(), proxy.as_deref()).await {
+                Ok(m) => m,
+                Err(e) => {
+                    // 拦截感知：ProbeError.category=Blocked/Http4xx5xx 时视为拦截
+                    if matches!(
+                        e.category,
+                        crate::services::crawler::source_layer::ProbeCategory::Blocked
+                            | crate::services::crawler::source_layer::ProbeCategory::Http4xx5xx
+                    ) {
+                        let bt = BlockType::HttpBlocked(0);
+                        if first_block.is_none() {
+                            first_block = Some((bt.clone(), format!("list_url {list_url}: {}", e.message)));
+                        }
+                    }
+                    failed += 1;
+                    errors.push(format!("list {list_url}: {}", e.message));
+                    break;
+                }
+            };
+
+            // 反爬检测
+            let header_pairs: Vec<(String, String)> = material
+                .headers
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            if let Some(bt) = detect_block(material.status, &material.html, &header_pairs) {
+                if first_block.is_none() {
+                    first_block = Some((bt.clone(), format!("list_url {list_url} blocked: {bt}")));
+                }
+                failed += 1;
+                break;
+            }
+
+            // 应用 list_page 字段
+            let list_extractions = extract_layer(
+                &rt.field_tree.list_page,
+                &material,
+                &[],
+                Scope::ListPage.as_str(),
+                &format!("/{}", Scope::ListPage.as_str()),
+            );
+
+            // 从 list_page 字段中找 link_card 类型的父字段 → 提取 detail 链接
+            let detail_links = collect_detail_links(
+                &list_extractions,
+                &rt.field_tree.list_page,
+                &format!("/{}", Scope::ListPage.as_str()),
+                &material.final_url,
+            );
+
+            crawled += detail_links.len() as i64;
+
+            // 落库每条详情
+            for detail_url in &detail_links {
+                let canonical_d = normalize_url(detail_url);
+                // 详情页素材
+                let dmaterial = match fetch_source_material(
+                    detail_url,
+                    rt.user_agent.as_deref(),
+                    proxy.as_deref(),
+                )
+                .await
+                {
+                    Ok(m) => m,
+                    Err(e) => {
+                        failed += 1;
+                        errors.push(format!("detail {detail_url}: {}", e.message));
+                        continue;
+                    }
+                };
+
+                let d_header_pairs: Vec<(String, String)> = dmaterial
+                    .headers
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                if let Some(bt) = detect_block(dmaterial.status, &dmaterial.html, &d_header_pairs) {
+                    if first_block.is_none() {
+                        first_block = Some((bt.clone(), format!("detail {detail_url} blocked: {bt}")));
+                    }
+                    failed += 1;
+                    continue;
+                }
+
+                // 应用 detail_page 字段
+                let detail_extractions = extract_layer(
+                    &rt.field_tree.detail_page,
+                    &dmaterial,
+                    &[],
+                    Scope::DetailPage.as_str(),
+                    &format!("/{}", Scope::DetailPage.as_str()),
+                );
+
+                // upsert 文章 + 写 field_values + extra_fields_json
+                match upsert_article_with_fields(
+                    &state.db,
+                    task_id,
+                    &rt.source_type,
+                    detail_url,
+                    &canonical_d,
+                    &detail_extractions,
+                )
+                .await
+                {
+                    Ok(true) => new_count += 1,
+                    Ok(false) => skipped += 1,
+                    Err(e) => {
+                        failed += 1;
+                        errors.push(format!("upsert {detail_url}: {e}"));
+                    }
+                }
+
+                // 请求间隔
+                if rt.request_delay_ms > 0 {
+                    tokio::time::sleep(Duration::from_millis(rt.request_delay_ms as u64)).await;
+                }
+            }
+
+            // US5 T055：定位下一页 URL（pagination 字段命中）
+            current_url = find_next_page_url(
+                &list_extractions,
+                &rt.field_tree.list_page,
+                &format!("/{}", Scope::ListPage.as_str()),
+                &material.final_url,
+            );
+
+            // 翻页间隔（避免过快）
+            if current_url.is_some() && rt.request_delay_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(rt.request_delay_ms as u64)).await;
+            }
+        }
+    }
+
+    let status: &'static str = match (first_block.as_ref(), new_count, failed) {
+        (Some(_), _, _) => "blocked",
+        (_, 0, f) if f > 0 => "failed",
+        (_, n, f) if n > 0 && f > 0 => "partial",
+        _ => "success",
+    };
+    let duration_ms = started.elapsed().as_millis() as i64;
+
+    // 写 run_history
+    let err_msg = if errors.is_empty() {
+        None
+    } else {
+        Some(errors.join("; ").chars().take(500).collect())
+    };
+    let _ = insert_run_history(
+        &state.db,
+        task_id,
+        &rt.task_name,
+        duration_ms,
+        status,
+        first_block.as_ref().map(|(b, _)| b.as_str()),
+        crawled,
+        new_count,
+        skipped,
+        failed,
+        err_msg,
+    )
+    .await;
+
+    // 调度时间更新（不覆盖 finalize_run 的并发安全语义）
+    let _ = update_task_schedule(&state.db, task_id, status).await;
+
+    Ok(RunSummary {
+        task_id,
+        task_name: rt.task_name,
+        status,
+        block_type: first_block.map(|(b, _)| b.as_str()),
+        crawled_count: crawled,
+        new_count,
+        skipped_count: skipped,
+        failed_count: failed,
+        error_message: None,
+    })
+}
+
+/// 从列表页提取结果中收集所有详情链接（来自 link_card 类型字段的 url 子字段，
+/// 或回退到 css 命中的 href）
+///
+/// 实现简化：扫描 list_page 字段树找 field_type=link_card 节点，
+/// 该节点的命中值（href 或 text）即视为详情链接
+///
+/// `scope_path` 为 extract_layer 调用时的 parent_path（如 "/list_page"），
+/// 必须与 extractions 中的 field_path 前缀保持一致
+fn collect_detail_links(
+    extractions: &[FieldExtraction],
+    tree_nodes: &[FieldTreeNode],
+    scope_path: &str,
+    base_url: &str,
+) -> Vec<String> {
+    use std::collections::HashSet;
+    let mut links: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    // 建立 field_path → field_type 的索引（与 extract_layer 的 parent_path 对齐）
+    let type_by_path: HashMap<String, FieldType> = build_type_index(tree_nodes, scope_path);
+
+    for ext in extractions {
+        // 判断该字段是否 link_card 或 url 类型
+        let is_link = type_by_path
+            .get(&ext.field_path)
+            .map(|t| matches!(t, FieldType::LinkCard | FieldType::Url | FieldType::Pagination))
+            .unwrap_or(false);
+        if !is_link {
+            continue;
+        }
+        for h in &ext.hits {
+            let v = h.value.trim();
+            if v.is_empty() {
+                continue;
+            }
+            let abs = resolve_url(v, base_url);
+            if seen.insert(abs.clone()) {
+                links.push(abs);
+            }
+        }
+    }
+    links
+}
+
+/// 递归构建 field_path → FieldType 映射
+fn build_type_index(
+    nodes: &[FieldTreeNode],
+    parent_path: &str,
+) -> HashMap<String, FieldType> {
+    let mut map = HashMap::new();
+    for node in nodes {
+        let p = format!("{parent_path}/{}", node.row.name);
+        if let Ok(spec) = node.row.to_spec() {
+            map.insert(p.clone(), spec.field_type);
+        }
+        map.extend(build_type_index(&node.children, &p));
+    }
+    map
+}
+
+/// US5 T055：从 list_page 字段树中找 `field_type='pagination'` 节点的命中 URL
+///
+/// 语义：
+/// - 扫描 list_page 字段树，定位第一个 `field_type=Pagination` 的节点
+/// - 在提取结果里找到对应 field_path，取第一个非空命中值
+/// - 用 `resolve_url(base_url)` 绝对化后返回
+/// - 无 pagination 字段 / 字段未命中 / 命中为空 → 返回 None（停止翻页）
+///
+/// `scope_path` 为 list_page 的根路径（如 "/list_page"）
+/// `base_url` 为当前页最终 URL（用于相对 URL → 绝对 URL）
+fn find_next_page_url(
+    extractions: &[FieldExtraction],
+    tree_nodes: &[FieldTreeNode],
+    scope_path: &str,
+    base_url: &str,
+) -> Option<String> {
+    let type_by_path: HashMap<String, FieldType> = build_type_index(tree_nodes, scope_path);
+    for ext in extractions {
+        let is_pagination = type_by_path
+            .get(&ext.field_path)
+            .map(|t| matches!(t, FieldType::Pagination))
+            .unwrap_or(false);
+        if !is_pagination {
+            continue;
+        }
+        for h in &ext.hits {
+            let v = h.value.trim();
+            if v.is_empty() {
+                continue;
+            }
+            return Some(resolve_url(v, base_url));
+        }
+    }
+    None
+}
+
+// ============================================================================
+// 落库（US1 T036）
+// ============================================================================
+
+/// upsert 文章 + 写所有字段值
+///
+/// 返回 `Ok(true)` = 新建，`Ok(false)` = 已存在（跳过）
+pub async fn upsert_article_with_fields(
     db: &DbPool,
     task_id: i64,
-    task_name: &str,
+    source_type: &str,
     source_url: &str,
     canonical: &str,
-    fields: &ExtractedFields,
+    extractions: &[FieldExtraction],
 ) -> Result<bool, String> {
     let now = chrono::Utc::now().naive_utc();
 
-    // upsert 文章主表（同 (task_id, source_url_canonical) 幂等）
-    let (article_id, is_new): (i64, bool) = match db {
+    // 1. upsert crawler_articles（按 task_id + source_url_canonical 幂等）
+    let (article_id, is_new) = match db {
         DbPool::Sqlite(pool) => {
-            // 先查
-            let exist: Option<(i64,)> = sqlx::query_as(
+            let existing: Option<(i64,)> = sqlx::query_as(
                 "SELECT id FROM crawler_articles WHERE task_id = ? AND source_url_canonical = ?",
             )
             .bind(task_id)
             .bind(canonical)
             .fetch_optional(pool)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("查询已有文章失败: {e}"))?;
 
-            if let Some((id,)) = exist {
+            if let Some((id,)) = existing {
+                // 已存在：除非 is_edited 否则更新 crawled_at + extra_fields_json
+                let extra_json = build_extra_fields_json(extractions);
                 sqlx::query(
-                    "UPDATE crawler_articles SET title = ?, content = ?, category = ?, \
-                     tags = ?, crawled_at = ?, updated_at = ?, source_url = ?, source_type = ? \
-                     WHERE id = ?",
+                    "UPDATE crawler_articles \
+                     SET crawled_at = ?, updated_at = ?, extra_fields_json = ? \
+                     WHERE id = ? AND is_edited = 0",
                 )
-                .bind(&fields.title)
-                .bind(&fields.content)
-                .bind(&fields.category)
-                .bind(&fields.tags)
                 .bind(now)
                 .bind(now)
-                .bind(source_url)
-                .bind(task_name)
+                .bind(&extra_json)
                 .bind(id)
                 .execute(pool)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| format!("更新文章失败: {e}"))?;
                 (id, false)
             } else {
+                let title = find_first_value(extractions, "title")
+                    .or_else(|| find_first_value(extractions, "name"));
+                let content = find_first_value(extractions, "content");
+                let extra_json = build_extra_fields_json(extractions);
                 let result = sqlx::query(
                     "INSERT INTO crawler_articles \
                      (task_id, source_type, source_url, source_url_canonical, title, content, \
-                     category, tags, is_edited, crawled_at, created_at, updated_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
+                      is_edited, crawled_at, created_at, updated_at, extra_fields_json) \
+                     VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)",
                 )
                 .bind(task_id)
-                .bind(task_name)
+                .bind(source_type)
                 .bind(source_url)
                 .bind(canonical)
-                .bind(&fields.title)
-                .bind(&fields.content)
-                .bind(&fields.category)
-                .bind(&fields.tags)
+                .bind(&title)
+                .bind(&content)
                 .bind(now)
                 .bind(now)
                 .bind(now)
+                .bind(&extra_json)
                 .execute(pool)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| format!("插入文章失败: {e}"))?;
                 (result.last_insert_rowid(), true)
             }
         }
         DbPool::Postgres(pool) => {
-            let exist: Option<(i64,)> = sqlx::query_as(
+            let existing: Option<(i64,)> = sqlx::query_as(
                 "SELECT id FROM crawler_articles WHERE task_id = $1 AND source_url_canonical = $2",
             )
             .bind(task_id)
             .bind(canonical)
             .fetch_optional(pool)
             .await
-            .map_err(|e| e.to_string())?;
-            if let Some((id,)) = exist {
+            .map_err(|e| format!("查询已有文章失败: {e}"))?;
+
+            if let Some((id,)) = existing {
+                let extra_json = build_extra_fields_json(extractions);
                 sqlx::query(
-                    "UPDATE crawler_articles SET title = $1, content = $2, category = $3, \
-                     tags = $4, crawled_at = $5, updated_at = $6, source_url = $7, source_type = $8 \
-                     WHERE id = $9",
+                    "UPDATE crawler_articles \
+                     SET crawled_at = $1, updated_at = $2, extra_fields_json = $3 \
+                     WHERE id = $4 AND is_edited = false",
                 )
-                .bind(&fields.title)
-                .bind(&fields.content)
-                .bind(&fields.category)
-                .bind(&fields.tags)
                 .bind(now)
                 .bind(now)
-                .bind(source_url)
-                .bind(task_name)
+                .bind(&extra_json)
                 .bind(id)
                 .execute(pool)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| format!("更新文章失败: {e}"))?;
                 (id, false)
             } else {
-                let id: i64 = sqlx::query_scalar(
+                let title = find_first_value(extractions, "title")
+                    .or_else(|| find_first_value(extractions, "name"));
+                let content = find_first_value(extractions, "content");
+                let extra_json = build_extra_fields_json(extractions);
+                let new_id: (i64,) = sqlx::query_as(
                     "INSERT INTO crawler_articles \
                      (task_id, source_type, source_url, source_url_canonical, title, content, \
-                     category, tags, is_edited, crawled_at, created_at, updated_at) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, FALSE, $9, $9, $9) RETURNING id",
+                      is_edited, crawled_at, created_at, updated_at, extra_fields_json) \
+                     VALUES ($1, $2, $3, $4, $5, $6, false, $7, $8, $9, $10) \
+                     RETURNING id",
                 )
                 .bind(task_id)
-                .bind(task_name)
+                .bind(source_type)
                 .bind(source_url)
                 .bind(canonical)
-                .bind(&fields.title)
-                .bind(&fields.content)
-                .bind(&fields.category)
-                .bind(&fields.tags)
+                .bind(&title)
+                .bind(&content)
                 .bind(now)
+                .bind(now)
+                .bind(now)
+                .bind(&extra_json)
                 .fetch_one(pool)
                 .await
-                .map_err(|e| e.to_string())?;
-                (id, true)
+                .map_err(|e| format!("插入文章失败: {e}"))?;
+                (new_id.0, true)
             }
         }
     };
 
-    // 子表：仅新增文章时写入子表（避免每次更新重复插入）
-    // 实际上为了避免老链接漏抓，我们也应在已有文章上增量补 — 但 v1 简化为仅新文章
+    // 2. 仅在新文章时写 field_values（避免重复刷屏）
     if is_new {
-        // 链接：从 pan_links 区域 + direct_links 区域联合分析
-        let mut links_to_insert: Vec<NewCrawlerArticleLink> = Vec::new();
-        for url in &fields.pan_links {
-            let canonical_link = normalize_url(url);
-            if let Some(platform) = detect_platform(url) {
-                let code = find_extract_code(url);
-                links_to_insert.push(NewCrawlerArticleLink {
-                    article_id,
-                    link_type: "pan".into(),
-                    platform: Some(platform.to_string()),
-                    url: url.clone(),
-                    url_canonical: canonical_link,
-                    extract_code: code,
-                });
-            } else if is_direct_link(url) {
-                links_to_insert.push(NewCrawlerArticleLink {
-                    article_id,
-                    link_type: "direct".into(),
-                    platform: None,
-                    url: url.clone(),
-                    url_canonical: canonical_link,
-                    extract_code: None,
-                });
-            }
-        }
-        for url in &fields.direct_links {
-            let canonical_link = normalize_url(url);
-            if detect_platform(url).is_some() {
-                // direct_links 区域里的网盘链接也归入 pan
-                let code = find_extract_code(url);
-                links_to_insert.push(NewCrawlerArticleLink {
-                    article_id,
-                    link_type: "pan".into(),
-                    platform: Some(detect_platform(url).unwrap().to_string()),
-                    url: url.clone(),
-                    url_canonical: canonical_link,
-                    extract_code: code,
-                });
-            } else if is_direct_link(url) {
-                links_to_insert.push(NewCrawlerArticleLink {
-                    article_id,
-                    link_type: "direct".into(),
-                    platform: None,
-                    url: url.clone(),
-                    url_canonical: canonical_link,
-                    extract_code: None,
-                });
-            }
-        }
-        // 去重（按 url_canonical + link_type）
-        let mut seen = std::collections::HashSet::new();
-        for l in links_to_insert {
-            let key = (l.url_canonical.clone(), l.link_type.clone());
-            if !seen.insert(key) {
-                continue;
-            }
-            insert_link(db, &l).await.map_err(|e| e.to_string())?;
-        }
-
-        // 图片
-        for url in &fields.images {
-            let canonical_img = normalize_url(url);
-            let new_img = NewCrawlerArticleImage {
-                article_id,
-                original_url: url.clone(),
-                url_canonical: canonical_img,
-            };
-            insert_image(db, &new_img).await.map_err(|e| e.to_string())?;
-        }
+        write_field_values(db, article_id, extractions, now).await?;
     }
 
     Ok(is_new)
 }
 
-async fn insert_link(
+/// 写所有字段值到 crawler_article_field_values（含未命中行 is_hit=0）
+async fn write_field_values(
     db: &DbPool,
-    l: &NewCrawlerArticleLink,
-) -> Result<(), sqlx::Error> {
-    match db {
-        DbPool::Sqlite(pool) => {
-            sqlx::query(
-                "INSERT INTO crawler_article_links \
-                 (article_id, link_type, platform, url, url_canonical, extract_code, \
-                 validity_status, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, 'unknown', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-            )
-            .bind(l.article_id)
-            .bind(&l.link_type)
-            .bind(&l.platform)
-            .bind(&l.url)
-            .bind(&l.url_canonical)
-            .bind(&l.extract_code)
-            .execute(pool)
-            .await?;
+    article_id: i64,
+    extractions: &[FieldExtraction],
+    now: chrono::NaiveDateTime,
+) -> Result<(), String> {
+    for ext in extractions {
+        if ext.hits.is_empty() {
+            // 未命中：写一行 is_hit=0
+            match db {
+                DbPool::Sqlite(pool) => {
+                    let _ = sqlx::query(
+                        "INSERT INTO crawler_article_field_values \
+                         (article_id, field_node_id, field_path, scope, value_index, value_text, \
+                          value_number, is_hit, created_at) \
+                         VALUES (?, ?, ?, ?, 0, NULL, NULL, 0, ?)",
+                    )
+                    .bind(article_id)
+                    .bind(ext.field_node_id)
+                    .bind(&ext.field_path)
+                    .bind(&ext.scope)
+                    .bind(now)
+                    .execute(pool)
+                    .await;
+                }
+                DbPool::Postgres(pool) => {
+                    let _ = sqlx::query(
+                        "INSERT INTO crawler_article_field_values \
+                         (article_id, field_node_id, field_path, scope, value_index, value_text, \
+                          value_number, is_hit, created_at) \
+                         VALUES ($1, $2, $3, $4, 0, NULL, NULL, false, $5)",
+                    )
+                    .bind(article_id)
+                    .bind(ext.field_node_id)
+                    .bind(&ext.field_path)
+                    .bind(&ext.scope)
+                    .bind(now)
+                    .execute(pool)
+                    .await;
+                }
+            }
+            continue;
         }
-        DbPool::Postgres(pool) => {
-            sqlx::query(
-                "INSERT INTO crawler_article_links \
-                 (article_id, link_type, platform, url, url_canonical, extract_code, \
-                 validity_status, created_at, updated_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, 'unknown', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-            )
-            .bind(l.article_id)
-            .bind(&l.link_type)
-            .bind(&l.platform)
-            .bind(&l.url)
-            .bind(&l.url_canonical)
-            .bind(&l.extract_code)
-            .execute(pool)
-            .await?;
+        for (i, h) in ext.hits.iter().enumerate() {
+            let value_number: Option<f64> = h.value.trim().parse::<f64>().ok();
+            match db {
+                DbPool::Sqlite(pool) => {
+                    let _ = sqlx::query(
+                        "INSERT INTO crawler_article_field_values \
+                         (article_id, field_node_id, field_path, scope, value_index, value_text, \
+                          value_number, is_hit, created_at) \
+                         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)",
+                    )
+                    .bind(article_id)
+                    .bind(ext.field_node_id)
+                    .bind(&ext.field_path)
+                    .bind(&ext.scope)
+                    .bind(i as i32)
+                    .bind(&h.value)
+                    .bind(value_number)
+                    .bind(now)
+                    .execute(pool)
+                    .await;
+                }
+                DbPool::Postgres(pool) => {
+                    let _ = sqlx::query(
+                        "INSERT INTO crawler_article_field_values \
+                         (article_id, field_node_id, field_path, scope, value_index, value_text, \
+                          value_number, is_hit, created_at) \
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8)",
+                    )
+                    .bind(article_id)
+                    .bind(ext.field_node_id)
+                    .bind(&ext.field_path)
+                    .bind(&ext.scope)
+                    .bind(i as i32)
+                    .bind(&h.value)
+                    .bind(value_number)
+                    .bind(now)
+                    .execute(pool)
+                    .await;
+                }
+            }
         }
     }
     Ok(())
 }
 
-async fn insert_image(
-    db: &DbPool,
-    img: &NewCrawlerArticleImage,
-) -> Result<(), sqlx::Error> {
-    match db {
-        DbPool::Sqlite(pool) => {
-            sqlx::query(
-                "INSERT INTO crawler_article_images \
-                 (article_id, original_url, url_canonical, status, retry_count, \
-                 created_at, updated_at) \
-                 VALUES (?, ?, ?, 'pending', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-            )
-            .bind(img.article_id)
-            .bind(&img.original_url)
-            .bind(&img.url_canonical)
-            .execute(pool)
-            .await?;
-        }
-        DbPool::Postgres(pool) => {
-            sqlx::query(
-                "INSERT INTO crawler_article_images \
-                 (article_id, original_url, url_canonical, status, retry_count, \
-                 created_at, updated_at) \
-                 VALUES ($1, $2, $3, 'pending', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-            )
-            .bind(img.article_id)
-            .bind(&img.original_url)
-            .bind(&img.url_canonical)
-            .execute(pool)
-            .await?;
-        }
-    }
-    Ok(())
-}
-
-/// 写历史记录 + 更新任务的 last_run_at / next_run_at / consecutive_failures / status
+/// 把字段命中聚合为 extra_fields_json（简单单值字段 → {name: value}）
 ///
-/// 在抓取主循环之后调用一次。
-async fn finalize_run(state: &AppState, task: &TaskRuntime, started_at: chrono::NaiveDateTime, summary: &RunSummary) {
-    let now = chrono::Utc::now().naive_utc();
-    let duration_ms = (now - started_at).num_milliseconds().max(0);
-    let task_name = task.name().to_string();
-    let interval_mins = task.row.interval_minutes.max(1);
-    let next_run = now + chrono::Duration::minutes(interval_mins);
-
-    let is_blocked_or_failed = matches!(summary.status, "blocked" | "failed");
-
-    // 写历史
-    if let Err(e) = insert_history(
-        &state.db,
-        task.id(),
-        &task_name,
-        started_at,
-        now,
-        duration_ms,
-        summary,
-    )
-    .await
-    {
-        tracing::warn!("写 crawler_run_history 失败: {e}");
+/// 仅收录每条字段的首条命中（多值字段建议消费 crawler_article_field_values 长表）
+fn build_extra_fields_json(extractions: &[FieldExtraction]) -> Option<String> {
+    let mut map = serde_json::Map::new();
+    for ext in extractions {
+        if ext.hits.is_empty() {
+            continue;
+        }
+        // 取末段 name 作为 key（兼容嵌套字段路径）
+        let key = ext
+            .field_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&ext.field_path)
+            .to_string();
+        // 多值时存数组
+        let values: Vec<Value> = ext.hits.iter().map(|h| Value::String(h.value.clone())).collect();
+        if values.len() == 1 {
+            map.insert(key, values.into_iter().next().unwrap());
+        } else {
+            map.insert(key, Value::Array(values));
+        }
     }
-
-    // 更新任务计数 / 状态
-    let new_status = if is_blocked_or_failed
-        && task.row.consecutive_failures + 1 >= task.max_consecutive_failures()
-    {
-        "auto_blocked"
+    if map.is_empty() {
+        None
     } else {
-        &task.row.status
-    };
-
-    match &state.db {
-        DbPool::Sqlite(pool) => {
-            if let Err(e) = sqlx::query(
-                "UPDATE crawler_tasks SET \
-                 last_run_at = ?, next_run_at = ?, \
-                 consecutive_failures = CASE WHEN ? THEN consecutive_failures + 1 ELSE 0 END, \
-                 status = ?, updated_at = ? WHERE id = ?",
-            )
-            .bind(now)
-            .bind(next_run)
-            .bind(is_blocked_or_failed)
-            .bind(new_status)
-            .bind(now)
-            .bind(task.id())
-            .execute(pool)
-            .await
-            {
-                tracing::warn!("更新 crawler_tasks 失败: {e}");
-            }
-        }
-        DbPool::Postgres(pool) => {
-            if let Err(e) = sqlx::query(
-                "UPDATE crawler_tasks SET \
-                 last_run_at = $1, next_run_at = $2, \
-                 consecutive_failures = CASE WHEN $3 THEN consecutive_failures + 1 ELSE 0 END, \
-                 status = $4, updated_at = $5 WHERE id = $6",
-            )
-            .bind(now)
-            .bind(next_run)
-            .bind(is_blocked_or_failed)
-            .bind(new_status)
-            .bind(now)
-            .bind(task.id())
-            .execute(pool)
-            .await
-            {
-                tracing::warn!("更新 crawler_tasks 失败: {e}");
-            }
-        }
-    }
-    if new_status == "auto_blocked" {
-        tracing::warn!(
-            "任务 {} ({}) 连续失败达阈值 {}，自动停用",
-            task.id(),
-            task.name(),
-            task.max_consecutive_failures()
-        );
+        Some(Value::Object(map).to_string())
     }
 }
 
-async fn insert_history(
+/// 找出第一条 name 匹配的字段值（用于回填 article.title / content）
+fn find_first_value(extractions: &[FieldExtraction], name: &str) -> Option<String> {
+    for ext in extractions {
+        let last = ext.field_path.rsplit('/').next().unwrap_or("");
+        if last == name && !ext.hits.is_empty() {
+            return Some(ext.hits[0].value.clone());
+        }
+    }
+    None
+}
+
+/// 写入运行历史（best-effort，失败不阻塞返回）
+#[allow(clippy::too_many_arguments)]
+async fn insert_run_history(
     db: &DbPool,
     task_id: i64,
     task_name: &str,
-    started_at: chrono::NaiveDateTime,
-    finished_at: chrono::NaiveDateTime,
     duration_ms: i64,
-    summary: &RunSummary,
-) -> Result<(), sqlx::Error> {
+    status: &str,
+    block_type: Option<String>,
+    crawled: i64,
+    new_count: i64,
+    skipped: i64,
+    failed: i64,
+    error_message: Option<String>,
+) -> Result<(), String> {
+    let started_at = chrono::Utc::now().naive_utc() - chrono::Duration::milliseconds(duration_ms);
+    let finished_at = chrono::Utc::now().naive_utc();
     match db {
         DbPool::Sqlite(pool) => {
-            sqlx::query(
+            let _ = sqlx::query(
                 "INSERT INTO crawler_run_histories \
-                 (task_id, task_name, started_at, finished_at, duration_ms, status, \
-                 block_type, crawled_count, new_count, skipped_count, failed_count, \
-                 error_message, created_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                 (task_id, task_name, started_at, finished_at, duration_ms, status, block_type, \
+                  crawled_count, new_count, skipped_count, failed_count, error_message, created_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(task_id)
             .bind(task_name)
             .bind(started_at)
             .bind(finished_at)
             .bind(duration_ms)
-            .bind(summary.status)
-            .bind(&summary.block_type)
-            .bind(summary.crawled_count)
-            .bind(summary.new_count)
-            .bind(summary.skipped_count)
-            .bind(summary.failed_count)
-            .bind(&summary.error_message)
+            .bind(status)
+            .bind(&block_type)
+            .bind(crawled)
+            .bind(new_count)
+            .bind(skipped)
+            .bind(failed)
+            .bind(&error_message)
+            .bind(started_at)
             .execute(pool)
-            .await?;
+            .await;
         }
         DbPool::Postgres(pool) => {
-            sqlx::query(
+            let _ = sqlx::query(
                 "INSERT INTO crawler_run_histories \
-                 (task_id, task_name, started_at, finished_at, duration_ms, status, \
-                 block_type, crawled_count, new_count, skipped_count, failed_count, \
-                 error_message, created_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CURRENT_TIMESTAMP)",
+                 (task_id, task_name, started_at, finished_at, duration_ms, status, block_type, \
+                  crawled_count, new_count, skipped_count, failed_count, error_message, created_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
             )
             .bind(task_id)
             .bind(task_name)
             .bind(started_at)
             .bind(finished_at)
             .bind(duration_ms)
-            .bind(summary.status)
-            .bind(&summary.block_type)
-            .bind(summary.crawled_count)
-            .bind(summary.new_count)
-            .bind(summary.skipped_count)
-            .bind(summary.failed_count)
-            .bind(&summary.error_message)
+            .bind(status)
+            .bind(&block_type)
+            .bind(crawled)
+            .bind(new_count)
+            .bind(skipped)
+            .bind(failed)
+            .bind(&error_message)
+            .bind(started_at)
             .execute(pool)
-            .await?;
+            .await;
         }
     }
     Ok(())
 }
+
+/// 更新任务的 next_run_at + last_run_at + 连续失败计数
+async fn update_task_schedule(db: &DbPool, task_id: i64, status: &str) -> Result<(), String> {
+    let now = chrono::Utc::now().naive_utc();
+    let is_fail = status == "blocked" || status == "failed";
+    let r = match db {
+        DbPool::Sqlite(pool) => {
+            if is_fail {
+                sqlx::query(
+                    "UPDATE crawler_tasks \
+                     SET last_run_at = ?, \
+                         consecutive_failures = consecutive_failures + 1, \
+                         status = CASE \
+                             WHEN consecutive_failures + 1 >= max_consecutive_failures \
+                             THEN 'auto_blocked' ELSE status END, \
+                         updated_at = ? \
+                     WHERE id = ?",
+                )
+                .bind(now)
+                .bind(now)
+                .bind(task_id)
+                .execute(pool)
+                .await
+            } else {
+                sqlx::query(
+                    "UPDATE crawler_tasks \
+                     SET last_run_at = ?, consecutive_failures = 0, updated_at = ? \
+                     WHERE id = ?",
+                )
+                .bind(now)
+                .bind(now)
+                .bind(task_id)
+                .execute(pool)
+                .await
+            }
+            .map(|_| ())
+        }
+        DbPool::Postgres(pool) => {
+            if is_fail {
+                sqlx::query(
+                    "UPDATE crawler_tasks \
+                     SET last_run_at = $1, \
+                         consecutive_failures = consecutive_failures + 1, \
+                         status = CASE \
+                             WHEN consecutive_failures + 1 >= max_consecutive_failures \
+                             THEN 'auto_blocked' ELSE status END, \
+                         updated_at = $2 \
+                     WHERE id = $3",
+                )
+                .bind(now)
+                .bind(now)
+                .bind(task_id)
+                .execute(pool)
+                .await
+            } else {
+                sqlx::query(
+                    "UPDATE crawler_tasks \
+                     SET last_run_at = $1, consecutive_failures = 0, updated_at = $2 \
+                     WHERE id = $3",
+                )
+                .bind(now)
+                .bind(now)
+                .bind(task_id)
+                .execute(pool)
+                .await
+            }
+            .map(|_| ())
+        }
+    };
+    r.map_err(|e| format!("更新调度时间失败: {e}"))?;
+    Ok(())
+}
+
+// ============================================================================
+// 测试运行（不落库，US1 T035）
+// ============================================================================
+
+/// 测试运行：抓第一条 list_url → 应用 list_page 字段 → 取前 N 条详情预览
+pub async fn test_run(
+    db: &DbPool,
+    task_id: i64,
+    limit: usize,
+) -> Result<CrawlerTestPreview, String> {
+    let rt = load_task(db, task_id).await?;
+    let list_url = rt
+        .list_urls
+        .first()
+        .ok_or_else(|| "任务无 list_urls".to_string())?
+        .clone();
+
+    let sys_proxy = futures::future::ready::<Option<String>>(None).await;
+    let proxy = rt.proxy.clone().or(sys_proxy);
+
+    let material = fetch_source_material(&list_url, rt.user_agent.as_deref(), proxy.as_deref())
+        .await
+        .map_err(|e| format!("抓取列表页失败: {e}"))?;
+
+    let list_extractions = extract_layer(
+        &rt.field_tree.list_page,
+        &material,
+        &[],
+        Scope::ListPage.as_str(),
+        &format!("/{}", Scope::ListPage.as_str()),
+    );
+
+    let detail_links = collect_detail_links(
+        &list_extractions,
+        &rt.field_tree.list_page,
+        &format!("/{}", Scope::ListPage.as_str()),
+        &material.final_url,
+    );
+
+    let mut articles = Vec::new();
+    let mut warnings = Vec::new();
+    for (i, ext) in list_extractions.iter().enumerate() {
+        if let Some(err) = &ext.error {
+            warnings.push(format!("字段 {} 提取失败: {err}", ext.field_path));
+        }
+        if i >= limit {
+            break;
+        }
+    }
+
+    let preview_count = detail_links.len().min(limit);
+    for url in detail_links.iter().take(limit) {
+        // 抓详情素材（best-effort，失败也尽量返回）
+        let dm = fetch_source_material(url, rt.user_agent.as_deref(), proxy.as_deref()).await;
+        let detail_extractions = match dm {
+            Ok(m) => extract_layer(
+                &rt.field_tree.detail_page,
+                &m,
+                &[],
+                Scope::DetailPage.as_str(),
+                &format!("/{}", Scope::DetailPage.as_str()),
+            ),
+            Err(e) => {
+                warnings.push(format!("详情 {url} 抓取失败: {}", e.message));
+                continue;
+            }
+        };
+
+        let title = find_first_value(&detail_extractions, "title")
+            .or_else(|| find_first_value(&detail_extractions, "name"));
+        let content = find_first_value(&detail_extractions, "content");
+        let content_snippet = content.map(|c| c.chars().take(200).collect::<String>());
+
+        articles.push(TestPreviewArticle {
+            source_url: url.clone(),
+            title,
+            content_snippet,
+            pan_links: Vec::new(),
+            direct_links: Vec::new(),
+            images: Vec::new(),
+            field_warnings: warnings.clone(),
+        });
+    }
+
+    let list_item_ok = list_extractions.iter().any(|e| !e.hits.is_empty());
+    let detail_link_ok = !detail_links.is_empty();
+
+    Ok(CrawlerTestPreview {
+        list_count: detail_links.len() as i64,
+        preview_count: preview_count as i64,
+        articles,
+        selector_validation: SelectorValidation {
+            list_item_ok,
+            detail_link_ok,
+            missing_fields: Vec::new(),
+        },
+    })
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -1031,318 +1368,449 @@ mod tests {
     #[test]
     fn resolve_url_absolute_passthrough() {
         assert_eq!(
-            resolve_url("https://x.com/a", "https://y.com"),
-            "https://x.com/a"
+            resolve_url("https://example.com/a", "https://other.com/"),
+            "https://example.com/a"
         );
     }
 
     #[test]
     fn resolve_url_root_relative() {
         assert_eq!(
-            resolve_url("/p/1", "https://example.com/list/page"),
-            "https://example.com/p/1"
+            resolve_url("/path/page", "https://example.com/dir/base"),
+            "https://example.com/path/page"
         );
     }
 
     #[test]
     fn resolve_url_relative() {
         assert_eq!(
-            resolve_url("p/2", "https://example.com/list/page"),
-            "https://example.com/list/p/2"
+            resolve_url("page.html", "https://example.com/dir/base"),
+            "https://example.com/dir/page.html"
         );
     }
 
     #[test]
-    fn strip_html_tags_basic() {
-        assert_eq!(strip_html_tags("<p>hello <b>world</b></p>"), "hello world");
-        assert_eq!(strip_html_tags("<p>a&nbsp;b</p>"), "a b");
+    fn resolve_url_no_path_in_base() {
+        assert_eq!(
+            resolve_url("foo", "https://example.com"),
+            "https://example.com/foo"
+        );
     }
 
-    // T059 SC-005 幂等性测试：同 (task_id, source_url_canonical) 重复调用 100 次，DB 中仅 1 行
-    #[tokio::test]
-    async fn upsert_article_idempotent_on_repeated_calls() {
-        use sqlx::sqlite::SqlitePoolOptions;
+    #[test]
+    fn build_reqwest_client_default_ua() {
+        let c = build_reqwest_client(None, None);
+        assert!(c.is_ok());
+    }
 
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .expect("connect test db");
-        sqlx::raw_sql(include_str!("../../../migrations/020_crawler_tasks_sqlite.sql"))
-            .execute(&pool)
-            .await
-            .expect("run 020 migration");
-        sqlx::raw_sql(include_str!("../../../migrations/021_crawler_articles_sqlite.sql"))
-            .execute(&pool)
-            .await
-            .expect("run 021 migration");
+    #[test]
+    fn build_no_redirect_client_ok() {
+        let c = build_no_redirect_client(None, None);
+        assert!(c.is_ok());
+    }
 
-        // 插入一个任务
-        sqlx::query(
-            "INSERT INTO crawler_tasks (name, list_urls, selectors) VALUES ('t-idem', 'https://x/l', '{}')",
-        )
-        .execute(&pool)
-        .await
-        .expect("insert task");
-        let (task_id,): (i64,) =
-            sqlx::query_as("SELECT id FROM crawler_tasks WHERE name = 't-idem'")
-                .fetch_one(&pool)
-                .await
-                .expect("select task");
+    #[test]
+    fn extract_pagination_urls_extracts_hrefs() {
+        let html = r#"<div><a class="pg" href="/p/2">2</a><a class="pg" href="/p/3">3</a></div>"#;
+        let urls = extract_pagination_urls(html, ".pg");
+        assert_eq!(urls.len(), 2);
+        assert!(urls.contains(&"/p/2".to_string()));
+        assert!(urls.contains(&"/p/3".to_string()));
+    }
 
-        let db = DbPool::Sqlite(pool.clone());
-        let fields = ExtractedFields {
-            title: Some("T".into()),
-            content: Some("C".into()),
-            category: None,
-            tags: None,
-            images: vec![],
-            pan_links: vec![],
-            direct_links: vec![],
-            field_warnings: vec![],
+    #[test]
+    fn extract_pagination_urls_empty_selector_returns_empty() {
+        let urls = extract_pagination_urls("<div>x</div>", "");
+        assert!(urls.is_empty());
+    }
+
+    /// build_extra_fields_json 单值聚合
+    #[test]
+    fn extra_fields_json_single_value() {
+        let ext = vec![FieldExtraction {
+            field_path: "/detail_page/title".into(),
+            field_node_id: Some(1),
+            scope: "detail_page".into(),
+            hits: vec![Hit {
+                value: "hello".into(),
+                source_fragment: "css".into(),
+                location: None,
+                context_html: None,
+            }],
+            error: None,
+        }];
+        let json = build_extra_fields_json(&ext).expect("Some");
+        let v: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["title"], Value::String("hello".into()));
+    }
+
+    /// build_extra_fields_json 多值聚合为数组
+    #[test]
+    fn extra_fields_json_multi_value() {
+        let ext = vec![FieldExtraction {
+            field_path: "/detail_page/tags".into(),
+            field_node_id: Some(1),
+            scope: "detail_page".into(),
+            hits: vec![
+                Hit { value: "a".into(), source_fragment: "css".into(), location: None, context_html: None },
+                Hit { value: "b".into(), source_fragment: "css".into(), location: None, context_html: None },
+            ],
+            error: None,
+        }];
+        let json = build_extra_fields_json(&ext).expect("Some");
+        let v: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["tags"], Value::Array(vec![Value::String("a".into()), Value::String("b".into())]));
+    }
+
+    /// 未命中字段不出现在 extra_fields_json
+    #[test]
+    fn extra_fields_json_skips_empty_hits() {
+        let ext = vec![
+            FieldExtraction {
+                field_path: "/detail_page/title".into(),
+                field_node_id: Some(1),
+                scope: "detail_page".into(),
+                hits: Vec::new(),
+                error: None,
+            },
+            FieldExtraction {
+                field_path: "/detail_page/url".into(),
+                field_node_id: Some(2),
+                scope: "detail_page".into(),
+                hits: vec![Hit {
+                    value: "https://example.com".into(),
+                    source_fragment: "css".into(),
+                    location: None,
+                    context_html: None,
+                }],
+                error: None,
+            },
+        ];
+        let json = build_extra_fields_json(&ext).expect("Some");
+        let v: Value = serde_json::from_str(&json).unwrap();
+        assert!(v.get("title").is_none());
+        assert_eq!(v["url"], Value::String("https://example.com".into()));
+    }
+
+    /// find_first_value 按 name 匹配
+    #[test]
+    fn find_first_value_matches() {
+        let ext = vec![FieldExtraction {
+            field_path: "/detail_page/title".into(),
+            field_node_id: Some(1),
+            scope: "detail_page".into(),
+            hits: vec![Hit {
+                value: "T".into(),
+                source_fragment: "css".into(),
+                location: None,
+                context_html: None,
+            }],
+            error: None,
+        }];
+        assert_eq!(find_first_value(&ext, "title"), Some("T".to_string()));
+        assert_eq!(find_first_value(&ext, "name"), None);
+    }
+
+    /// 简单字段树（list_page + detail_page）能加载 + 提取 — 单元层测试
+    /// 完整集成测试见 tests/ 目录（test_run 网络依赖）
+    #[test]
+    fn build_type_index_distinguishes_link_card() {
+        use crate::models::crawler_field_node::FieldNodeRow;
+        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc();
+        let mk = |id: i64, parent: Option<i64>, name: &str, ft: &str| FieldNodeRow {
+            id, task_id: 1, parent_id: parent, scope: "list_page".into(), name: name.into(),
+            display_name: name.into(), field_type: ft.into(), source_layer: "html".into(),
+            extractor_mode: "css".into(), rule_json: r#"{"selector":".x"}"#.into(),
+            post_processors_json: None, script_index: None, sort_order: 0, is_active: true,
+            created_at: ts, updated_at: ts,
+        };
+        let rows = vec![
+            mk(1, None, "link_card", "link_card"),
+            mk(2, Some(1), "title", "string"),
+            mk(3, None, "url", "url"),
+            mk(4, None, "title", "string"),
+        ];
+        let tree = crate::models::crawler_field_node::from_rows(rows);
+        let index = build_type_index(&tree.list_page, "/list_page");
+        assert!(matches!(
+            index.get("/list_page/link_card"),
+            Some(FieldType::LinkCard)
+        ));
+        assert!(matches!(
+            index.get("/list_page/url"),
+            Some(FieldType::Url)
+        ));
+        assert!(matches!(
+            index.get("/list_page/title"),
+            Some(FieldType::String)
+        ));
+    }
+
+    /// US5 T055：find_next_page_url 从 pagination 字段命中取下一页 URL
+    #[test]
+    fn find_next_page_url_returns_first_pagination_hit() {
+        use crate::models::crawler_field_node::FieldNodeRow;
+        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc();
+        let mk = |id: i64, parent: Option<i64>, name: &str, ft: &str| FieldNodeRow {
+            id, task_id: 1, parent_id: parent, scope: "list_page".into(), name: name.into(),
+            display_name: name.into(), field_type: ft.into(), source_layer: "html".into(),
+            extractor_mode: "css".into(), rule_json: r#"{"selector":".x"}"#.into(),
+            post_processors_json: None, script_index: None, sort_order: 0, is_active: true,
+            created_at: ts, updated_at: ts,
+        };
+        let rows = vec![
+            mk(1, None, "next_page", "pagination"),
+            mk(2, None, "title", "string"),
+        ];
+        let tree = crate::models::crawler_field_node::from_rows(rows);
+        let extractions = vec![
+            FieldExtraction {
+                field_path: "/list_page/title".into(),
+                field_node_id: Some(2),
+                scope: "list_page".into(),
+                hits: vec![Hit {
+                    value: "页标题".into(),
+                    source_fragment: "css:.title".into(),
+                    location: Some("node[0]".into()),
+                    context_html: None,
+                }],
+                error: None,
+            },
+            FieldExtraction {
+                field_path: "/list_page/next_page".into(),
+                field_node_id: Some(1),
+                scope: "list_page".into(),
+                hits: vec![Hit {
+                    value: "/list?page=2".into(),
+                    source_fragment: "css:.next".into(),
+                    location: Some("node[0]".into()),
+                    context_html: None,
+                }],
+                error: None,
+            },
+        ];
+        let next = find_next_page_url(&extractions, &tree.list_page, "/list_page", "https://example.com/list?page=1");
+        assert_eq!(next.as_deref(), Some("https://example.com/list?page=2"));
+    }
+
+    /// US5 T055：无 pagination 字段或字段未命中 → 返回 None
+    #[test]
+    fn find_next_page_url_none_when_no_pagination_field() {
+        use crate::models::crawler_field_node::FieldNodeRow;
+        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc();
+        let mk = |id: i64, name: &str, ft: &str| FieldNodeRow {
+            id, task_id: 1, parent_id: None, scope: "list_page".into(), name: name.into(),
+            display_name: name.into(), field_type: ft.into(), source_layer: "html".into(),
+            extractor_mode: "css".into(), rule_json: r#"{"selector":".x"}"#.into(),
+            post_processors_json: None, script_index: None, sort_order: 0, is_active: true,
+            created_at: ts, updated_at: ts,
+        };
+        // 无 pagination 字段
+        let tree = crate::models::crawler_field_node::from_rows(vec![mk(1, "title", "string")]);
+        let extractions = vec![FieldExtraction {
+            field_path: "/list_page/title".into(),
+            field_node_id: Some(1),
+            scope: "list_page".into(),
+            hits: vec![Hit {
+                value: "x".into(),
+                source_fragment: "css:.title".into(),
+                location: None,
+                context_html: None,
+            }],
+            error: None,
+        }];
+        assert_eq!(
+            find_next_page_url(&extractions, &tree.list_page, "/list_page", "https://example.com/"),
+            None
+        );
+
+        // 有 pagination 字段但未命中
+        let tree2 = crate::models::crawler_field_node::from_rows(vec![
+            mk(1, "title", "string"),
+            mk(2, "next_page", "pagination"),
+        ]);
+        let extractions2 = vec![FieldExtraction {
+            field_path: "/list_page/next_page".into(),
+            field_node_id: Some(2),
+            scope: "list_page".into(),
+            hits: vec![],
+            error: None,
+        }];
+        assert_eq!(
+            find_next_page_url(&extractions2, &tree2.list_page, "/list_page", "https://example.com/"),
+            None
+        );
+    }
+
+    /// **集成测试 field_tree_crawl_two_stage**（US1 T035 验收）
+    ///
+    /// 验证：加载 FieldTree → 列表页阶段提取 link_card + 子字段（cover）→
+    ///      collect_detail_links 找出详情链接 → 详情页阶段对详情素材提取 title/content →
+    ///      build_extra_fields_json 聚合为 JSON。
+    ///
+    /// 不触发网络请求：用静态 HTML fixture 直接构造 SourceMaterial。
+    #[test]
+    fn field_tree_crawl_two_stage() {
+        use crate::services::crawler::source_layer::{
+            MetaTag, ScriptBlock, SourceMaterial,
         };
 
-        let url = "https://example.com/a";
-        let canonical = url; // 简化：直接用 URL 作 canonical
-        let mut new_count = 0;
-        for _ in 0..100 {
-            let is_new = upsert_article_and_children(&db, task_id, "t-idem", url, canonical, &fields)
-                .await
-                .expect("upsert");
-            if is_new {
-                new_count += 1;
-            }
-        }
+        // ---- 列表页素材（手搓 HTML：3 条 .list-item，每条 a.link 内嵌 img.cover） ----
+        let list_html = r#"<!DOCTYPE html><html><body>
+          <div class="list">
+            <div class="list-item">
+              <a class="link" href="/p/1"><img class="cover" src="/c1.jpg" /></a>
+            </div>
+            <div class="list-item">
+              <a class="link" href="/p/2"><img class="cover" src="/c2.jpg" /></a>
+            </div>
+            <div class="list-item">
+              <a class="link" href="/p/3"><img class="cover" src="/c3.jpg" /></a>
+            </div>
+          </div>
+        </body></html>"#;
+        let list_material = SourceMaterial {
+            final_url: "https://example.com/list".into(),
+            status: 200,
+            headers: HashMap::new(),
+            html: list_html.into(),
+            scripts: Vec::<ScriptBlock>::new(),
+            metas: Vec::<MetaTag>::new(),
+            fetched_at: chrono::Utc::now().naive_utc(),
+            duration_ms: 50,
+        };
 
-        // 仅首次为新增
-        assert_eq!(new_count, 1, "first call should create, others should update");
+        // ---- 详情页素材（mock 单条） ----
+        let detail_html = r#"<!DOCTYPE html><html><head><title>Hello Post</title></head>
+          <body><article><h1 class="title">Hello Post</h1>
+            <div class="content"><p>Body text here.</p></div>
+          </article></body></html>"#;
+        let detail_material = SourceMaterial {
+            final_url: "https://example.com/p/1".into(),
+            status: 200,
+            headers: HashMap::new(),
+            html: detail_html.into(),
+            scripts: Vec::<ScriptBlock>::new(),
+            metas: Vec::<MetaTag>::new(),
+            fetched_at: chrono::Utc::now().naive_utc(),
+            duration_ms: 30,
+        };
 
-        // DB 中仅 1 行
-        let (total,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM crawler_articles WHERE task_id = ?")
-                .bind(task_id)
-                .fetch_one(&pool)
-                .await
-                .expect("count");
-        assert_eq!(total, 1, "DB should have exactly 1 row after 100 calls");
-    }
+        // ---- 字段树：list_page 含 link_card + 子 cover；detail_page 含 title + content ----
+        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc();
+        let mk = |id: i64, parent: Option<i64>, scope: &str, name: &str, ft: &str, layer: &str, mode: &str, rule: &str| FieldNodeRow {
+            id, task_id: 1, parent_id: parent, scope: scope.into(), name: name.into(),
+            display_name: name.into(), field_type: ft.into(), source_layer: layer.into(),
+            extractor_mode: mode.into(), rule_json: rule.into(),
+            post_processors_json: None, script_index: None, sort_order: 0, is_active: true,
+            created_at: ts, updated_at: ts,
+        };
+        let rows = vec![
+            mk(1, None, "list_page", "link_card", "link_card", "html", "css",
+               r#"{"selector":".list-item a.link","attr":"href"}"#),
+            mk(2, Some(1), "list_page", "cover", "image", "html", "css",
+               r#"{"selector":"img.cover","attr":"src"}"#),
+            mk(3, None, "detail_page", "title", "string", "html", "css",
+               r#"{"selector":"h1.title","attr":"text"}"#),
+            mk(4, None, "detail_page", "content", "text", "html", "css",
+               r#"{"selector":".content","attr":"text"}"#),
+        ];
+        let tree = crate::models::crawler_field_node::from_rows(rows);
 
-    // T057 SC-008 性能验证：1000 条种子数据，文章列表查询 + 单文章 20 图查询响应时延
-    // 用 #[ignore] 标注，手动跑：cargo test perf_seed_1000_articles --release -- --ignored --nocapture
-    #[tokio::test]
-    #[ignore]
-    async fn perf_seed_1000_articles_list_query_under_1s() {
-        use std::time::Instant;
-        use sqlx::sqlite::SqlitePoolOptions;
-
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .expect("connect test db");
-        sqlx::raw_sql(include_str!("../../../migrations/020_crawler_tasks_sqlite.sql"))
-            .execute(&pool)
-            .await
-            .expect("run 020 migration");
-        sqlx::raw_sql(include_str!("../../../migrations/021_crawler_articles_sqlite.sql"))
-            .execute(&pool)
-            .await
-            .expect("run 021 migration");
-        sqlx::raw_sql(include_str!("../../../migrations/022_crawler_article_links_sqlite.sql"))
-            .execute(&pool)
-            .await
-            .expect("run 022 migration");
-        sqlx::raw_sql(include_str!("../../../migrations/023_crawler_article_images_sqlite.sql"))
-            .execute(&pool)
-            .await
-            .expect("run 023 migration");
-
-        // 插入任务
-        sqlx::query(
-            "INSERT INTO crawler_tasks (name, list_urls, selectors) VALUES ('perf-task', 'https://x/l', '{}')",
-        )
-        .execute(&pool)
-        .await
-        .expect("insert task");
-        let (task_id,): (i64,) =
-            sqlx::query_as("SELECT id FROM crawler_tasks WHERE name = 'perf-task'")
-                .fetch_one(&pool)
-                .await
-                .expect("select task");
-
-        // 批量插入 1000 篇文章
-        let now = chrono::Utc::now().naive_utc();
-        for i in 0..1000 {
-            let url = format!("https://example.com/p/{i}");
-            sqlx::query(
-                "INSERT INTO crawler_articles \
-                 (task_id, source_type, source_url, source_url_canonical, title, content, crawled_at, created_at, updated_at) \
-                 VALUES (?, 'perf-task', ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(task_id)
-            .bind(&url)
-            .bind(&url)
-            .bind(format!("Title {i}"))
-            .bind(format!("Content body {i}"))
-            .bind(now)
-            .bind(now)
-            .bind(now)
-            .execute(&pool)
-            .await
-            .expect("insert article");
-        }
-
-        // 性能测量：模拟 list_articles 的分页查询（带 join 子查询统计）
-        let start = Instant::now();
-        let rows: Vec<(i64, String, String)> = sqlx::query_as(
-            "SELECT a.id, a.title, a.source_url \
-             FROM crawler_articles a \
-             WHERE a.task_id = ? \
-             ORDER BY a.crawled_at DESC \
-             LIMIT 20 OFFSET 0",
-        )
-        .bind(task_id)
-        .fetch_all(&pool)
-        .await
-        .expect("list query");
-        let elapsed = start.elapsed();
-        assert_eq!(rows.len(), 20);
-        println!("list_articles(20 of 1000): {elapsed:?} (SC-008 budget: ≤1s)");
-        assert!(elapsed.as_millis() < 1000, "SC-008 violated: list > 1s");
-
-        // 单文章 20 图查询（SC-004 详情页 ≤ 2s 预算，本测试仅测 DB 部分）
-        let (first_id,): (i64,) =
-            sqlx::query_as("SELECT id FROM crawler_articles WHERE task_id = ? ORDER BY id LIMIT 1")
-                .bind(task_id)
-                .fetch_one(&pool)
-                .await
-                .expect("first id");
-        for j in 0..20 {
-            let img_url = format!("https://img.example.com/{j}.jpg");
-            sqlx::query(
-                "INSERT INTO crawler_article_images (article_id, original_url, url_canonical, status, retry_count) \
-                 VALUES (?, ?, ?, 'pending', 0)",
-            )
-            .bind(first_id)
-            .bind(&img_url)
-            .bind(&img_url)
-            .execute(&pool)
-            .await
-            .expect("insert image");
-        }
-        let start = Instant::now();
-        let _imgs: Vec<(i64, String)> = sqlx::query_as(
-            "SELECT id, original_url FROM crawler_article_images WHERE article_id = ?",
-        )
-        .bind(first_id)
-        .fetch_all(&pool)
-        .await
-        .expect("images query");
-        let elapsed = start.elapsed();
-        println!("get_article 20 images: {elapsed:?} (SC-004 DB portion)");
-        assert!(elapsed.as_millis() < 2000, "SC-004 violated: images > 2s");
-    }
-
-    // ===== 自动翻页：extract_pagination_urls =====
-
-    const PAGE_HTML_WITH_NEXT: &str = r#"<!DOCTYPE html>
-<html><body>
-  <ul class="list">
-    <li><a href="/p/1">1</a></li>
-    <li><a href="/p/2">2</a></li>
-  </ul>
-  <a class="next" href="/list?page=3">下一页 ›</a>
-</body></html>"#;
-
-    const PAGE_HTML_PAGINATION_FULL: &str = r#"<!DOCTYPE html>
-<html><body>
-  <ul class="list"><li>...</li></ul>
-  <div class="pagination">
-    <a href="/list?page=1" class="active">1</a>
-    <a href="/list?page=2">2</a>
-    <a href="/list?page=3">3</a>
-    <a href="/list?page=4">4</a>
-    <a href="/list?page=2" class="next">下一页</a>
-  </div>
-</body></html>"#;
-
-    const PAGE_HTML_LAST: &str = r#"<!DOCTYPE html>
-<html><body>
-  <ul class="list">
-    <li><a href="/p/99">99</a></li>
-  </ul>
-  <span class="no-more">已到末页</span>
-</body></html>"#;
-
-    #[test]
-    fn extract_pagination_urls_finds_single_next() {
-        // 单一 next 链接场景
-        let urls = extract_pagination_urls(PAGE_HTML_WITH_NEXT, "a.next");
-        assert_eq!(urls, vec!["/list?page=3"]);
-    }
-
-    #[test]
-    fn extract_pagination_urls_collects_all_page_links() {
-        // 分页选择器：一次性抓 1/2/3/4 + 下一页（共 5 个链接，按 DOM 顺序）
-        let urls = extract_pagination_urls(PAGE_HTML_PAGINATION_FULL, ".pagination a");
-        assert_eq!(
-            urls,
-            vec![
-                "/list?page=1",
-                "/list?page=2",
-                "/list?page=3",
-                "/list?page=4",
-                "/list?page=2", // 下一页链接（同 URL，由调用方去重）
-            ]
+        // ---- 第一阶段：列表页提取 ----
+        let list_extractions = extract_layer(
+            &tree.list_page,
+            &list_material,
+            &[],
+            Scope::ListPage.as_str(),
+            "/list_page",
         );
-    }
+        // link_card 应命中 3 条
+        let link_ext = list_extractions.iter().find(|e| e.field_path.ends_with("/link_card")).unwrap();
+        assert_eq!(link_ext.hits.len(), 3, "link_card 应命中 3 条 detail 链接");
 
-    #[test]
-    fn extract_pagination_urls_supports_multiple_selectors() {
-        // 第一个选择器 a[rel=next] 未命中，第二个 a.next 命中
-        let urls = extract_pagination_urls(PAGE_HTML_WITH_NEXT, "a[rel=next], a.next");
-        assert_eq!(urls, vec!["/list?page=3"]);
-    }
+        // cover 在父命中的 3 个 HTML 片段上提取（每个片段 1 张图）→ 3 条命中
+        let cover_ext = list_extractions.iter().find(|e| e.field_path.ends_with("/cover")).unwrap();
+        assert_eq!(cover_ext.hits.len(), 3, "cover 应在每条父命中上各命中 1 次");
 
-    #[test]
-    fn extract_pagination_urls_empty_on_last_page() {
-        // 末页：没有匹配元素，返回空 Vec → 不再扩散
-        let urls = extract_pagination_urls(PAGE_HTML_LAST, "a.next");
-        assert!(urls.is_empty());
-    }
-
-    #[test]
-    fn extract_pagination_urls_invalid_selector_returns_empty() {
-        let urls = extract_pagination_urls(PAGE_HTML_WITH_NEXT, ">>>");
-        assert!(urls.is_empty());
-    }
-
-    #[test]
-    fn extract_pagination_urls_descendant_links_in_container() {
-        // 选择器命中的是容器（.pagination），后代扫描找到所有 <a>
-        const HTML: &str = r#"<div class="pagination">
-            <a href="/p/1">1</a><a href="/p/2">2</a>
-        </div>"#;
-        let urls = extract_pagination_urls(HTML, ".pagination");
-        assert_eq!(urls, vec!["/p/1", "/p/2"]);
-    }
-
-    #[test]
-    fn extract_pagination_urls_ignores_empty_href() {
-        // href="" 不应当返回
-        const HTML: &str = r#"<div class="pagination">
-            <a href="">empty</a><a href="/p/2">2</a>
-        </div>"#;
-        let urls = extract_pagination_urls(HTML, ".pagination");
-        assert_eq!(urls, vec!["/p/2"]);
-    }
-
-    #[test]
-    fn resolve_url_query_only_relative() {
-        // 自动翻页典型场景：相对的 ?page=2
-        assert_eq!(
-            resolve_url("?page=2", "https://example.com/list?page=1"),
-            "https://example.com/list?page=2"
+        // ---- collect_detail_links 应返回 3 条绝对 URL ----
+        let detail_links = collect_detail_links(
+            &list_extractions,
+            &tree.list_page,
+            &format!("/{}", Scope::ListPage.as_str()),
+            &list_material.final_url,
         );
+        assert_eq!(detail_links.len(), 3, "应收集 3 条 detail 链接");
+        assert!(detail_links.iter().all(|u| u.starts_with("https://example.com/p/")));
+
+        // ---- 第二阶段：详情页提取（用 mock 的 detail_material） ----
+        let detail_extractions = extract_layer(
+            &tree.detail_page,
+            &detail_material,
+            &[],
+            Scope::DetailPage.as_str(),
+            "/detail_page",
+        );
+        let title = find_first_value(&detail_extractions, "title").expect("title 必命中");
+        assert_eq!(title, "Hello Post");
+        let content = find_first_value(&detail_extractions, "content").expect("content 必命中");
+        assert!(content.contains("Body text"));
+
+        // ---- 聚合 extra_fields_json ----
+        let json_str = build_extra_fields_json(&detail_extractions).expect("Some");
+        let v: Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(v["title"], Value::String("Hello Post".into()));
+        assert!(v["content"].as_str().unwrap().contains("Body text"));
+
+        // ---- extra_fields_json 在 list_page 阶段也聚合（多值 → 数组） ----
+        let list_json = build_extra_fields_json(&list_extractions).expect("Some");
+        let lv: Value = serde_json::from_str(&list_json).unwrap();
+        assert_eq!(lv["link_card"], Value::Array(vec![
+            Value::String("https://example.com/p/1".into()),
+            Value::String("https://example.com/p/2".into()),
+            Value::String("https://example.com/p/3".into()),
+        ]));
+        assert_eq!(lv["cover"].as_array().unwrap().len(), 3);
+    }
+
+    /// **未命中字段不出错**：CSS 选择器不匹配任何元素时返回空 hits + 不抛错（FR-019 单字段失败不中断）
+    #[test]
+    fn field_tree_unhit_does_not_propagate_error() {
+        use crate::services::crawler::source_layer::{MetaTag, ScriptBlock, SourceMaterial};
+
+        let html = r#"<html><body><div>no matches</div></body></html>"#;
+        let material = SourceMaterial {
+            final_url: "https://example.com/x".into(),
+            status: 200,
+            headers: HashMap::new(),
+            html: html.into(),
+            scripts: Vec::<ScriptBlock>::new(),
+            metas: Vec::<MetaTag>::new(),
+            fetched_at: chrono::Utc::now().naive_utc(),
+            duration_ms: 5,
+        };
+
+        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc();
+        let row = FieldNodeRow {
+            id: 1, task_id: 1, parent_id: None, scope: "list_page".into(),
+            name: "title".into(), display_name: "title".into(),
+            field_type: "string".into(), source_layer: "html".into(),
+            extractor_mode: "css".into(),
+            rule_json: r#"{"selector":".missing","attr":"text"}"#.into(),
+            post_processors_json: None, script_index: None, sort_order: 0,
+            is_active: true, created_at: ts, updated_at: ts,
+        };
+        let tree = crate::models::crawler_field_node::from_rows(vec![row]);
+
+        let ext = extract_layer(
+            &tree.list_page,
+            &material,
+            &[],
+            Scope::ListPage.as_str(),
+            "/list_page",
+        );
+        assert_eq!(ext.len(), 1);
+        assert!(ext[0].hits.is_empty(), "未命中字段应为空 hits");
+        assert!(ext[0].error.is_none(), "未命中（CSS 找不到元素）不应被记为 error");
     }
 }

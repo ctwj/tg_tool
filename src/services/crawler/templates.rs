@@ -1,333 +1,717 @@
-//! 站点模板（内置 + 自定义）— Phase 3 T024 / Phase 6 T052/T053 扩展
+//! 内置站点模板（feature 043-crawler-configurator）
+//!
+//! 直接取代 042 旧的 `CrawlerTemplate` / `generic_resource_site_config` /
+//! `discuz_forum_config` / `wordpress_blog_config`。
+//!
+//! 新模板基于 **FieldTree**（字段树）— 每个模板含一棵预置好的字段树，
+//! 用户从模板创建任务时直接展开为 `crawler_task_field_nodes` 行。
+//!
+//! 模板列表：
+//! - `discuz_forum` — Discuz! 论坛（帖子列表 + 帖子详情）
+//! - `wordpress_blog` — WordPress 博客（文章列表 + 文章详情）
+//! - `generic_resource_site` — 通用资源站（列表 + 详情，含 cover/description/tags）
 
-use crate::models::crawler_task::CrawlerTaskInput;
-use crate::services::crawler::extractor::{FieldSelector, FieldSelectors};
 use serde::{Deserialize, Serialize};
 
-/// 内置/自定义模板（与 contracts/crawler-api.md §CrawlerTemplate 对齐）
+use crate::services::crawler::field_schema::{
+    validate_name, validate_rule, ExtractorMode, FieldNodeSpec, FieldTree, FieldType,
+    FieldTreeNode, PostProcessor, PostProcessorOp, Rule, Scope, SourceLayer,
+};
+
+// ============================================================================
+// 数据结构
+// ============================================================================
+
+/// 内置模板对外暴露的结构（GET /api/crawler/task-templates 的元素）
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CrawlerTemplate {
-    /// 内置模板标识，如 `generic_resource_site`
-    pub key: String,
-    pub name: String,
-    /// `forum` | `blog` | `resource`
-    pub site_type: String,
-    pub description: String,
-    /// 完整配置（用户仅需改 list_urls）
-    pub config: CrawlerTaskInput,
+pub struct BuiltinTemplate {
+    /// 模板唯一 key（用作 from-template 入参）
+    pub key: &'static str,
+    /// 展示名称
+    pub name: &'static str,
+    /// 适用站点说明
+    pub description: &'static str,
+    /// 站点类型（与 042 source_type 兼容，便于推送接入识别）
+    pub source_type: &'static str,
+    /// 预置字段树
+    pub field_tree: FieldTree,
 }
 
-/// 默认 User-Agent — 真实浏览器 UA 字符串（research.md §options table）
-pub const DEFAULT_USER_AGENT: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) \
-     Chrome/130.0.0.0 Safari/537.36";
+// ============================================================================
+// PostProcessor / Spec 构造快捷宏（仅本文件内部使用）
+// ============================================================================
 
-/// 内置模板列表（Phase 3：1 个通用资源站；Phase 6 补齐 discuz_forum / wordpress_blog）
-pub fn builtin_templates() -> Vec<CrawlerTemplate> {
-    vec![
-        CrawlerTemplate {
-            key: "generic_resource_site".into(),
-            name: "通用资源站".into(),
-            site_type: "resource".into(),
-            description: "通用资源下载站模板：两阶段抓取，标题/正文/网盘/直链/图片全字段。\
-                          用户需根据目标站实际 HTML 调整 CSS 选择器。"
-                .into(),
-            config: generic_resource_site_config(),
-        },
-        CrawlerTemplate {
-            key: "discuz_forum".into(),
-            name: "Discuz! 论坛".into(),
-            site_type: "forum".into(),
-            description: "Discuz! X3.x 论坛帖子抓取：两阶段，列表页 threadlist 主题列表 → 帖子详情。\
-                          自动识别常见网盘域名（quark/baidu/aliyun 等）。适用于大多数 Discuz 资源站。"
-                .into(),
-            config: discuz_forum_config(),
-        },
-        CrawlerTemplate {
-            key: "wordpress_blog".into(),
-            name: "WordPress 博客".into(),
-            site_type: "blog".into(),
-            description: "WordPress 经典主题/区块主题博客文章抓取：两阶段，列表页 article → 单篇文章。\
-                          适配 .post / .entry-content / wp-block-* 等常见类名。"
-                .into(),
-            config: wordpress_blog_config(),
-        },
-    ]
+/// 构造 PostProcessor
+const fn pp(op: PostProcessorOp) -> PostProcessor {
+    PostProcessor { op }
 }
 
-fn generic_resource_site_config() -> CrawlerTaskInput {
-    CrawlerTaskInput {
-        name: "new-resource-site".into(),
-        enabled: true,
-        list_urls: vec!["https://example-resources.com/list".into()],
-        selectors: FieldSelectors {
-            list_item: ".post-list .post-item".into(),
-            detail_link: "a.detail-link".into(),
-            detail_link_attr: Some("href".into()),
-            title: FieldSelector {
-                css: "h1.post-title".into(),
-                attr: None,
-                regex: None,
-            },
-            content: FieldSelector {
-                css: ".post-content".into(),
-                attr: Some("html".into()),
-                regex: None,
-            },
-            category: FieldSelector {
-                css: ".post-category".into(),
-                ..Default::default()
-            },
-            tags: FieldSelector {
-                css: ".post-tags".into(),
-                ..Default::default()
-            },
-            images: FieldSelector {
-                css: ".post-content img".into(),
-                attr: Some("src".into()),
-                ..Default::default()
-            },
-            pan_links: FieldSelector {
-                css: ".download-links a".into(),
-                attr: Some("href".into()),
-                ..Default::default()
-            },
-            direct_links: FieldSelector {
-                css: ".direct-download a".into(),
-                attr: Some("href".into()),
-                ..Default::default()
-            },
-        },
-        two_stage: true,
-        interval_minutes: 30,
-        task_concurrency: 1,
-        user_agent: Some(DEFAULT_USER_AGENT.into()),
-        request_delay_ms: 1000,
-        proxy: None,
-        auto_link_check: false,
-        block_detection_config: None,
-        max_consecutive_failures: 3,
-        template_source: Some("generic_resource_site".into()),
-        // 通用资源站常见分页容器：抓所有数字 + 下一页
-        pagination_selector: Some(".pagination a, a.next, a[rel=next]".into()),
-        max_pages: 0,
+/// 构造一个字段节点 spec（顶层；不含 id/task_id/parent_id，由插入时回填）
+#[allow(clippy::too_many_arguments)]
+fn spec(
+    scope: Scope,
+    name: &str,
+    display_name: &str,
+    field_type: FieldType,
+    source_layer: SourceLayer,
+    extractor_mode: ExtractorMode,
+    rule: Rule,
+    post_processors: Vec<PostProcessor>,
+    sort_order: i32,
+) -> FieldNodeSpec {
+    FieldNodeSpec {
+        id: None,
+        task_id: None,
+        parent_id: None,
+        scope,
+        name: name.into(),
+        display_name: display_name.into(),
+        field_type,
+        source_layer,
+        extractor_mode,
+        rule,
+        post_processors,
+        script_index: None,
+        sort_order,
+        is_active: true,
     }
 }
 
-/// Discuz! X3.x 论坛模板（T052）— list_item 用 `.threadlist li`、详情链接 `.ic2 a.xst`
-fn discuz_forum_config() -> CrawlerTaskInput {
-    CrawlerTaskInput {
-        name: "discuz-forum".into(),
-        enabled: true,
-        list_urls: vec!["https://forum.example.com/forum-12-1".into()],
-        selectors: FieldSelectors {
-            // Discuz threadlist 列表项
-            list_item: "#threadlist .threadlist tbody[id^='normalthread']".into(),
-            detail_link: "tr th a.s.xst".into(),
-            detail_link_attr: Some("href".into()),
-            title: FieldSelector {
-                css: "#thread_subject".into(),
-                attr: None,
-                regex: None,
+// ============================================================================
+// 模板 1：Discuz! 论坛
+// ============================================================================
+//
+// 列表页：论坛板块页 `.forumlist tbody tr` 或帖子列表 `tbody[id^=normalthread_]` 行
+// 详情页：帖子页 `<td.t_f>` 主体内容
+fn discuz_forum() -> FieldTree {
+    use crate::services::crawler::field_schema::{
+        CssRule, ExtractorMode::Css, FieldType::*, Scope::*, SourceLayer::Html,
+    };
+
+    FieldTree {
+        list_page: vec![
+            // 链接卡片：每个帖子一行，含标题链接 + 缩略图（若有）
+            FieldTreeNode {
+                spec: spec(
+                    ListPage,
+                    "thread_card",
+                    "帖子卡片",
+                    LinkCard,
+                    Html,
+                    Css,
+                    Rule::Css(CssRule {
+                        selector: "tbody[id^=normalthread_] a.s.xst, .forumlist a.xst".into(),
+                        attr: "href".into(),
+                    }),
+                    vec![],
+                    0,
+                ),
+                children: vec![
+                    FieldTreeNode {
+                        spec: spec(
+                            ListPage,
+                            "title",
+                            "帖子标题",
+                            String,
+                            Html,
+                            Css,
+                            Rule::Css(CssRule {
+                                selector: "a.xst".into(),
+                                attr: "text".into(),
+                            }),
+                            vec![pp(PostProcessorOp::Trim)],
+                            0,
+                        ),
+                        children: vec![],
+                    },
+                    FieldTreeNode {
+                        spec: spec(
+                            ListPage,
+                            "cover",
+                            "帖子封面",
+                            Image,
+                            Html,
+                            Css,
+                            Rule::Css(CssRule {
+                                selector: "img.attach".into(),
+                                attr: "src".into(),
+                            }),
+                            vec![],
+                            1,
+                        ),
+                        children: vec![],
+                    },
+                ],
             },
-            content: FieldSelector {
-                css: ".t_fszd .t_fsz, td.t_f".into(),
-                attr: Some("html".into()),
-                regex: None,
+        ],
+        detail_page: vec![
+            FieldTreeNode {
+                spec: spec(
+                    DetailPage,
+                    "title",
+                    "帖子标题",
+                    String,
+                    Html,
+                    Css,
+                    Rule::Css(CssRule {
+                        selector: "#thread_subject, h1.title".into(),
+                        attr: "text".into(),
+                    }),
+                    vec![pp(PostProcessorOp::Trim)],
+                    0,
+                ),
+                children: vec![],
             },
-            category: FieldSelector {
-                css: "#pt .z a:nth-last-child(2)".into(),
-                ..Default::default()
+            FieldTreeNode {
+                spec: spec(
+                    DetailPage,
+                    "content",
+                    "帖子正文",
+                    Text,
+                    Html,
+                    Css,
+                    Rule::Css(CssRule {
+                        selector: "td.t_f, .message".into(),
+                        attr: "text".into(),
+                    }),
+                    vec![pp(PostProcessorOp::Trim)],
+                    1,
+                ),
+                children: vec![],
             },
-            tags: FieldSelector {
-                css: "".into(),
-                ..Default::default()
+            FieldTreeNode {
+                spec: spec(
+                    DetailPage,
+                    "post_time",
+                    "发帖时间",
+                    Datetime,
+                    Html,
+                    Css,
+                    Rule::Css(CssRule {
+                        selector: ".authi em, #authorposton1".into(),
+                        attr: "text".into(),
+                    }),
+                    vec![pp(PostProcessorOp::Trim)],
+                    2,
+                ),
+                children: vec![],
             },
-            images: FieldSelector {
-                css: ".t_fszd .t_f img, td.t_f img".into(),
-                attr: Some("file".into()), // Discuz 懒加载 attr 优先；fallback 由 engine 处理 src
-                ..Default::default()
-            },
-            // 论坛网盘链接通常在帖子正文或隐藏的 reply 区域
-            pan_links: FieldSelector {
-                css: ".t_fszd .t_f a, td.t_f a, .locked a".into(),
-                attr: Some("href".into()),
-                ..Default::default()
-            },
-            direct_links: FieldSelector {
-                css: "attachimgright a, .attnm a".into(),
-                attr: Some("href".into()),
-                ..Default::default()
-            },
-        },
-        two_stage: true,
-        interval_minutes: 60,
-        task_concurrency: 1,
-        user_agent: Some(DEFAULT_USER_AGENT.into()),
-        request_delay_ms: 1500, // 论坛更敏感，间隔放大
-        proxy: None,
-        auto_link_check: false,
-        block_detection_config: None,
-        max_consecutive_failures: 3,
-        template_source: Some("discuz_forum".into()),
-        // Discuz! X3.x 分页容器 .pg：抓所有页码 + next
-        pagination_selector: Some(".pg a".into()),
-        max_pages: 0,
+        ],
     }
 }
 
-/// WordPress 经典/区块主题模板（T052）
-fn wordpress_blog_config() -> CrawlerTaskInput {
-    CrawlerTaskInput {
-        name: "wordpress-blog".into(),
-        enabled: true,
-        list_urls: vec!["https://blog.example.com".into()],
-        selectors: FieldSelectors {
-            // 兼容经典主题 article.post 与区块主题 .wp-block-post
-            list_item: "article.post, .wp-block-post".into(),
-            detail_link: "h2.entry-title a, h2 a[href*='/'], .entry-title a".into(),
-            detail_link_attr: Some("href".into()),
-            title: FieldSelector {
-                css: "h1.entry-title".into(),
-                attr: None,
-                regex: None,
+// ============================================================================
+// 模板 2：WordPress 博客
+// ============================================================================
+//
+// 列表页：`.post` 文章卡片
+// 详情页：`.entry-title` + `.entry-content`
+fn wordpress_blog() -> FieldTree {
+    use crate::services::crawler::field_schema::{
+        CssRule, ExtractorMode::Css, FieldType::*, Scope::*, SourceLayer::Html,
+    };
+
+    FieldTree {
+        list_page: vec![FieldTreeNode {
+            spec: spec(
+                ListPage,
+                "post_card",
+                "文章卡片",
+                LinkCard,
+                Html,
+                Css,
+                Rule::Css(CssRule {
+                    selector: ".post h2 a, .entry-title a".into(),
+                    attr: "href".into(),
+                }),
+                vec![],
+                0,
+            ),
+            children: vec![
+                FieldTreeNode {
+                    spec: spec(
+                        ListPage,
+                        "title",
+                        "文章标题",
+                        String,
+                        Html,
+                        Css,
+                        Rule::Css(CssRule {
+                            selector: "a".into(),
+                            attr: "text".into(),
+                        }),
+                        vec![pp(PostProcessorOp::Trim)],
+                        0,
+                    ),
+                    children: vec![],
+                },
+                FieldTreeNode {
+                    spec: spec(
+                        ListPage,
+                        "cover",
+                        "封面图",
+                        Image,
+                        Html,
+                        Css,
+                        Rule::Css(CssRule {
+                            selector: "img.wp-post-image, img.attachment-post-thumbnail".into(),
+                            attr: "src".into(),
+                        }),
+                        vec![],
+                        1,
+                    ),
+                    children: vec![],
+                },
+            ],
+        }],
+        detail_page: vec![
+            FieldTreeNode {
+                spec: spec(
+                    DetailPage,
+                    "title",
+                    "文章标题",
+                    String,
+                    Html,
+                    Css,
+                    Rule::Css(CssRule {
+                        selector: "h1.entry-title".into(),
+                        attr: "text".into(),
+                    }),
+                    vec![pp(PostProcessorOp::Trim)],
+                    0,
+                ),
+                children: vec![],
             },
-            content: FieldSelector {
-                css: ".entry-content, .wp-block-post-content".into(),
-                attr: Some("html".into()),
-                regex: None,
+            FieldTreeNode {
+                spec: spec(
+                    DetailPage,
+                    "content",
+                    "正文",
+                    Text,
+                    Html,
+                    Css,
+                    Rule::Css(CssRule {
+                        selector: ".entry-content".into(),
+                        attr: "text".into(),
+                    }),
+                    vec![pp(PostProcessorOp::Trim)],
+                    1,
+                ),
+                children: vec![],
             },
-            category: FieldSelector {
-                css: ".cat-links a, .post-categories a".into(),
-                ..Default::default()
+            FieldTreeNode {
+                spec: spec(
+                    DetailPage,
+                    "published_at",
+                    "发布时间",
+                    Datetime,
+                    Html,
+                    Css,
+                    Rule::Css(CssRule {
+                        selector: "time.entry-date, .post-date".into(),
+                        attr: "datetime".into(),
+                    }),
+                    vec![pp(PostProcessorOp::Trim)],
+                    2,
+                ),
+                children: vec![],
             },
-            tags: FieldSelector {
-                css: ".tags-links a, .tagcloud a".into(),
-                ..Default::default()
+            FieldTreeNode {
+                spec: spec(
+                    DetailPage,
+                    "tags",
+                    "标签",
+                    String,
+                    Html,
+                    Css,
+                    Rule::Css(CssRule {
+                        selector: ".tagcloud a, .post-tags a".into(),
+                        attr: "text".into(),
+                    }),
+                    vec![pp(PostProcessorOp::Trim), pp(PostProcessorOp::Dedupe)],
+                    3,
+                ),
+                children: vec![],
             },
-            images: FieldSelector {
-                css: ".entry-content img, .wp-block-post-content img".into(),
-                attr: Some("src".into()),
-                ..Default::default()
-            },
-            pan_links: FieldSelector {
-                css: ".entry-content a, .wp-block-post-content a".into(),
-                attr: Some("href".into()),
-                ..Default::default()
-            },
-            direct_links: FieldSelector {
-                css: ".entry-content a[href$='.zip'], .entry-content a[href$='.rar'], .entry-content a[href$='.pdf']".into(),
-                attr: Some("href".into()),
-                ..Default::default()
-            },
-        },
-        two_stage: true,
-        interval_minutes: 30,
-        task_concurrency: 1,
-        user_agent: Some(DEFAULT_USER_AGENT.into()),
-        request_delay_ms: 1000,
-        proxy: None,
-        auto_link_check: false,
-        block_detection_config: None,
-        max_consecutive_failures: 3,
-        template_source: Some("wordpress_blog".into()),
-        // WordPress 经典/区块主题分页：抓所有数字 + next/prev
-        pagination_selector: Some(".nav-links a, .pagination a, a[rel=next]".into()),
-        max_pages: 0,
+        ],
     }
 }
+
+// ============================================================================
+// 模板 3：通用资源站
+// ============================================================================
+//
+// 适配大多数「列表 + 详情」结构的资源站，列表卡片含 cover/title/description/tags。
+fn generic_resource_site() -> FieldTree {
+    use crate::services::crawler::field_schema::{
+        CssRule, ExtractorMode::Css, FieldType::*, Scope::*, SourceLayer::Html,
+    };
+
+    FieldTree {
+        list_page: vec![FieldTreeNode {
+            spec: spec(
+                ListPage,
+                "resource_card",
+                "资源卡片",
+                LinkCard,
+                Html,
+                Css,
+                Rule::Css(CssRule {
+                    selector: ".item, .card, .post, article".into(),
+                    attr: "html".into(),
+                }),
+                vec![],
+                0,
+            ),
+            children: vec![
+                FieldTreeNode {
+                    spec: spec(
+                        ListPage,
+                        "title",
+                        "标题",
+                        String,
+                        Html,
+                        Css,
+                        Rule::Css(CssRule {
+                            selector: "a.title, h2 a, h3 a, .title a".into(),
+                            attr: "text".into(),
+                        }),
+                        vec![pp(PostProcessorOp::Trim)],
+                        0,
+                    ),
+                    children: vec![],
+                },
+                FieldTreeNode {
+                    spec: spec(
+                        ListPage,
+                        "url",
+                        "详情链接",
+                        Url,
+                        Html,
+                        Css,
+                        Rule::Css(CssRule {
+                            selector: "a.title, h2 a, h3 a, .title a".into(),
+                            attr: "href".into(),
+                        }),
+                        vec![],
+                        1,
+                    ),
+                    children: vec![],
+                },
+                FieldTreeNode {
+                    spec: spec(
+                        ListPage,
+                        "cover",
+                        "封面图",
+                        Image,
+                        Html,
+                        Css,
+                        Rule::Css(CssRule {
+                            selector: "img, .thumb img, .cover img".into(),
+                            attr: "src".into(),
+                        }),
+                        vec![pp(PostProcessorOp::First)],
+                        2,
+                    ),
+                    children: vec![],
+                },
+                FieldTreeNode {
+                    spec: spec(
+                        ListPage,
+                        "description",
+                        "摘要",
+                        Text,
+                        Html,
+                        Css,
+                        Rule::Css(CssRule {
+                            selector: ".desc, .summary, .excerpt, p".into(),
+                            attr: "text".into(),
+                        }),
+                        vec![pp(PostProcessorOp::Trim), pp(PostProcessorOp::First)],
+                        3,
+                    ),
+                    children: vec![],
+                },
+            ],
+        }],
+        detail_page: vec![
+            FieldTreeNode {
+                spec: spec(
+                    DetailPage,
+                    "title",
+                    "标题",
+                    String,
+                    Html,
+                    Css,
+                    Rule::Css(CssRule {
+                        selector: "h1, .title, .article-title".into(),
+                        attr: "text".into(),
+                    }),
+                    vec![pp(PostProcessorOp::Trim)],
+                    0,
+                ),
+                children: vec![],
+            },
+            FieldTreeNode {
+                spec: spec(
+                    DetailPage,
+                    "content",
+                    "正文",
+                    Text,
+                    Html,
+                    Css,
+                    Rule::Css(CssRule {
+                        selector: ".content, .article-content, .entry-content, article".into(),
+                        attr: "text".into(),
+                    }),
+                    vec![pp(PostProcessorOp::Trim)],
+                    1,
+                ),
+                children: vec![],
+            },
+            FieldTreeNode {
+                spec: spec(
+                    DetailPage,
+                    "cover",
+                    "封面图",
+                    Image,
+                    Html,
+                    Css,
+                    Rule::Css(CssRule {
+                        selector: ".cover img, .thumbnail img, article img".into(),
+                        attr: "src".into(),
+                    }),
+                    vec![pp(PostProcessorOp::First)],
+                    2,
+                ),
+                children: vec![],
+            },
+            FieldTreeNode {
+                spec: spec(
+                    DetailPage,
+                    "tags",
+                    "标签",
+                    String,
+                    Html,
+                    Css,
+                    Rule::Css(CssRule {
+                        selector: ".tags a, .tag-list a, .post-tags a".into(),
+                        attr: "text".into(),
+                    }),
+                    vec![pp(PostProcessorOp::Trim), pp(PostProcessorOp::Dedupe)],
+                    3,
+                ),
+                children: vec![],
+            },
+        ],
+    }
+}
+
+// ============================================================================
+// 模板表
+// ============================================================================
+
+/// 内置模板列表（编译期常量；运行期惰性求值）
+pub fn builtin_templates() -> &'static [BuiltinTemplate] {
+    static TEMPLATES: std::sync::OnceLock<Vec<BuiltinTemplate>> = std::sync::OnceLock::new();
+    TEMPLATES.get_or_init(|| {
+        vec![
+            BuiltinTemplate {
+                key: "discuz_forum",
+                name: "Discuz! 论坛",
+                description: "适用于 Discuz! 论坛：板块帖子列表 + 帖子详情（标题/正文/发帖时间）",
+                source_type: "discuz",
+                field_tree: discuz_forum(),
+            },
+            BuiltinTemplate {
+                key: "wordpress_blog",
+                name: "WordPress 博客",
+                description: "适用于 WordPress：文章列表（标题/封面）+ 详情（标题/正文/发布时间/标签）",
+                source_type: "wordpress",
+                field_tree: wordpress_blog(),
+            },
+            BuiltinTemplate {
+                key: "generic_resource_site",
+                name: "通用资源站",
+                description: "适配大多数「列表 + 详情」结构：资源卡片（标题/链接/封面/摘要）+ 详情（标题/正文/封面/标签）",
+                source_type: "generic",
+                field_tree: generic_resource_site(),
+            },
+        ]
+    })
+}
+
+/// 按 key 查找模板
+pub fn find_template(key: &str) -> Option<&'static BuiltinTemplate> {
+    builtin_templates().iter().find(|t| t.key == key)
+}
+
+// ============================================================================
+// 校验（深度遍历字段树，校验 name + rule）
+// ============================================================================
+
+/// 校验单个字段节点及其子树（递归）
+fn validate_node(node: &FieldTreeNode) -> Result<(), String> {
+    let s = &node.spec;
+    validate_name(&s.name)?;
+    // Rule 序列化为 {"mode":"css","spec":{...}}，需要取出 "spec" 内层
+    let full = serde_json::to_value(&s.rule)
+        .map_err(|e| format!("rule 序列化失败 ({}): {e}", s.name))?;
+    let inner = full
+        .get("spec")
+        .ok_or_else(|| format!("rule 缺少 spec 字段 ({})", s.name))?;
+    let rule_json = serde_json::to_string(inner)
+        .map_err(|e| format!("rule inner 序列化失败 ({}): {e}", s.name))?;
+    validate_rule(s.extractor_mode, &rule_json)?;
+    for child in &node.children {
+        validate_node(child)?;
+    }
+    Ok(())
+}
+
+/// 校验字段树（list_page + detail_page 全部节点）
+pub fn validate_field_tree(tree: &FieldTree) -> Result<(), String> {
+    for node in &tree.list_page {
+        validate_node(node)?;
+    }
+    for node in &tree.detail_page {
+        validate_node(node)?;
+    }
+    Ok(())
+}
+
+// ============================================================================
+// 测试
+// ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn builtin_templates_nonempty() {
+    fn builtin_templates_has_three_entries() {
         let t = builtin_templates();
-        assert!(!t.is_empty());
-        assert!(t.iter().any(|x| x.key == "generic_resource_site"));
+        assert_eq!(t.len(), 3, "应有 3 个内置模板");
     }
 
     #[test]
-    fn builtin_templates_count_meets_us4() {
-        // T052：补齐至 3 个内置模板
-        let t = builtin_templates();
-        assert!(t.len() >= 3, "expected >= 3 builtin templates, got {}", t.len());
-        let keys: Vec<&str> = t.iter().map(|x| x.key.as_str()).collect();
-        assert!(keys.contains(&"discuz_forum"), "missing discuz_forum");
-        assert!(keys.contains(&"wordpress_blog"), "missing wordpress_blog");
-        assert!(keys.contains(&"generic_resource_site"), "missing generic_resource_site");
+    fn builtin_templates_keys_are_unique() {
+        let keys: Vec<&str> = builtin_templates().iter().map(|t| t.key).collect();
+        let unique: std::collections::HashSet<&str> = keys.iter().copied().collect();
+        assert_eq!(keys.len(), unique.len(), "模板 key 必须唯一");
     }
 
     #[test]
-    fn discuz_config_valid_and_tagged() {
-        let t = builtin_templates().into_iter().find(|x| x.key == "discuz_forum").unwrap();
-        assert_eq!(t.site_type, "forum");
-        t.config.validate().expect("discuz config should be valid");
-        assert_eq!(t.config.template_source.as_deref(), Some("discuz_forum"));
-        assert!(t.config.request_delay_ms >= 1000, "forum should be conservative");
+    fn find_template_returns_correct_entry() {
+        assert_eq!(find_template("discuz_forum").unwrap().source_type, "discuz");
+        assert_eq!(
+            find_template("wordpress_blog").unwrap().source_type,
+            "wordpress"
+        );
+        assert_eq!(
+            find_template("generic_resource_site")
+                .unwrap()
+                .source_type,
+            "generic"
+        );
+        assert!(find_template("non_existent").is_none());
     }
 
+    /// 所有模板的字段树必须通过 field_schema::validate
     #[test]
-    fn wordpress_config_valid_and_tagged() {
-        let t = builtin_templates().into_iter().find(|x| x.key == "wordpress_blog").unwrap();
-        assert_eq!(t.site_type, "blog");
-        t.config.validate().expect("wordpress config should be valid");
-        assert_eq!(t.config.template_source.as_deref(), Some("wordpress_blog"));
-        // 区块主题 fallback
-        assert!(t.config.selectors.list_item.contains("wp-block-post"));
+    fn all_builtin_templates_pass_field_schema_validate() {
+        for t in builtin_templates() {
+            validate_field_tree(&t.field_tree)
+                .unwrap_or_else(|e| panic!("模板 {} 校验失败: {e}", t.key));
+        }
     }
 
+    /// 每个模板必须至少有 1 个 list_page 字段 + 1 个 detail_page 字段
     #[test]
-    fn generic_config_valid() {
-        let c = generic_resource_site_config();
-        c.validate().expect("generic config should be valid");
-        // template_source 是模板 key，site_type 在模板元数据层而非 config
-        assert_eq!(c.template_source.as_deref(), Some("generic_resource_site"));
-    }
-
-    #[test]
-    fn template_serializes_to_contract() {
-        // 与 contracts/crawler-api.md §CrawlerTemplate 结构一致
-        let t = &builtin_templates()[0];
-        let json = serde_json::to_value(t).unwrap();
-        assert!(json.get("key").is_some());
-        assert!(json.get("name").is_some());
-        assert!(json.get("site_type").is_some());
-        assert!(json.get("description").is_some());
-        assert!(json.get("config").is_some());
-    }
-
-    // ===== 自动翻页：内置模板预填 pagination_selector =====
-
-    #[test]
-    fn all_builtin_templates_have_pagination_selector() {
-        // 用户从内置模板创建任务即可享受自动翻页，无需手动配置
+    fn all_templates_have_list_and_detail_fields() {
         for t in builtin_templates() {
             assert!(
-                t.config.pagination_selector.as_deref().is_some_and(|s| !s.is_empty()),
-                "template {} should pre-fill pagination_selector",
+                !t.field_tree.list_page.is_empty(),
+                "模板 {} 缺少 list_page 字段",
                 t.key
             );
-            assert_eq!(t.config.max_pages, 0, "template {} max_pages should be 0 (unlimited)", t.key);
+            assert!(
+                !t.field_tree.detail_page.is_empty(),
+                "模板 {} 缺少 detail_page 字段",
+                t.key
+            );
+        }
+    }
+
+    /// 每个模板 list_page 至少含一个 link_card 类型字段（用于详情链接收集）
+    #[test]
+    fn all_templates_have_link_card_in_list_page() {
+        use crate::services::crawler::field_schema::FieldType;
+        for t in builtin_templates() {
+            let has_link_card = t.field_tree.list_page.iter().any(|n| {
+                n.spec.field_type == FieldType::LinkCard || n.spec.field_type == FieldType::Url
+            });
+            assert!(
+                has_link_card,
+                "模板 {} 的 list_page 必须含 link_card 或 url 字段",
+                t.key
+            );
+        }
+    }
+
+    /// 字段名必须唯一（同一 scope 内）
+    #[test]
+    fn field_names_unique_per_scope() {
+        fn collect_names(nodes: &[FieldTreeNode], sink: &mut Vec<String>) {
+            for n in nodes {
+                sink.push(n.spec.name.clone());
+                collect_names(&n.children, sink);
+            }
+        }
+        for t in builtin_templates() {
+            let mut names = Vec::new();
+            collect_names(&t.field_tree.list_page, &mut names);
+            let unique: std::collections::HashSet<_> = names.iter().collect();
+            assert_eq!(
+                names.len(),
+                unique.len(),
+                "模板 {} 的 list_page 字段名重复",
+                t.key
+            );
+
+            let mut names = Vec::new();
+            collect_names(&t.field_tree.detail_page, &mut names);
+            let unique: std::collections::HashSet<_> = names.iter().collect();
+            assert_eq!(
+                names.len(),
+                unique.len(),
+                "模板 {} 的 detail_page 字段名重复",
+                t.key
+            );
         }
     }
 
     #[test]
-    fn discuz_template_pagination_selector_targets_pg() {
-        let t = builtin_templates().into_iter().find(|x| x.key == "discuz_forum").unwrap();
-        let sel = t.config.pagination_selector.unwrap();
-        assert!(sel.contains(".pg"), "discuz selector should target .pg container, got: {sel}");
+    fn discuz_forum_template_complete() {
+        let t = find_template("discuz_forum").expect("discuz_forum 模板存在");
+        assert!(t.field_tree.list_page.iter().any(|n| n.spec.name == "thread_card"));
+        assert!(t.field_tree.detail_page.iter().any(|n| n.spec.name == "title"));
+        assert!(t.field_tree.detail_page.iter().any(|n| n.spec.name == "content"));
     }
 
     #[test]
-    fn wordpress_template_pagination_selector_includes_rel_next() {
-        let t = builtin_templates().into_iter().find(|x| x.key == "wordpress_blog").unwrap();
-        let sel = t.config.pagination_selector.unwrap();
-        // 应该至少有一个常见 WordPress 分页 class 或 rel=next
-        assert!(
-            sel.contains("nav-links") || sel.contains("pagination") || sel.contains("rel=next"),
-            "wordpress selector should target common pagination classes, got: {sel}"
-        );
+    fn wordpress_blog_template_complete() {
+        let t = find_template("wordpress_blog").expect("wordpress_blog 模板存在");
+        assert!(t.field_tree.list_page.iter().any(|n| n.spec.name == "post_card"));
+        assert!(t.field_tree.detail_page.iter().any(|n| n.spec.name == "title"));
+        assert!(t.field_tree.detail_page.iter().any(|n| n.spec.name == "content"));
+    }
+
+    #[test]
+    fn generic_resource_site_template_complete() {
+        let t = find_template("generic_resource_site").expect("generic_resource_site 模板存在");
+        assert!(t.field_tree.list_page.iter().any(|n| n.spec.name == "resource_card"));
+        assert!(t.field_tree.detail_page.iter().any(|n| n.spec.name == "title"));
+        assert!(t.field_tree.detail_page.iter().any(|n| n.spec.name == "content"));
     }
 }

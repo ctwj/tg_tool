@@ -1204,13 +1204,13 @@ async fn test_rule_get_update_not_found() {
         .unwrap();
     assert_eq!(resp.status(), 404);
 
-    // DELETE 不存在的规则 → 200（DELETE 无 404 检查）
+    // DELETE 不存在的规则 → 404（delete_rule 已加 rows_affected==0 检查）
     let resp = app
         .clone()
         .oneshot(build_auth_request("DELETE", "/api/rules/999", &token, None))
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 404);
 
     // UPDATE 空body → 短路返回成功
     let resp = app

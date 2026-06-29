@@ -50,6 +50,9 @@ mime_guess = "2"
 # HTML parsing (crawler feature 042)
 scraper = "0.22"
 
+# JSON Path 提取（crawler feature 043 — 字段配置器 <script> 内嵌 JSON 提取）
+serde_json_path = "0.7"
+
 # Captcha
 captcha-rs = "0.5"
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -71,6 +74,7 @@ embed-frontend = ["rust-embed"]
 axum-test = "17"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+wiremock = "0.6"
 
 # 覆盖率工具通过 cargo install cargo-llvm-cov 安装（不在 Cargo.toml 中声明）
 # 运行: cargo llvm-cov --html

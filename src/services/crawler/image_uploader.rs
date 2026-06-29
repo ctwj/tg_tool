@@ -198,7 +198,7 @@ async fn process_one(state: &AppState, row: &PendingImage) -> Result<(), String>
     let ua = row
         .task_user_agent
         .clone()
-        .unwrap_or_else(|| crate::services::crawler::templates::DEFAULT_USER_AGENT.to_string());
+        .unwrap_or_else(|| crate::services::crawler::engine::DEFAULT_USER_AGENT.to_string());
 
     let (bytes, ext) = download_image(&row.original_url, Some(&ua), proxy.as_deref()).await?;
 
@@ -396,9 +396,10 @@ async fn mark_failed(db: &DbPool, image_id: i64, err: &str) -> Result<(), String
 async fn process_one_with_fail_track(state: &AppState, row: &PendingImage) -> Result<(), String> {
     let result = process_one(state, row).await;
     if let Err(e) = &result {
-        // 截断错误信息，避免 last_error 列过长
-        let clipped = if e.len() > 500 {
-            e[..500].to_string()
+        // 截断错误信息，避免 last_error 列过长 —— 按字符切，防多字节 UTF-8 panic
+        let clipped = if e.chars().count() > 500 {
+            let truncated: String = e.chars().take(500).collect();
+            truncated
         } else {
             e.clone()
         };
