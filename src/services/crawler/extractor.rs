@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::services::crawler::field_schema::{
-    compile_regex, PostProcessor, PostProcessorOp, Rule, SourceLayer,
+    compile_regex, PostProcessor, PostProcessorOp, Rule, SourceLayer, SubRule,
 };
 use crate::services::crawler::source_layer::{MetaKeyKind, MetaTag, ScriptBlock, SourceMaterial};
 
@@ -182,6 +182,8 @@ impl<'a> ExtractInput<'a> {
 /// - `Rule::JsonPath` — source_layer=Script（依赖 script_index）
 /// - `Rule::MetaAttr` — source_layer=Meta（直接扫 metas 列表，source_layer 不强制）
 /// - `Rule::HeaderField` — source_layer=Header（直接查 headers，大小写不敏感）
+/// - `Rule::FollowUrl` — **同步路径不支持**，返回 `UnsupportedMode`。
+///   两阶段提取需由 async 调用层（probe/engine）通过 `follow_url::extract_follow_url_async` 完成。
 pub fn extract(rule: &Rule, input: &ExtractInput<'_>) -> Result<Vec<Hit>, ExtractError> {
     match rule {
         Rule::Css(css) => extract_css(css, input),
@@ -190,6 +192,25 @@ pub fn extract(rule: &Rule, input: &ExtractInput<'_>) -> Result<Vec<Hit>, Extrac
         Rule::JsonPath(jp) => extract_by_json_path(jp, input),
         Rule::MetaAttr(m) => extract_by_meta_attr(m, input),
         Rule::HeaderField(h) => extract_by_header_field(h, input),
+        Rule::FollowUrl(_) => Err(ExtractError::new(
+            ExtractErrorKind::UnsupportedMode,
+            "follow_url 需 async 两阶段提取（中转 URL → fetch → 子规则提取），\
+             extractor 同步路径不支持，请通过 probe/engine 调用",
+        )),
+    }
+}
+
+/// 把 `SubRule`（follow_url 内嵌子规则）转换为 `Rule`，以便复用 `extract()` 的同步提取能力。
+///
+/// `SubRule` 不含 `FollowUrl` 变体，因此转换是 1:1 的，编译期保证不会再产生 `Rule::FollowUrl`。
+pub fn sub_rule_to_rule(sub: &SubRule) -> Rule {
+    match sub {
+        SubRule::Css(r) => Rule::Css(r.clone()),
+        SubRule::Regex(r) => Rule::Regex(r.clone()),
+        SubRule::PrefixSuffix(r) => Rule::PrefixSuffix(r.clone()),
+        SubRule::JsonPath(r) => Rule::JsonPath(r.clone()),
+        SubRule::MetaAttr(r) => Rule::MetaAttr(r.clone()),
+        SubRule::HeaderField(r) => Rule::HeaderField(r.clone()),
     }
 }
 
@@ -1453,5 +1474,84 @@ mod tests {
     #[test]
     fn html_entity_decode_passthrough_when_no_amp() {
         assert_eq!(html_entity_decode("plain text"), "plain text");
+    }
+
+    // ===== follow_url 同步路径拒绝 + sub_rule_to_rule =====
+
+    #[test]
+    fn follow_url_rule_rejected_in_sync_extract() {
+        use crate::services::crawler::field_schema::{
+            CssRule, FollowUrlRule,
+        };
+        use crate::services::crawler::source_layer::SourceMaterial;
+        let fu = FollowUrlRule {
+            transit: SubRule::Css(CssRule {
+                selector: "a".into(),
+                attr: "href".into(),
+            }),
+            transit_layer: SourceLayer::Html,
+            transit_script_index: None,
+            target_layer: SourceLayer::Html,
+            target_script_index: None,
+            extract: SubRule::Css(CssRule {
+                selector: "a".into(),
+                attr: "href".into(),
+            }),
+        };
+        let material = SourceMaterial {
+            final_url: "https://example.com/".into(),
+            html: "<a href='/x'>x</a>".to_string(),
+            status: 200,
+            headers: std::collections::HashMap::new(),
+            scripts: vec![],
+            metas: vec![],
+            fetched_at: chrono::Utc::now().naive_utc(),
+            duration_ms: 0,
+        };
+        let input = ExtractInput::from_material(&material, None);
+        let err = extract(&Rule::FollowUrl(fu), &input).unwrap_err();
+        assert_eq!(err.kind, ExtractErrorKind::UnsupportedMode);
+    }
+
+    #[test]
+    fn sub_rule_to_rule_six_variants_round_trip() {
+        use crate::services::crawler::field_schema::{
+            CssRule, HeaderFieldRule, JsonPathRule, MetaAttrRule, PrefixSuffixRule, RegexRule,
+        };
+        let cases: Vec<SubRule> = vec![
+            SubRule::Css(CssRule {
+                selector: "a".into(),
+                attr: "href".into(),
+            }),
+            SubRule::Regex(RegexRule {
+                pattern: "x".into(),
+                group: 1,
+                flags: "".into(),
+            }),
+            SubRule::PrefixSuffix(PrefixSuffixRule {
+                prefix: "p".into(),
+                suffix: "s".into(),
+                include_boundary: false,
+                case_sensitive: false,
+            }),
+            SubRule::JsonPath(JsonPathRule { path: "$.x".into() }),
+            SubRule::MetaAttr(MetaAttrRule {
+                attr_name: "name".into(),
+                attr_value: "desc".into(),
+                content_key: "content".into(),
+            }),
+            SubRule::HeaderField(HeaderFieldRule {
+                header_name: "X-Foo".into(),
+            }),
+        ];
+        for sub in &cases {
+            let r = sub_rule_to_rule(sub);
+            assert_eq!(r.mode_str(), sub.mode_str());
+            // 再转回 SubRule（通过 serde 序列化反序列化验证不丢信息）
+            let s_sub = serde_json::to_string(sub).unwrap();
+            let s_rule = serde_json::to_string(&r).unwrap();
+            // Rule 内部带 "mode" tag，SubRule 也是 "mode" tag，序列化文本应一致
+            assert_eq!(s_sub, s_rule, "SubRule ↔ Rule 序列化不一致");
+        }
     }
 }

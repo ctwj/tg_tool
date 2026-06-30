@@ -18,6 +18,7 @@ import {
 } from 'antd'
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import * as crawlerApi from '../../api/crawler'
+import FollowUrlRuleEditor from './FollowUrlRuleEditor'
 import type {
   CreateFieldNodeBody,
   ExtractorMode,
@@ -32,6 +33,7 @@ import type {
   ProbeResponse,
   QuickFieldPreset,
   SourceLayer,
+  SubRule,
 } from '../../types'
 
 const { Text, Paragraph } = Typography
@@ -59,6 +61,7 @@ const EXTRACTOR_MODES: ExtractorMode[] = [
   'json_path',
   'meta_attr',
   'header_field',
+  'follow_url',
 ]
 
 /** 字段类型中文标签（与 FIELD_TYPES 对齐） */
@@ -104,6 +107,13 @@ export const EXTRACTOR_MODE_LABELS: Record<ExtractorMode, string> = {
   json_path: 'JSON Path',
   meta_attr: 'Meta 属性',
   header_field: '响应头字段',
+  follow_url: '跟随 URL 二次提取',
+}
+
+/** 匹配模式说明（用于在 UI 上给用户提示该模式的适用场景） */
+export const EXTRACTOR_MODE_HINTS: Partial<Record<ExtractorMode, string>> = {
+  follow_url:
+    '两阶段：先用 transit 子规则抓中转 URL → 请求该 URL → 用 extract 子规则在响应上抓最终值。适用于下载地址藏在中转页的场景',
 }
 
 const POST_PROCESSOR_OPS: PostProcessorOp[] = [
@@ -170,6 +180,18 @@ function defaultRule(mode: ExtractorMode): FieldRule {
       return { mode: 'meta_attr', spec: { attr_name: 'name', attr_value: '', content_key: 'content' } }
     case 'header_field':
       return { mode: 'header_field', spec: { header_name: '' } }
+    case 'follow_url':
+      return {
+        mode: 'follow_url',
+        spec: {
+          transit: { mode: 'css', spec: { selector: '', attr: 'href' } },
+          transit_layer: 'html',
+          transit_script_index: null,
+          target_layer: 'html',
+          target_script_index: null,
+          extract: { mode: 'css', spec: { selector: '', attr: 'href' } },
+        },
+      }
   }
 }
 
@@ -349,6 +371,8 @@ export default function FieldNodeEditor({
       json_path: 'script',
       meta_attr: 'meta',
       header_field: 'header',
+      // follow_url 的 source_layer 仅影响 UI 显示，真正起作用的是 rule.transit_layer
+      follow_url: null,
     }
     const target = impliedLayer[extractorMode]
     if (target && sourceLayer !== target) {
@@ -836,6 +860,26 @@ function RuleEditor({ rule, onChange }: { rule: FieldRule; onChange: (r: FieldRu
           />
         </Form.Item>
       )
+    case 'follow_url':
+      return <FollowUrlRuleEditor value={rule} onChange={onChange} />
+  }
+}
+
+/** 简单的子规则必填校验（SubRule 6 同步模式，不含 follow_url） */
+function isSubRuleValid(sub: SubRule): boolean {
+  switch (sub.mode) {
+    case 'css':
+      return sub.spec.selector.trim().length > 0
+    case 'regex':
+      return sub.spec.pattern.trim().length > 0
+    case 'prefix_suffix':
+      return sub.spec.prefix.length > 0 && sub.spec.suffix.length > 0
+    case 'json_path':
+      return sub.spec.path.trim().startsWith('$')
+    case 'meta_attr':
+      return sub.spec.attr_name.trim().length > 0 && sub.spec.attr_value.trim().length > 0
+    case 'header_field':
+      return sub.spec.header_name.trim().length > 0
   }
 }
 
@@ -854,6 +898,8 @@ function isRuleValid(rule: FieldRule): boolean {
       return rule.spec.attr_name.trim().length > 0 && rule.spec.attr_value.trim().length > 0
     case 'header_field':
       return rule.spec.header_name.trim().length > 0
+    case 'follow_url':
+      return isSubRuleValid(rule.spec.transit) && isSubRuleValid(rule.spec.extract)
   }
 }
 

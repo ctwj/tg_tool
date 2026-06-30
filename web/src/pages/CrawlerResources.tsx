@@ -14,9 +14,10 @@ import PageHeader from '../components/PageHeader'
 import { useTableScrollY } from '../hooks/useTableScroll'
 import apiClient from '../api/client'
 import * as crawlerApi from '../api/crawler'
+import FieldValueRenderer from '../components/crawler/FieldValueRenderer'
 import type {
   CrawlerArticleListItem, CrawlerArticleDetail,
-  CrawlerTask,
+  CrawlerTask, ArticleFieldValue, FieldTree,
 } from '../types'
 
 const { Text } = Typography
@@ -63,6 +64,8 @@ const CrawlerResources: React.FC = () => {
 
   // 任务列表（筛选用）
   const [tasks, setTasks] = useState<CrawlerTask[]>([])
+  // 字段树缓存（按 taskId 缓存，供详情面板 FieldValueRenderer 查 field_type）
+  const [fieldTreeMap, setFieldTreeMap] = useState<Record<number, FieldTree | null>>({})
 
   // 图片域名（缩略图 / 详情图用）
   const [imageDomain, setImageDomain] = useState('')
@@ -127,17 +130,34 @@ const CrawlerResources: React.FC = () => {
     setEditing(false)
     try {
       const res = await crawlerApi.getArticleDetail(id)
-      const d = res.data as any
-      // 后端返回 {success, data: CrawlerArticleDetail}（详情对象展开字段在顶层）
-      setDetail(d?.data ?? d)
+      // 注意：crawlerApi.getArticleDetail 内部已 `return res.data`，故此处 res 即后端 JSON 顶层对象
+      // 后端返回 {success, data: CrawlerArticleDetail, extra_fields, field_values, field_stats}
+      // 其中 extra_fields/field_values/field_stats 与 data 并列在顶层，不在 data 内
+      const body = res as any
+      const article: CrawlerArticleDetail = {
+        ...(body?.data ?? {}),
+        extra_fields: body?.extra_fields,
+        field_values: (body?.field_values ?? []) as ArticleFieldValue[],
+        field_stats: body?.field_stats,
+      }
+      setDetail(article)
       // 同步表单
-      const detail = d?.data ?? d
       editForm.setFieldsValue({
-        title: detail.title,
-        content: detail.content,
-        category: detail.category,
-        tags: detail.tags,
+        title: article.title,
+        content: article.content,
+        category: article.category,
+        tags: article.tags,
       })
+      // 异步拉字段树（按 taskId 缓存，命中即跳过）
+      const tid = article.task_id
+      if (tid != null && fieldTreeMap[tid] === undefined) {
+        crawlerApi.getTaskFieldTree(tid).then(r => {
+          const tree = (r as any)?.data ?? null
+          setFieldTreeMap(prev => ({ ...prev, [tid]: tree ?? null }))
+        }).catch(() => {
+          setFieldTreeMap(prev => ({ ...prev, [tid]: null }))
+        })
+      }
     } catch (e: any) {
       message.error('加载详情失败: ' + (e?.message ?? ''))
     } finally {
@@ -447,6 +467,8 @@ const CrawlerResources: React.FC = () => {
             copyText={copyText}
             retryImage={retryImage}
             retryingId={retryingId}
+            fieldValues={detail.field_values ?? []}
+            fieldTree={detail.task_id != null ? fieldTreeMap[detail.task_id] ?? null : null}
           />
         )}
       </Drawer>
@@ -463,16 +485,33 @@ interface DetailBodyProps {
   copyText: (t: string) => void
   retryImage: (imageId: number) => void
   retryingId: number | null
+  fieldValues: ArticleFieldValue[]
+  fieldTree: FieldTree | null
 }
 
 const DetailBody: React.FC<DetailBodyProps> = ({
   detail, editing, form, buildImageUrl, copyText, retryImage, retryingId,
+  fieldValues, fieldTree,
 }) => {
   const panLinks = detail.links.filter(l => l.link_type === 'pan')
   const directLinks = detail.links.filter(l => l.link_type === 'direct')
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* 字段树提取结果（用户在字段配置器里配的所有字段，含未命中） */}
+      {!editing && fieldValues.length > 0 && (
+        <Card
+          title={<Space>字段提取结果 <Badge count={fieldValues.filter(v => v.is_hit).length} showZero style={{ backgroundColor: '#1677ff' }} /></Space>}
+          size="small"
+        >
+          <FieldValueRenderer
+            values={fieldValues}
+            fieldTree={fieldTree}
+            emptyHint="无字段提取数据"
+          />
+        </Card>
+      )}
+
       {/* 基本信息 */}
       <Card title="基本信息" size="small">
         {editing ? (

@@ -110,6 +110,11 @@ impl SourceLayer {
         }
     }
 
+    /// FollowUrlRule 中 `transit_layer` / `target_layer` 的 serde 默认值（Html）
+    pub fn default_html() -> Self {
+        SourceLayer::Html
+    }
+
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
@@ -123,7 +128,7 @@ impl SourceLayer {
     }
 }
 
-/// 匹配模式：6 种
+/// 匹配模式：7 种（6 同步模式 + follow_url 异步两阶段）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtractorMode {
@@ -133,6 +138,9 @@ pub enum ExtractorMode {
     JsonPath,
     MetaAttr,
     HeaderField,
+    /// 跟随 URL 两阶段：先抓中转 URL → 请求该 URL → 在响应上提取。
+    /// 需 async 调用层（probe/engine）支持，extractor 同步路径会返回 UnsupportedMode。
+    FollowUrl,
 }
 
 impl ExtractorMode {
@@ -144,6 +152,7 @@ impl ExtractorMode {
             ExtractorMode::JsonPath => "json_path",
             ExtractorMode::MetaAttr => "meta_attr",
             ExtractorMode::HeaderField => "header_field",
+            ExtractorMode::FollowUrl => "follow_url",
         }
     }
 
@@ -156,6 +165,7 @@ impl ExtractorMode {
             "json_path" => Some(ExtractorMode::JsonPath),
             "meta_attr" => Some(ExtractorMode::MetaAttr),
             "header_field" => Some(ExtractorMode::HeaderField),
+            "follow_url" => Some(ExtractorMode::FollowUrl),
             _ => None,
         }
     }
@@ -237,7 +247,7 @@ pub struct HeaderFieldRule {
     pub header_name: String,
 }
 
-/// 6 模式 Rule 联合（discriminated by `mode`，但实际持久化按 mode_json 分别解析）
+/// 7 模式 Rule 联合（6 同步 + follow_url 异步两阶段；discriminated by `mode`，但实际持久化按 mode_json 分别解析）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "mode", content = "spec", rename_all = "snake_case")]
 pub enum Rule {
@@ -247,6 +257,8 @@ pub enum Rule {
     JsonPath(JsonPathRule),
     MetaAttr(MetaAttrRule),
     HeaderField(HeaderFieldRule),
+    /// 跟随 URL 两阶段提取：transit 子规则抓中转 URL → fetch → extract 子规则抓最终值
+    FollowUrl(FollowUrlRule),
 }
 
 impl Rule {
@@ -259,8 +271,74 @@ impl Rule {
             Rule::JsonPath(_) => "json_path",
             Rule::MetaAttr(_) => "meta_attr",
             Rule::HeaderField(_) => "header_field",
+            Rule::FollowUrl(_) => "follow_url",
         }
     }
+}
+
+// ============================================================================
+// follow_url 专用子规则（禁止递归嵌套 follow_url，编译期保证）
+// ============================================================================
+
+/// follow_url 模式的子规则变体 —— 仅含 6 个同步模式，不含 FollowUrl，编译期杜绝无限递归。
+///
+/// 与 `Rule` 同构（少 FollowUrl 变体），内部直接复用 6 个 `pub` Rule 结构体定义。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "mode", content = "spec", rename_all = "snake_case")]
+pub enum SubRule {
+    Css(CssRule),
+    Regex(RegexRule),
+    PrefixSuffix(PrefixSuffixRule),
+    JsonPath(JsonPathRule),
+    MetaAttr(MetaAttrRule),
+    HeaderField(HeaderFieldRule),
+}
+
+impl SubRule {
+    /// 对应的 extractor_mode 字符串
+    pub fn mode_str(&self) -> &'static str {
+        match self {
+            SubRule::Css(_) => "css",
+            SubRule::Regex(_) => "regex",
+            SubRule::PrefixSuffix(_) => "prefix_suffix",
+            SubRule::JsonPath(_) => "json_path",
+            SubRule::MetaAttr(_) => "meta_attr",
+            SubRule::HeaderField(_) => "header_field",
+        }
+    }
+
+    /// 映射到 ExtractorMode（用于日志 / dispatch）
+    pub fn to_extractor_mode(&self) -> ExtractorMode {
+        match self {
+            SubRule::Css(_) => ExtractorMode::Css,
+            SubRule::Regex(_) => ExtractorMode::Regex,
+            SubRule::PrefixSuffix(_) => ExtractorMode::PrefixSuffix,
+            SubRule::JsonPath(_) => ExtractorMode::JsonPath,
+            SubRule::MetaAttr(_) => ExtractorMode::MetaAttr,
+            SubRule::HeaderField(_) => ExtractorMode::HeaderField,
+        }
+    }
+}
+
+/// follow_url 模式配置：中转 URL 子规则 + 二次请求后提取子规则
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FollowUrlRule {
+    /// 在当前 material 上提取中转 URL 的子规则（必填）
+    pub transit: SubRule,
+    /// transit 子规则作用的 source_layer（默认 Html）
+    #[serde(default = "SourceLayer::default_html")]
+    pub transit_layer: SourceLayer,
+    /// source_layer=Script 时指定 script_index
+    #[serde(default)]
+    pub transit_script_index: Option<i32>,
+    /// 二次请求后 extract 子规则作用的 source_layer（默认 Html）
+    #[serde(default = "SourceLayer::default_html")]
+    pub target_layer: SourceLayer,
+    /// source_layer=Script 时指定 script_index
+    #[serde(default)]
+    pub target_script_index: Option<i32>,
+    /// 在二次请求 material 上提取最终值的子规则（必填）
+    pub extract: SubRule,
 }
 
 // ============================================================================
@@ -357,7 +435,7 @@ pub fn validate_name(name: &str) -> Result<(), String> {
 ///
 /// - 检查 JSON 可解析
 /// - 检查必填字段非空（CSS selector / Regex pattern / PrefixSuffix prefix+suffix / JsonPath path /
-///   MetaAttr attr_name+attr_value / HeaderField header_name）
+///   MetaAttr attr_name+attr_value / HeaderField header_name / FollowUrl transit+extract 递归非空）
 pub fn validate_rule(mode: ExtractorMode, rule_json: &str) -> Result<(), String> {
     let value: Value = serde_json::from_str(rule_json)
         .map_err(|e| format!("rule_json 不是合法 JSON: {e}"))?;
@@ -365,62 +443,118 @@ pub fn validate_rule(mode: ExtractorMode, rule_json: &str) -> Result<(), String>
         ExtractorMode::Css => {
             let r: CssRule = serde_json::from_value(value)
                 .map_err(|e| format!("css 规则反序列化失败: {e}"))?;
-            if r.selector.trim().is_empty() {
-                return Err("css.selector 不能为空".into());
-            }
-            Ok(())
+            validate_css_rule(&r)
         }
         ExtractorMode::Regex => {
             let r: RegexRule = serde_json::from_value(value)
                 .map_err(|e| format!("regex 规则反序列化失败: {e}"))?;
-            if r.pattern.is_empty() {
-                return Err("regex.pattern 不能为空".into());
-            }
-            // 试编译以提前发现语法错误
-            compile_regex(&r.pattern, &r.flags)
-                .map_err(|e| format!("regex.pattern 编译失败: {e}"))?;
-            Ok(())
+            validate_regex_rule(&r)
         }
         ExtractorMode::PrefixSuffix => {
             let r: PrefixSuffixRule = serde_json::from_value(value)
                 .map_err(|e| format!("prefix_suffix 规则反序列化失败: {e}"))?;
-            if r.prefix.is_empty() {
-                return Err("prefix_suffix.prefix 不能为空".into());
-            }
-            if r.suffix.is_empty() {
-                return Err("prefix_suffix.suffix 不能为空".into());
-            }
-            Ok(())
+            validate_prefix_suffix_rule(&r)
         }
         ExtractorMode::JsonPath => {
             let r: JsonPathRule = serde_json::from_value(value)
                 .map_err(|e| format!("json_path 规则反序列化失败: {e}"))?;
-            if r.path.trim().is_empty() {
-                return Err("json_path.path 不能为空".into());
-            }
-            if !r.path.starts_with('$') {
-                return Err("json_path.path 须以 $ 开头（RFC 9535）".into());
-            }
-            Ok(())
+            validate_json_path_rule(&r)
         }
         ExtractorMode::MetaAttr => {
             let r: MetaAttrRule = serde_json::from_value(value)
                 .map_err(|e| format!("meta_attr 规则反序列化失败: {e}"))?;
-            if r.attr_name.trim().is_empty() {
-                return Err("meta_attr.attr_name 不能为空".into());
-            }
-            if r.attr_value.trim().is_empty() {
-                return Err("meta_attr.attr_value 不能为空".into());
-            }
-            Ok(())
+            validate_meta_attr_rule(&r)
         }
         ExtractorMode::HeaderField => {
             let r: HeaderFieldRule = serde_json::from_value(value)
                 .map_err(|e| format!("header_field 规则反序列化失败: {e}"))?;
-            if r.header_name.trim().is_empty() {
-                return Err("header_field.header_name 不能为空".into());
+            validate_header_field_rule(&r)
+        }
+        ExtractorMode::FollowUrl => {
+            let r: FollowUrlRule = serde_json::from_value(value)
+                .map_err(|e| format!("follow_url 规则反序列化失败: {e}"))?;
+            validate_sub_rule(&r.transit, "follow_url.transit")?;
+            validate_sub_rule(&r.extract, "follow_url.extract")?;
+            // transit_layer=Script 必须有 transit_script_index
+            if r.transit_layer == SourceLayer::Script && r.transit_script_index.is_none() {
+                return Err(
+                    "follow_url.transit_layer=script 时必须指定 transit_script_index".into(),
+                );
+            }
+            if r.target_layer == SourceLayer::Script && r.target_script_index.is_none() {
+                return Err(
+                    "follow_url.target_layer=script 时必须指定 target_script_index".into(),
+                );
             }
             Ok(())
+        }
+    }
+}
+
+fn validate_css_rule(r: &CssRule) -> Result<(), String> {
+    if r.selector.trim().is_empty() {
+        return Err("css.selector 不能为空".into());
+    }
+    Ok(())
+}
+
+fn validate_regex_rule(r: &RegexRule) -> Result<(), String> {
+    if r.pattern.is_empty() {
+        return Err("regex.pattern 不能为空".into());
+    }
+    compile_regex(&r.pattern, &r.flags).map_err(|e| format!("regex.pattern 编译失败: {e}"))?;
+    Ok(())
+}
+
+fn validate_prefix_suffix_rule(r: &PrefixSuffixRule) -> Result<(), String> {
+    if r.prefix.is_empty() {
+        return Err("prefix_suffix.prefix 不能为空".into());
+    }
+    if r.suffix.is_empty() {
+        return Err("prefix_suffix.suffix 不能为空".into());
+    }
+    Ok(())
+}
+
+fn validate_json_path_rule(r: &JsonPathRule) -> Result<(), String> {
+    if r.path.trim().is_empty() {
+        return Err("json_path.path 不能为空".into());
+    }
+    if !r.path.starts_with('$') {
+        return Err("json_path.path 须以 $ 开头（RFC 9535）".into());
+    }
+    Ok(())
+}
+
+fn validate_meta_attr_rule(r: &MetaAttrRule) -> Result<(), String> {
+    if r.attr_name.trim().is_empty() {
+        return Err("meta_attr.attr_name 不能为空".into());
+    }
+    if r.attr_value.trim().is_empty() {
+        return Err("meta_attr.attr_value 不能为空".into());
+    }
+    Ok(())
+}
+
+fn validate_header_field_rule(r: &HeaderFieldRule) -> Result<(), String> {
+    if r.header_name.trim().is_empty() {
+        return Err("header_field.header_name 不能为空".into());
+    }
+    Ok(())
+}
+
+/// 校验 SubRule（follow_url 内嵌子规则）：按 mode 检查必填字段非空
+fn validate_sub_rule(sub: &SubRule, path: &str) -> Result<(), String> {
+    match sub {
+        SubRule::Css(r) => validate_css_rule(r).map_err(|e| format!("{path}: {e}")),
+        SubRule::Regex(r) => validate_regex_rule(r).map_err(|e| format!("{path}: {e}")),
+        SubRule::PrefixSuffix(r) => {
+            validate_prefix_suffix_rule(r).map_err(|e| format!("{path}: {e}"))
+        }
+        SubRule::JsonPath(r) => validate_json_path_rule(r).map_err(|e| format!("{path}: {e}")),
+        SubRule::MetaAttr(r) => validate_meta_attr_rule(r).map_err(|e| format!("{path}: {e}")),
+        SubRule::HeaderField(r) => {
+            validate_header_field_rule(r).map_err(|e| format!("{path}: {e}"))
         }
     }
 }
@@ -453,6 +587,10 @@ pub fn deserialize_rule(mode: ExtractorMode, rule_json: &str) -> Result<Rule, St
         ExtractorMode::HeaderField => Rule::HeaderField(
             serde_json::from_value(value)
                 .map_err(|e| format!("header_field 反序列化失败: {e}"))?,
+        ),
+        ExtractorMode::FollowUrl => Rule::FollowUrl(
+            serde_json::from_value(value)
+                .map_err(|e| format!("follow_url 反序列化失败: {e}"))?,
         ),
     })
 }
@@ -725,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn t_extractor_mode_all_six() {
+    fn t_extractor_mode_all_seven() {
         for s in [
             "css",
             "regex",
@@ -733,8 +871,111 @@ mod tests {
             "json_path",
             "meta_attr",
             "header_field",
+            "follow_url",
         ] {
             assert!(ExtractorMode::from_str(s).is_some(), "missing mode {s}");
+            let m = ExtractorMode::from_str(s).unwrap();
+            assert_eq!(m.as_str(), s);
+        }
+    }
+
+    // ---- FollowUrlRule + SubRule ----
+
+    #[test]
+    fn t_rule_follow_url_legal_minimal() {
+        // transit + extract 都是 css 子规则，transit_layer/target_layer 用默认 Html
+        let json = r#"{"transit":{"mode":"css","spec":{"selector":"a.dl","attr":"href"}},"extract":{"mode":"css","spec":{"selector":"a.real","attr":"href"}}}"#;
+        assert!(validate_rule(ExtractorMode::FollowUrl, json).is_ok());
+    }
+
+    #[test]
+    fn t_rule_follow_url_legal_with_layers() {
+        let json = r#"{"transit":{"mode":"css","spec":{"selector":"a.dl","attr":"href"}},"transit_layer":"html","target_layer":"script","target_script_index":2,"extract":{"mode":"json_path","spec":{"path":"$.url"}}}"#;
+        assert!(validate_rule(ExtractorMode::FollowUrl, json).is_ok());
+    }
+
+    #[test]
+    fn t_rule_follow_url_illegal_transit_empty_selector() {
+        let json = r#"{"transit":{"mode":"css","spec":{"selector":"","attr":"href"}},"extract":{"mode":"css","spec":{"selector":"a","attr":"href"}}}"#;
+        let r = validate_rule(ExtractorMode::FollowUrl, json);
+        assert!(r.is_err());
+        assert!(
+            r.unwrap_err().contains("follow_url.transit"),
+            "错误信息应带 follow_url.transit 路径前缀"
+        );
+    }
+
+    #[test]
+    fn t_rule_follow_url_illegal_extract_empty() {
+        let json = r#"{"transit":{"mode":"css","spec":{"selector":"a","attr":"href"}},"extract":{"mode":"regex","spec":{"pattern":"","group":1}}}"#;
+        let r = validate_rule(ExtractorMode::FollowUrl, json);
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("follow_url.extract"));
+    }
+
+    #[test]
+    fn t_rule_follow_url_illegal_target_script_no_index() {
+        // target_layer=script 但未给 target_script_index
+        let json = r#"{"transit":{"mode":"css","spec":{"selector":"a","attr":"href"}},"target_layer":"script","extract":{"mode":"css","spec":{"selector":"a","attr":"href"}}}"#;
+        let r = validate_rule(ExtractorMode::FollowUrl, json);
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("target_script_index"));
+    }
+
+    #[test]
+    fn t_rule_follow_url_illegal_json() {
+        let r = validate_rule(ExtractorMode::FollowUrl, "{not json");
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn t_follow_url_rule_serde_round_trip() {
+        let json = r#"{"transit":{"mode":"css","spec":{"selector":"a.dl","attr":"href"}},"transit_layer":"html","transit_script_index":null,"target_layer":"html","target_script_index":null,"extract":{"mode":"regex","spec":{"pattern":"https://example\\.com/(.+)","group":1,"flags":""}}}"#;
+        let rule: FollowUrlRule = serde_json::from_str(json).unwrap();
+        // 默认值正确填充
+        assert_eq!(rule.transit_layer, SourceLayer::Html);
+        assert_eq!(rule.target_layer, SourceLayer::Html);
+        assert!(rule.transit_script_index.is_none());
+        // 序列化回去仍可解析
+        let back = serde_json::to_string(&rule).unwrap();
+        let _: FollowUrlRule = serde_json::from_str(&back).unwrap();
+    }
+
+    #[test]
+    fn t_follow_url_rule_default_layer_is_html() {
+        // 省略 transit_layer/target_layer 应默认 Html
+        let json = r#"{"transit":{"mode":"css","spec":{"selector":"a"}},"extract":{"mode":"css","spec":{"selector":"a"}}}"#;
+        let rule: FollowUrlRule = serde_json::from_str(json).unwrap();
+        assert_eq!(rule.transit_layer, SourceLayer::Html);
+        assert_eq!(rule.target_layer, SourceLayer::Html);
+    }
+
+    #[test]
+    fn t_sub_rule_mode_str_and_extractor_mode() {
+        let sub = SubRule::Css(CssRule {
+            selector: "a".into(),
+            attr: "href".into(),
+        });
+        assert_eq!(sub.mode_str(), "css");
+        assert_eq!(sub.to_extractor_mode(), ExtractorMode::Css);
+
+        let sub = SubRule::HeaderField(HeaderFieldRule {
+            header_name: "X-Foo".into(),
+        });
+        assert_eq!(sub.mode_str(), "header_field");
+        assert_eq!(sub.to_extractor_mode(), ExtractorMode::HeaderField);
+    }
+
+    #[test]
+    fn t_deserialize_rule_follow_url_round_trip() {
+        let json = r#"{"transit":{"mode":"css","spec":{"selector":"a.dl","attr":"href"}},"extract":{"mode":"css","spec":{"selector":"a.real","attr":"href"}}}"#;
+        let rule = deserialize_rule(ExtractorMode::FollowUrl, json).unwrap();
+        match rule {
+            Rule::FollowUrl(fu) => {
+                assert!(matches!(fu.transit, SubRule::Css(_)));
+                assert!(matches!(fu.extract, SubRule::Css(_)));
+            }
+            other => panic!("期望 FollowUrl，实际 {other:?}"),
         }
     }
 

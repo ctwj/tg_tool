@@ -48,6 +48,7 @@ const MODE_COLORS: Record<ExtractorMode, string> = {
   json_path: 'geekblue',
   meta_attr: 'gold',
   header_field: 'orange',
+  follow_url: 'magenta',
 }
 
 export interface FieldTreePanelProps {

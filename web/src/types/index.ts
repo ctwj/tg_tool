@@ -524,6 +524,10 @@ export interface CrawlerArticleDetail {
   links: CrawlerArticleLink[]
   images: CrawlerArticleImage[]
   task_name: string | null
+  // 字段树提取结果（GET /articles/:id 顶层并列返回；前端 setDetail 时合并进来）
+  extra_fields?: Record<string, unknown>
+  field_values?: ArticleFieldValue[]
+  field_stats?: FieldHitStats[]
 }
 
 // ─── 历史与统计（US3） ──────────────────────────────────────────────────
@@ -585,7 +589,7 @@ export type FieldScope = 'list_page' | 'detail_page'
 /** 源码 tab 一致的来源层 */
 export type SourceLayer = 'html' | 'header' | 'script' | 'meta' | 'url'
 
-/** 匹配模式：6 种 */
+/** 匹配模式：7 种（6 同步 + follow_url 异步两阶段） */
 export type ExtractorMode =
   | 'css'
   | 'regex'
@@ -593,6 +597,7 @@ export type ExtractorMode =
   | 'json_path'
   | 'meta_attr'
   | 'header_field'
+  | 'follow_url'
 
 /** 字段类型 */
 export type FieldType =
@@ -656,6 +661,38 @@ export type FieldRule =
   | JsonPathRule
   | MetaAttrRule
   | HeaderFieldRule
+  | FollowUrlRule
+
+/**
+ * 6 种同步模式的子规则 —— 用于 FollowUrlRule.transit/extract 子规则。
+ * 故意不含 FollowUrlRule 变体（编译期杜绝无限嵌套）。
+ */
+export type SubRule =
+  | CssRule
+  | RegexRule
+  | PrefixSuffixRule
+  | JsonPathRule
+  | MetaAttrRule
+  | HeaderFieldRule
+
+/** follow_url 两阶段提取规则：先抓中转 URL → fetch → 在响应上抓最终值 */
+export interface FollowUrlRule {
+  mode: 'follow_url'
+  spec: {
+    /** 在当前 material 上提取中转 URL 的子规则（必填） */
+    transit: SubRule
+    /** transit 子规则作用的 source_layer，默认 'html' */
+    transit_layer?: SourceLayer
+    /** source_layer='script' 时指定 script_index */
+    transit_script_index?: number | null
+    /** 二次请求后 extract 子规则作用的 source_layer，默认 'html' */
+    target_layer?: SourceLayer
+    /** source_layer='script' 时指定 script_index */
+    target_script_index?: number | null
+    /** 在二次请求 material 上提取最终值的子规则（必填） */
+    extract: SubRule
+  }
+}
 
 /** 后处理操作 */
 export type PostProcessorOp =

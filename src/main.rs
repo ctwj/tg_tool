@@ -825,6 +825,15 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::info!("SQLite migration 030 applied (crawler_tasks.max_pagination_depth)");
                 }
             }
+            // Migration 031: crawler_field_library resource 类补 download_url/resource_name + sort_order 重排
+            {
+                let m31 = include_str!("../migrations/031_crawler_field_library_resource_sort_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m31).execute(pool).await {
+                    tracing::warn!("SQLite migration 031 (field_library resource sort) failed: {e}");
+                } else {
+                    tracing::info!("SQLite migration 031 applied (crawler_field_library resource sort)");
+                }
+            }
             // 043：种子化 crawler_field_library（若表为空则用应用层 BUILTIN_PRESETS 补种）
             {
                 if let Err(e) = tgTool::services::crawler::preset_library::seed_if_empty_sqlite(pool).await {
@@ -1243,6 +1252,15 @@ async fn run_migrations(pool: &DbPool) {
                     }
                 } else {
                     tracing::info!("PostgreSQL migration 030 applied (crawler_tasks.max_pagination_depth)");
+                }
+            }
+            // Migration 031: crawler_field_library resource 类补 download_url/resource_name + sort_order 重排
+            {
+                let m31 = include_str!("../migrations/031_crawler_field_library_resource_sort_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m31).execute(pool).await {
+                    tracing::warn!("PostgreSQL migration 031 (field_library resource sort) failed: {e}");
+                } else {
+                    tracing::info!("PostgreSQL migration 031 applied (crawler_field_library resource sort)");
                 }
             }
             // 043：种子化 crawler_field_library

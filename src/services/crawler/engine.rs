@@ -495,6 +495,14 @@ fn extract_one(
     post_processors: &[crate::services::crawler::field_schema::PostProcessor],
     base_url: &str,
 ) -> (Vec<Hit>, Option<String>) {
+    // follow_url 字段需 async 两阶段提取，extract_layer 同步路径跳过；
+    // 真正的两阶段提取由 collect_follow_url_extractions 在 run_task 中并发执行
+    if let Rule::FollowUrl(_) = rule {
+        return (
+            Vec::new(),
+            Some("follow_url 由异步两阶段提取处理，同步路径跳过".into()),
+        );
+    }
     let input = ExtractInput::from_material(material, script_index).with_layer(layer);
     match extract(rule, &input) {
         Ok(hits) => {
@@ -503,6 +511,102 @@ fn extract_one(
         }
         Err(ExtractError { kind: _, message }) => (Vec::new(), Some(message)),
     }
+}
+
+/// 对 detail_page 顶层 FollowUrl 字段并发执行两阶段提取（extract_layer 同步路径已跳过它们）
+///
+/// 单字段失败 graceful degrade：返回带 error 的 FieldExtraction，不 panic、不影响其他字段。
+/// 单文章内 FollowUrl 字段数通常 <5，直接 `join_all` 并发，不引入新 semaphore。
+async fn collect_follow_url_extractions(
+    nodes: &[FieldTreeNode],
+    material: &crate::services::crawler::source_layer::SourceMaterial,
+    ua: Option<&str>,
+    proxy: Option<&str>,
+) -> Vec<FieldExtraction> {
+    use crate::services::crawler::field_schema::FieldType;
+    use crate::services::crawler::follow_url::{extract_follow_url_async, FollowUrlError};
+
+    // 仅处理顶层（rule=FollowUrl）节点。子节点中的 FollowUrl 不支持（父子嵌套作用域
+    // 与 follow_url 二次请求作用域冲突），由 extract_one 跳过、此处也不接管。
+    let fu_nodes: Vec<&FieldTreeNode> = nodes
+        .iter()
+        .filter(|n| {
+            n.row
+                .to_spec()
+                .map(|s| matches!(s.rule, Rule::FollowUrl(_)))
+                .unwrap_or(false)
+        })
+        .collect();
+    if fu_nodes.is_empty() {
+        return Vec::new();
+    }
+
+    let futures_iter = fu_nodes.into_iter().map(|n| async move {
+        let spec = match n.row.to_spec() {
+            Ok(s) => s,
+            Err(e) => {
+                return FieldExtraction {
+                    field_path: format!("/{}/{}", Scope::DetailPage.as_str(), n.row.name),
+                    field_node_id: Some(n.row.id),
+                    scope: Scope::DetailPage.as_str().to_string(),
+                    hits: Vec::new(),
+                    error: Some(format!("字段 spec 解析失败: {e}")),
+                };
+            }
+        };
+        let fu = match &spec.rule {
+            Rule::FollowUrl(fu) => fu,
+            _ => unreachable!("filter 已保证只处理 FollowUrl"),
+        };
+        let result = extract_follow_url_async(fu, material, ua, proxy).await;
+        let (mut hits, err) = match result {
+            Ok(h) => (h, None),
+            Err(FollowUrlError::TransitEmpty) => (
+                Vec::new(),
+                Some("transit 子规则未提取到中转 URL".into()),
+            ),
+            Err(FollowUrlError::TransitExtract(e)) => {
+                (Vec::new(), Some(format!("transit 提取失败: {e}")))
+            }
+            Err(FollowUrlError::Fetch(e)) => {
+                (Vec::new(), Some(format!("二次请求失败: {e}")))
+            }
+            Err(FollowUrlError::ExtractExtract(e)) => {
+                (Vec::new(), Some(format!("extract 提取失败: {e}")))
+            }
+            Err(FollowUrlError::ZeroHits) => {
+                (Vec::new(), Some("extract 子规则在二次响应 0 命中".into()))
+            }
+        };
+        // 应用 post_processors
+        if !spec.post_processors.is_empty() {
+            hits = apply_post_processors(hits, &spec.post_processors, &material.final_url);
+        }
+        // URL 类字段自动绝对化（与 extract_layer 行为一致）
+        if matches!(
+            spec.field_type,
+            FieldType::Url | FieldType::LinkCard | FieldType::Pagination | FieldType::Image
+        ) {
+            for h in hits.iter_mut() {
+                h.value = resolve_url(&h.value, &material.final_url);
+            }
+        }
+        tracing::debug!(
+            target: "crawler",
+            "follow_url field '{}' extracted: {} hits, error={:?}",
+            n.row.name,
+            hits.len(),
+            err
+        );
+        FieldExtraction {
+            field_path: format!("/{}/{}", Scope::DetailPage.as_str(), n.row.name),
+            field_node_id: Some(n.row.id),
+            scope: Scope::DetailPage.as_str().to_string(),
+            hits,
+            error: err,
+        }
+    });
+    futures::future::join_all(futures_iter).await
 }
 
 /// 把父字段命中片段（HTML 文本）包装为可被提取器消费的子素材
@@ -663,13 +767,31 @@ pub async fn run_task(task_id: i64, state: &AppState) -> Result<RunSummary, Stri
                 }
 
                 // 应用 detail_page 字段
-                let detail_extractions = extract_layer(
+                let mut detail_extractions = extract_layer(
                     &rt.field_tree.detail_page,
                     &dmaterial,
                     &[],
                     Scope::DetailPage.as_str(),
                     &format!("/{}", Scope::DetailPage.as_str()),
                 );
+
+                // follow_url 字段并发两阶段提取（extract_layer 同步路径已跳过）
+                // 单字段失败 graceful degrade，不影响其他字段、不算 failed（遵循 042 设计原则）
+                let fu_extractions = collect_follow_url_extractions(
+                    &rt.field_tree.detail_page,
+                    &dmaterial,
+                    rt.user_agent.as_deref(),
+                    proxy.as_deref(),
+                )
+                .await;
+                if !fu_extractions.is_empty() {
+                    tracing::debug!(
+                        target: "crawler",
+                        "detail {detail_url}: follow_url 字段提取 {} 条",
+                        fu_extractions.len()
+                    );
+                    detail_extractions.extend(fu_extractions);
+                }
 
                 // upsert 文章 + 写 field_values + extra_fields_json
                 match upsert_article_with_fields(
@@ -779,9 +901,11 @@ fn collect_detail_links(
 
     for ext in extractions {
         // 判断该字段是否 link_card 或 url 类型
+        // 注意：Pagination 字段是"下一页列表页"语义，不应作为详情链接入库
+        // （Pagination 由 find_next_page_url 单独处理，驱动 while 循环翻页）
         let is_link = type_by_path
             .get(&ext.field_path)
-            .map(|t| matches!(t, FieldType::LinkCard | FieldType::Url | FieldType::Pagination))
+            .map(|t| matches!(t, FieldType::LinkCard | FieldType::Url))
             .unwrap_or(false);
         if !is_link {
             continue;
@@ -789,6 +913,16 @@ fn collect_detail_links(
         for h in &ext.hits {
             let v = h.value.trim();
             if v.is_empty() {
+                continue;
+            }
+            // URL 合法性兜底：跳过明显不是 URL 的命中值
+            // 典型场景：LinkCard 字段配 attr=html，命中值是元素的 outerHTML 字符串
+            // （如 `<a class="..." href="/x">...</a>`），若直接 resolve_url 会拼成脏 URL
+            // 入库并 fetch 失败。合法 URL 不会含 `<` `>`，也不会含未转义的内部空白。
+            if v.contains('<') || v.contains('>') {
+                continue;
+            }
+            if v.split_whitespace().count() > 1 {
                 continue;
             }
             let abs = resolve_url(v, base_url);
@@ -1771,6 +1905,90 @@ mod tests {
             Value::String("https://example.com/p/3".into()),
         ]));
         assert_eq!(lv["cover"].as_array().unwrap().len(), 3);
+    }
+
+    /// `collect_detail_links` 兜底过滤：LinkCard 字段配 attr=html 时命中 outerHTML
+    /// 字符串（如 `<a class="..." href="/x">...</a>`），不应作为详情 URL 入库。
+    /// 同理含内部空白的值（attr=text 抓到「点击下载」之类）也跳过。
+    #[test]
+    fn collect_detail_links_filters_html_hits() {
+        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc();
+        let mk = |id: i64, ft: &str, rule: &str| FieldNodeRow {
+            id, task_id: 1, parent_id: None, scope: "list_page".into(),
+            name: format!("f{id}"), display_name: format!("f{id}"),
+            field_type: ft.into(), source_layer: "html".into(),
+            extractor_mode: "css".into(), rule_json: rule.into(),
+            post_processors_json: None, script_index: None, sort_order: 0, is_active: true,
+            created_at: ts, updated_at: ts,
+        };
+        let rows = vec![
+            // link_card 字段配 attr=html（典型误配：抓整个 <a> 元素 outerHTML）
+            mk(1, "link_card", r#"{"selector":"a.card","attr":"html"}"#),
+            // url 字段配 attr=href（正常：抓 href）
+            mk(2, "url", r#"{"selector":"a.card","attr":"href"}"#),
+        ];
+        let tree = crate::models::crawler_field_node::from_rows(rows);
+
+        let extractions = vec![
+            FieldExtraction {
+                field_path: "/list_page/f1".into(),
+                field_node_id: None,
+                scope: "list_page".into(),
+                error: None,
+                hits: vec![
+                    crate::services::crawler::extractor::Hit {
+                        value: r#"<a class="card" href="/p/1"><span>title</span></a>"#.into(),
+                        source_fragment: "css:a.card".into(),
+                        location: None,
+                        context_html: None,
+                    },
+                    crate::services::crawler::extractor::Hit {
+                        value: r#"<a class="card" href="/p/2">x</a>"#.into(),
+                        source_fragment: "css:a.card".into(),
+                        location: None,
+                        context_html: None,
+                    },
+                ],
+            },
+            FieldExtraction {
+                field_path: "/list_page/f2".into(),
+                field_node_id: None,
+                scope: "list_page".into(),
+                error: None,
+                hits: vec![
+                    crate::services::crawler::extractor::Hit {
+                        value: "/p/1".into(),
+                        source_fragment: "css:a.card".into(),
+                        location: None,
+                        context_html: None,
+                    },
+                    crate::services::crawler::extractor::Hit {
+                        value: "/p/2".into(),
+                        source_fragment: "css:a.card".into(),
+                        location: None,
+                        context_html: None,
+                    },
+                    // 含内部空白的非 URL 值（attr=text 命中场景）
+                    crate::services::crawler::extractor::Hit {
+                        value: "点击 下载".into(),
+                        source_fragment: "css:a.card".into(),
+                        location: None,
+                        context_html: None,
+                    },
+                ],
+            },
+        ];
+
+        let links = collect_detail_links(
+            &extractions,
+            &tree.list_page,
+            "/list_page",
+            "https://example.com/list",
+        );
+
+        // 应只收集 2 条合法 URL（/p/1, /p/2），跳过 outerHTML 与含空白值
+        assert_eq!(links.len(), 2, "应过滤掉 HTML 命中和含空白值，只剩 2 条合法 URL");
+        assert!(links.iter().all(|u| u.starts_with("https://example.com/p/")));
     }
 
     /// **未命中字段不出错**：CSS 选择器不匹配任何元素时返回空 hits + 不抛错（FR-019 单字段失败不中断）

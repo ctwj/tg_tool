@@ -15,6 +15,7 @@ pub mod block_detector;
 pub mod engine;
 pub mod extractor;
 pub mod field_schema;
+pub mod follow_url;
 pub mod image_uploader;
 pub mod pan_detector;
 pub mod preset_library;

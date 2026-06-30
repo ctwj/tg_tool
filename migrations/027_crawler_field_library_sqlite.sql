@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS crawler_field_library (
 
 CREATE INDEX IF NOT EXISTS idx_field_library_category ON crawler_field_library(category, sort_order);
 
--- 种子数据：5 个分类共 24 条预置字段（data-model.md E2 一致）
+-- 种子数据：5 个分类共 26 条预置字段（data-model.md E2 + 资源下载场景扩展）
 -- 基础字段
 INSERT OR IGNORE INTO crawler_field_library (key, display_name, field_type, category, description, suggested_extractor, sort_order) VALUES
     ('title',        '标题',     'string', 'basic', '文章标题',                   'css',     1),
@@ -51,8 +51,10 @@ INSERT OR IGNORE INTO crawler_field_library (key, display_name, field_type, cate
     ('like_count',    '点赞数', 'number', 'interaction', '点赞次数', 'regex', 3),
     ('rating',        '评分',   'number', 'interaction', '评分（5 分制）', 'regex', 4);
 
--- 资源属性
+-- 资源属性（download_url / resource_name 是资源类核心，sort_order 排最前）
 INSERT OR IGNORE INTO crawler_field_library (key, display_name, field_type, category, description, suggested_extractor, sort_order) VALUES
-    ('file_size', '附件大小', 'string', 'resource', '附件文件大小',     'regex', 1),
-    ('duration',  '时长',     'string', 'resource', '音视频时长',       'regex', 2),
-    ('version',   '版本号',   'string', 'resource', '软件/资源版本号',  'regex', 3);
+    ('download_url',  '下载地址', 'url',    'resource', '资源下载地址（直链或网盘）。可能需用 follow_url 模式两阶段提取',                    'css',   1),
+    ('resource_name', '资源名',   'string', 'resource', '资源名称（区别于文章标题 title，适用于一篇文章列多个资源的场景）',                  'css',   2),
+    ('file_size',     '附件大小', 'string', 'resource', '附件文件大小',                                                                  'regex', 3),
+    ('duration',      '时长',     'string', 'resource', '音视频时长',                                                                    'regex', 4),
+    ('version',       '版本号',   'string', 'resource', '软件/资源版本号',                                                               'regex', 5);

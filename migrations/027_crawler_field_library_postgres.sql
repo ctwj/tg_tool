@@ -38,7 +38,9 @@ INSERT INTO crawler_field_library (key, display_name, field_type, category, desc
     ('comment_count', '评论数', 'number', 'interaction', '评论条数', 'regex', 19),
     ('like_count',    '点赞数', 'number', 'interaction', '点赞次数', 'regex', 20),
     ('rating',        '评分',   'number', 'interaction', '评分（5 分制）', 'regex', 21),
-    ('file_size', '附件大小', 'string', 'resource', '附件文件大小',     'regex', 22),
-    ('duration',  '时长',     'string', 'resource', '音视频时长',       'regex', 23),
-    ('version',   '版本号',   'string', 'resource', '软件/资源版本号',  'regex', 24)
+    ('download_url',  '下载地址', 'url',    'resource', '资源下载地址（直链或网盘）。可能需用 follow_url 模式两阶段提取',                    'css',   22),
+    ('resource_name', '资源名',   'string', 'resource', '资源名称（区别于文章标题 title，适用于一篇文章列多个资源的场景）',                  'css',   23),
+    ('file_size',     '附件大小', 'string', 'resource', '附件文件大小',                                                                  'regex', 24),
+    ('duration',      '时长',     'string', 'resource', '音视频时长',                                                                    'regex', 25),
+    ('version',       '版本号',   'string', 'resource', '软件/资源版本号',                                                               'regex', 26)
 ON CONFLICT (key) DO NOTHING;

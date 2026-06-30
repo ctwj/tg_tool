@@ -21,9 +21,9 @@ pub struct PresetField {
     pub sort_order: i32,
 }
 
-/// 24 条预置字段（data-model.md E2）
+/// 26 条预置字段（data-model.md E2 + 资源下载场景扩展）
 ///
-/// 顺序：basic(6) → metadata(6) → classification(5) → interaction(4) → resource(3)
+/// 顺序：basic(6) → metadata(6) → classification(5) → interaction(4) → resource(5)
 pub static BUILTIN_PRESETS: &[PresetField] = &[
     // 基础字段
     PresetField {
@@ -218,7 +218,25 @@ pub static BUILTIN_PRESETS: &[PresetField] = &[
         suggested_extractor: "regex",
         sort_order: 4,
     },
-    // 资源属性
+    // 资源属性（download_url / resource_name 是资源类核心，排最前）
+    PresetField {
+        key: "download_url",
+        display_name: "下载地址",
+        field_type: "url",
+        category: "resource",
+        description: "资源下载地址（直链或网盘）。可能需用 follow_url 模式两阶段提取",
+        suggested_extractor: "css",
+        sort_order: 1,
+    },
+    PresetField {
+        key: "resource_name",
+        display_name: "资源名",
+        field_type: "string",
+        category: "resource",
+        description: "资源名称（区别于文章标题 title，适用于一篇文章列多个资源的场景）",
+        suggested_extractor: "css",
+        sort_order: 2,
+    },
     PresetField {
         key: "file_size",
         display_name: "附件大小",
@@ -226,7 +244,7 @@ pub static BUILTIN_PRESETS: &[PresetField] = &[
         category: "resource",
         description: "附件文件大小",
         suggested_extractor: "regex",
-        sort_order: 1,
+        sort_order: 3,
     },
     PresetField {
         key: "duration",
@@ -235,7 +253,7 @@ pub static BUILTIN_PRESETS: &[PresetField] = &[
         category: "resource",
         description: "音视频时长",
         suggested_extractor: "regex",
-        sort_order: 2,
+        sort_order: 4,
     },
     PresetField {
         key: "version",
@@ -244,7 +262,7 @@ pub static BUILTIN_PRESETS: &[PresetField] = &[
         category: "resource",
         description: "软件/资源版本号",
         suggested_extractor: "regex",
-        sort_order: 3,
+        sort_order: 5,
     },
 ];
 
@@ -321,9 +339,9 @@ mod tests {
     }
 
     #[test]
-    fn t_builtin_presets_count_exactly_24() {
-        // data-model.md E2 明确列出 24 条
-        assert_eq!(BUILTIN_PRESETS.len(), 24);
+    fn t_builtin_presets_count_exactly_26() {
+        // data-model.md E2 原始 24 条 + 资源场景扩展 2 条（download_url / resource_name）
+        assert_eq!(BUILTIN_PRESETS.len(), 26);
     }
 
     #[test]
@@ -352,10 +370,26 @@ mod tests {
             BUILTIN_PRESETS.iter().map(|p| p.key).collect();
         for required in [
             "title", "url", "cover", "description", "content", "author", "published_at",
-            "category", "tags", "view_count", "file_size",
+            "category", "tags", "view_count", "file_size", "download_url", "resource_name",
         ] {
             assert!(keys.contains(required), "缺失必需字段 {required}");
         }
+    }
+
+    #[test]
+    fn t_resource_category_sort_order_download_url_first() {
+        // download_url 必须排第 1，resource_name 排第 2（资源场景核心字段）
+        let mut resource: Vec<&PresetField> =
+            BUILTIN_PRESETS.iter().filter(|p| p.category == "resource").collect();
+        resource.sort_by_key(|p| p.sort_order);
+        assert_eq!(resource[0].key, "download_url");
+        assert_eq!(resource[1].key, "resource_name");
+        assert_eq!(resource[0].field_type, "url");
+        assert_eq!(resource[1].field_type, "string");
+        // 原 3 条顺延到 3/4/5
+        assert_eq!(resource[2].key, "file_size");
+        assert_eq!(resource[3].key, "duration");
+        assert_eq!(resource[4].key, "version");
     }
 
     #[test]

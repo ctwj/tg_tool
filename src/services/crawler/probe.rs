@@ -164,7 +164,44 @@ pub async fn run_probe(req: ProbeRequest) -> Result<ProbeResponse, ProbeError> {
         return run_nested_probe(req, &material, parent_field).await;
     }
 
-    // 3b. 单字段路径：直接对 req.rule 应用提取
+    // 3b. 单字段路径
+    // follow_url 早返回：两阶段提取（transit → fetch → extract）
+    if let Rule::FollowUrl(fu) = &req.rule {
+        let hits = crate::services::crawler::follow_url::extract_follow_url_async(
+            fu,
+            &material,
+            req.user_agent.as_deref(),
+            req.proxy.as_deref(),
+        )
+        .await
+        .map_err(follow_url_err_to_probe_error)?;
+        let final_hits =
+            extractor::apply_post_processors(hits, &req.post_processors, &material.final_url);
+        if final_hits.is_empty() {
+            return Err(ProbeError::new(
+                ProbeStage::Match,
+                ProbeCategory::ZeroHits,
+                "follow_url 子规则在后处理链后 0 命中",
+            ));
+        }
+        return Ok(ProbeResponse {
+            hit_count: final_hits.len(),
+            samples: final_hits
+                .into_iter()
+                .map(|h| ProbeSample {
+                    value: h.value,
+                    source_fragment: h.source_fragment,
+                    location: h.location,
+                })
+                .collect(),
+            per_parent: None,
+            fetched_url: material.final_url.clone(),
+            fetched_at: material.fetched_at,
+            duration_ms: material.duration_ms,
+        });
+    }
+
+    // 3c. 6 同步模式：直接对 req.rule 应用提取
     let input = ExtractInput::from_material(&material, req.script_index).with_layer(req.source_layer);
     let raw_hits = extractor::extract(&req.rule, &input).map_err(map_extract_error)?;
     let final_hits = extractor::apply_post_processors(raw_hits, &req.post_processors, &material.final_url);
@@ -330,6 +367,30 @@ fn map_extract_error(err: crate::services::crawler::extractor::ExtractError) -> 
         pe = pe.with_hint("此匹配模式将在后续版本支持");
     }
     pe
+}
+
+/// 把 [`follow_url::FollowUrlError`] 映射到 [`ProbeError`]，便于前端按 category 渲染
+fn follow_url_err_to_probe_error(
+    err: crate::services::crawler::follow_url::FollowUrlError,
+) -> ProbeError {
+    use crate::services::crawler::follow_url::FollowUrlError as E;
+    match err {
+        E::TransitEmpty => ProbeError::new(
+            ProbeStage::Match,
+            ProbeCategory::ZeroHits,
+            "follow_url.transit 子规则未提取到中转 URL（0 命中）",
+        )
+        .with_hint("检查 transit 子规则与 transit_layer 是否匹配当前源码 tab"),
+        E::TransitExtract(e) => map_extract_error(e),
+        E::Fetch(e) => e, // 已是 ProbeError（stage=Fetch），直接透传
+        E::ExtractExtract(e) => map_extract_error(e),
+        E::ZeroHits => ProbeError::new(
+            ProbeStage::Match,
+            ProbeCategory::ZeroHits,
+            "follow_url.extract 子规则在二次响应未命中（0 条）",
+        )
+        .with_hint("检查 extract 子规则与 target_layer 是否匹配二次响应的源码 tab"),
+    }
 }
 
 // ============================================================================
