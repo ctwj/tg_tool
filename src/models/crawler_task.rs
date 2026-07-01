@@ -33,6 +33,9 @@ pub struct CrawlerTask {
     pub max_pages: i64,
     /// 043 US5：字段树 pagination 字段驱动的最大翻页深度，默认 10（FR-022）；0=不限
     pub max_pagination_depth: i64,
+    /// 044：全量采集开关。true=每次全量（跑满 max_pagination_depth/翻完，失败重跑也全量）；
+    /// false=连续 3 页零新增时自动早停（适合已成功全量一次后的增量维护）
+    pub force_full_collect: bool,
     pub status: String,
     pub consecutive_failures: i64,
     pub last_run_at: Option<NaiveDateTime>,
@@ -84,6 +87,9 @@ pub struct CrawlerTaskInput {
     /// 043 US5：字段树 pagination 字段驱动的最大翻页深度，默认 10（FR-022）；0=不限
     #[serde(default = "default_ten")]
     pub max_pagination_depth: i64,
+    /// 044：全量采集开关（默认 true）。true=每次全量；false=连续 3 页零新增早停
+    #[serde(default = "default_true")]
+    pub force_full_collect: bool,
 }
 
 fn default_true() -> bool {
@@ -137,5 +143,29 @@ impl CrawlerTaskInput {
             return Err("max_pagination_depth 必须 >= 0（0 表示不限）".into());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CrawlerTaskInput;
+
+    #[test]
+    fn force_full_collect_defaults_to_true_when_absent() {
+        // body 不传 force_full_collect 时，serde 默认应为 true（开关 ON = 全量采集）
+        let input: CrawlerTaskInput = serde_json::from_str(
+            r#"{"name":"t","list_urls":["https://x.com"]}"#,
+        )
+        .expect("反序列化成功");
+        assert!(input.force_full_collect, "缺省 force_full_collect 必须默认 true");
+    }
+
+    #[test]
+    fn force_full_collect_respects_explicit_false() {
+        let input: CrawlerTaskInput = serde_json::from_str(
+            r#"{"name":"t","list_urls":["https://x.com"],"force_full_collect":false}"#,
+        )
+        .expect("反序列化成功");
+        assert!(!input.force_full_collect);
     }
 }
