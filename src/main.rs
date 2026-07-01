@@ -834,6 +834,20 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::info!("SQLite migration 031 applied (crawler_field_library resource sort)");
                 }
             }
+            // Migration 032: crawler_tasks.force_full_collect（044 全量采集开关 + 早停）
+            {
+                let m32 = include_str!("../migrations/032_crawler_tasks_force_full_collect_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m32).execute(pool).await {
+                    let msg = e.to_string();
+                    if msg.contains("duplicate column") || msg.contains("already exists") {
+                        tracing::debug!("SQLite migration 032 skipped (already applied)");
+                    } else {
+                        panic!("Failed to run SQLite migration 032: {e}");
+                    }
+                } else {
+                    tracing::info!("SQLite migration 032 applied (crawler_tasks.force_full_collect)");
+                }
+            }
             // 043：种子化 crawler_field_library（若表为空则用应用层 BUILTIN_PRESETS 补种）
             {
                 if let Err(e) = tgTool::services::crawler::preset_library::seed_if_empty_sqlite(pool).await {
@@ -1261,6 +1275,20 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::warn!("PostgreSQL migration 031 (field_library resource sort) failed: {e}");
                 } else {
                     tracing::info!("PostgreSQL migration 031 applied (crawler_field_library resource sort)");
+                }
+            }
+            // Migration 032: crawler_tasks.force_full_collect（044 全量采集开关 + 早停）
+            {
+                let m32 = include_str!("../migrations/032_crawler_tasks_force_full_collect_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m32).execute(pool).await {
+                    let msg = e.to_string();
+                    if msg.contains("already exists") || msg.contains("already") {
+                        tracing::debug!("PostgreSQL migration 032 skipped (already applied)");
+                    } else {
+                        panic!("Failed to run PostgreSQL migration 032: {e}");
+                    }
+                } else {
+                    tracing::info!("PostgreSQL migration 032 applied (crawler_tasks.force_full_collect)");
                 }
             }
             // 043：种子化 crawler_field_library
