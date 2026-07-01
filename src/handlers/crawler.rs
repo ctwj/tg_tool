@@ -842,9 +842,10 @@ pub async fn create_task_from_template(
                  interval_minutes, task_concurrency, user_agent, request_delay_ms, proxy, \
                  auto_link_check, block_detection_config, max_consecutive_failures, \
                  template_source, pagination_selector, max_pages, \
+                 force_full_collect, \
                  status, consecutive_failures, next_run_at) \
                  VALUES (?, ?, ?, true, 60, NULL, NULL, NULL, NULL, false, NULL, NULL, \
-                 ?, NULL, NULL, 'active', 0, ?)",
+                 ?, NULL, NULL, true, 'active', 0, ?)",
             )
             .bind(task_name)
             .bind(body.enabled)
@@ -878,9 +879,10 @@ pub async fn create_task_from_template(
                  interval_minutes, task_concurrency, user_agent, request_delay_ms, proxy, \
                  auto_link_check, block_detection_config, max_consecutive_failures, \
                  template_source, pagination_selector, max_pages, \
+                 force_full_collect, \
                  status, consecutive_failures, next_run_at) \
                  VALUES ($1, $2, $3, true, 60, NULL, NULL, NULL, NULL, false, NULL, NULL, \
-                 $4, NULL, NULL, 'active', 0, $5) RETURNING id",
+                 $4, NULL, NULL, true, 'active', 0, $5) RETURNING id",
             )
             .bind(task_name)
             .bind(body.enabled)
