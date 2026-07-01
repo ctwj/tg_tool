@@ -958,6 +958,31 @@ fn build_type_index(
 /// - 用 `resolve_url(base_url)` 绝对化后返回
 /// - 无 pagination 字段 / 字段未命中 / 命中为空 → 返回 None（停止翻页）
 ///
+/// 判定翻页是否应早停。返回 true 表示应停止翻页（由调用方 break）。
+///
+/// - `force_full`：true 时永远返回 false（强制全量，旁路早停），且不维护 `empty_pages`
+/// - `new_before` / `new_after`：本页 detail 循环前后的 `new_count` 快照
+/// - `empty_pages`：跨页累计的"连续零新增页数"，由本函数维护
+/// - `limit`：连续多少页零新增触发早停（调用方常量 3）
+pub fn should_stop_after_page(
+    force_full: bool,
+    new_before: i64,
+    new_after: i64,
+    empty_pages: &mut i64,
+    limit: i64,
+) -> bool {
+    if force_full {
+        return false;
+    }
+    if new_after - new_before == 0 {
+        *empty_pages += 1;
+        *empty_pages >= limit
+    } else {
+        *empty_pages = 0;
+        false
+    }
+}
+
 /// `scope_path` 为 list_page 的根路径（如 "/list_page"）
 /// `base_url` 为当前页最终 URL（用于相对 URL → 绝对 URL）
 fn find_next_page_url(
@@ -1678,6 +1703,59 @@ mod tests {
             index.get("/list_page/title"),
             Some(FieldType::String)
         ));
+    }
+
+    /// 044：should_stop_after_page —— 全量模式永远不早停
+    #[test]
+    fn should_stop_after_page_force_full_never_stops() {
+        let mut empty = 10i64; // 即便已累计 10 页空，全量模式也不停
+        assert!(!should_stop_after_page(true, 5, 5, &mut empty, 3));
+        assert_eq!(empty, 10, "force_full=true 时不得维护 empty_pages");
+    }
+
+    /// 044：本页有新增 → 清零，不停
+    #[test]
+    fn should_stop_after_page_resets_on_new() {
+        let mut empty = 2i64;
+        assert!(!should_stop_after_page(false, 5, 8, &mut empty, 3));
+        assert_eq!(empty, 0);
+    }
+
+    /// 044：本页零新增、未达阈值 → 累加，不停
+    #[test]
+    fn should_stop_after_page_accumulates_below_limit() {
+        let mut empty = 0i64;
+        assert!(!should_stop_after_page(false, 5, 5, &mut empty, 3));
+        assert_eq!(empty, 1);
+        assert!(!should_stop_after_page(false, 5, 5, &mut empty, 3));
+        assert_eq!(empty, 2);
+    }
+
+    /// 044：本页零新增、达阈值 → 停
+    #[test]
+    fn should_stop_after_page_stops_at_limit() {
+        let mut empty = 2i64;
+        assert!(should_stop_after_page(false, 5, 5, &mut empty, 3));
+        assert_eq!(empty, 3);
+    }
+
+    /// 044：翻页序列 [新5, 旧0, 旧0, 旧0] → 第 4 次停；中间出新帖清零
+    #[test]
+    fn should_stop_after_page_simulates_pagination_sequence() {
+        let mut empty = 0i64;
+        // 第1页：5 新
+        assert!(!should_stop_after_page(false, 0, 5, &mut empty, 3));
+        // 第2-4页：零新增
+        assert!(!should_stop_after_page(false, 5, 5, &mut empty, 3)); // empty=1
+        assert!(!should_stop_after_page(false, 5, 5, &mut empty, 3)); // empty=2
+        assert!(should_stop_after_page(false, 5, 5, &mut empty, 3));  // empty=3 → 停
+        // 重置后：[旧0, 新1, 旧0, 旧0, 旧0] → 中间清零，第5次才停
+        let mut empty2 = 0i64;
+        assert!(!should_stop_after_page(false, 5, 5, &mut empty2, 3)); // empty=1
+        assert!(!should_stop_after_page(false, 5, 6, &mut empty2, 3)); // 新增 → empty=0
+        assert!(!should_stop_after_page(false, 6, 6, &mut empty2, 3)); // empty=1
+        assert!(!should_stop_after_page(false, 6, 6, &mut empty2, 3)); // empty=2
+        assert!(should_stop_after_page(false, 6, 6, &mut empty2, 3));  // empty=3 → 停
     }
 
     /// US5 T055：find_next_page_url 从 pagination 字段命中取下一页 URL
