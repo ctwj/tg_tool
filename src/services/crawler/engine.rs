@@ -99,6 +99,8 @@ pub struct TaskRuntime {
     pub max_pages: i64,
     /// 043 US5：字段树 pagination 字段驱动的最大翻页深度（0=不限）
     pub max_pagination_depth: i64,
+    /// 044：全量采集开关（true=每次全量；false=连续 3 页零新增早停）
+    pub force_full_collect: bool,
     pub field_tree: FieldTree,
 }
 
@@ -329,6 +331,7 @@ pub async fn load_task(db: &DbPool, task_id: i64) -> Result<TaskRuntime, String>
         pagination_selector: task.pagination_selector,
         max_pages: task.max_pages,
         max_pagination_depth: task.max_pagination_depth,
+        force_full_collect: task.force_full_collect,
         field_tree,
     })
 }
@@ -667,6 +670,8 @@ pub async fn run_task(task_id: i64, state: &AppState) -> Result<RunSummary, Stri
         let mut visited_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut current_url: Option<String> = Some(seed_url.clone());
         let mut depth = 0i64;
+        let mut empty_pages = 0i64;          // 044：每 seed 独立的连续零新增页数
+        const EMPTY_PAGE_LIMIT: i64 = 3;     // 044：连续 3 整页零新增即停
         while let Some(list_url) = current_url.take() {
             // 翻页深度限制（max_pagination_depth=0 表示不限；种子页算第 1 页）
             if rt.max_pagination_depth > 0 && depth >= rt.max_pagination_depth {
@@ -733,6 +738,7 @@ pub async fn run_task(task_id: i64, state: &AppState) -> Result<RunSummary, Stri
             );
 
             crawled += detail_links.len() as i64;
+            let new_before = new_count; // 044：本页 detail 循环前的 new_count 快照
 
             // 落库每条详情
             for detail_url in &detail_links {
@@ -816,6 +822,22 @@ pub async fn run_task(task_id: i64, state: &AppState) -> Result<RunSummary, Stri
                 if rt.request_delay_ms > 0 {
                     tokio::time::sleep(Duration::from_millis(rt.request_delay_ms as u64)).await;
                 }
+            }
+
+            // 044：早停判定（仅 force_full_collect=false 时启用）
+            if should_stop_after_page(
+                rt.force_full_collect,
+                new_before,
+                new_count,
+                &mut empty_pages,
+                EMPTY_PAGE_LIMIT,
+            ) {
+                tracing::info!(
+                    target: "crawler",
+                    "任务 {} 种子 {} 早停：连续 {EMPTY_PAGE_LIMIT} 页零新增，停止翻页（已采到历史边界）",
+                    rt.task_id, seed_url
+                );
+                break;
             }
 
             // US5 T055：定位下一页 URL（pagination 字段命中）
