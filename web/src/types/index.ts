@@ -421,6 +421,9 @@ export interface CrawlerTaskInput {
   max_pages?: number
   /** 043 US5：字段树 pagination 字段驱动的最大翻页深度，默认 10；0=不限 */
   max_pagination_depth?: number
+  /** 044：全量采集开关。true=每次全量（跑满翻页深度/翻完，失败重跑也全量）；
+   *  false=连续 3 页无新增时自动停止深入（增量维护） */
+  force_full_collect?: boolean
 }
 
 export interface CrawlerTask extends CrawlerTaskInput {

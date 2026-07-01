@@ -51,6 +51,7 @@ function emptyInput(): CrawlerTaskInput {
     max_consecutive_failures: 3,
     template_source: '',
     max_pagination_depth: 10,
+    force_full_collect: true,
   }
 }
 
@@ -147,6 +148,7 @@ const CrawlerTasks: React.FC = () => {
       block_detection_config: task.block_detection_config ?? '',
       template_source: task.template_source ?? '',
       max_pagination_depth: task.max_pagination_depth ?? 10,
+      force_full_collect: task.force_full_collect ?? true,
     } as any)
     setEditorOpen(true)
   }
@@ -165,6 +167,7 @@ const CrawlerTasks: React.FC = () => {
         block_detection_config: raw.block_detection_config?.trim() || null,
         template_source: raw.template_source?.trim() || null,
         max_pagination_depth: raw.max_pagination_depth ?? 10,
+        force_full_collect: raw.force_full_collect ?? true,
       }
       if (values.list_urls.length === 0) {
         message.warning('请至少填写一个列表页 URL')
@@ -277,6 +280,7 @@ const CrawlerTasks: React.FC = () => {
       block_detection_config: cfg.block_detection_config ?? '',
       template_source: cfg.template_source ?? tpl.key,
       max_pagination_depth: cfg.max_pagination_depth ?? 10,
+      force_full_collect: cfg.force_full_collect ?? true,
     } as any)
     setTemplatePickerOpen(false)
     setEditorOpen(true)
@@ -570,6 +574,15 @@ const CrawlerTasks: React.FC = () => {
               extra="页（0=不限，默认 10；为安全阀，防止抓取失控）"
             >
               <InputNumber min={0} max={10000} style={{ width: 200 }} />
+            </Form.Item>
+            <Form.Item
+              label="全量采集"
+              name="force_full_collect"
+              valuePropName="checked"
+              tooltip="开启：每次运行都翻到底，失败重跑也全量（适合首次全量打底）。关闭：连续 3 页无新增时自动停止深入（适合已成功全量一次后的增量维护）"
+              extra="关闭后靠早停省请求；首次全量请保持开启"
+            >
+              <Switch checkedChildren="全量" unCheckedChildren="增量" defaultChecked />
             </Form.Item>
           </Card>
 
