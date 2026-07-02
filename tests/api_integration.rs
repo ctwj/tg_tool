@@ -84,6 +84,22 @@ async fn setup_test_db() -> DbPool {
     let m17 = include_str!("../migrations/017_client_name_username_sqlite.sql");
     let _ = sqlx::raw_sql(m17).execute(&pool).await;
 
+    // Migration 020-032: crawler 子系统表（feature 044 集成测试需要 crawler_tasks 当前 schema）
+    // 按生产顺序跑 crawler_tasks 建表 + 其 ALTER：
+    //   020 建表（含旧 selectors 列）/ 025 pagination_selector+max_pages /
+    //   026 drop selectors（043，必须跑否则 selectors NOT NULL 无默认会让 create INSERT 失败）/
+    //   030 max_pagination_depth / 032 force_full_collect
+    let m20 = include_str!("../migrations/020_crawler_tasks_sqlite.sql");
+    let _ = sqlx::raw_sql(m20).execute(&pool).await;
+    let m25 = include_str!("../migrations/025_crawler_tasks_pagination_sqlite.sql");
+    let _ = sqlx::raw_sql(m25).execute(&pool).await;
+    let m26 = include_str!("../migrations/026_crawler_drop_selectors_sqlite.sql");
+    let _ = sqlx::raw_sql(m26).execute(&pool).await;
+    let m30 = include_str!("../migrations/030_crawler_tasks_pagination_depth_sqlite.sql");
+    let _ = sqlx::raw_sql(m30).execute(&pool).await;
+    let m32 = include_str!("../migrations/032_crawler_tasks_force_full_collect_sqlite.sql");
+    let _ = sqlx::raw_sql(m32).execute(&pool).await;
+
     // 插入 root 用户（使用当前 bcrypt 版本生成 hash）
     let hash = crypto::hash_password("123456").expect("Failed to hash root password");
     sqlx::query("INSERT INTO users (username, password, role, status) VALUES ('root', ?, 100, 1)")
@@ -3986,4 +4002,106 @@ async fn test_resource_check_link_unconfigured_degrades() {
     assert_success(&body);
     // 未配置 PanCheck → 不报错，降级为未检测
     assert_eq!(body["data"]["link_status"], "unknown");
+}
+
+/// 044 Issue #2：crawler_tasks.force_full_collect 字段 DB 往返集成测试
+/// 覆盖 plan §6.2：默认值 true（migration 032 DEFAULT 1 回填）/ PATCH 切换持久化 / 双向 true↔false
+#[tokio::test]
+async fn test_crawler_task_force_full_collect_roundtrip() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 1. 创建任务（最小 body，force_full_collect 缺省）→ 应默认 true
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/crawler/tasks",
+            &token,
+            Some(
+                serde_json::json!({
+                    "name": "ffc-roundtrip-test",
+                    "list_urls": ["https://example.com/list"]
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    let id = body["data"]["id"].as_i64().expect("新建任务应返回 id");
+    assert_eq!(
+        body["data"]["force_full_collect"], true,
+        "新建任务 force_full_collect 默认应为 true（全量模式，migration 032 DEFAULT 1）"
+    );
+
+    // 2. GET 读回 → 默认值持久化
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "GET",
+            &format!("/api/crawler/tasks/{id}"),
+            &token,
+            None,
+        ))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    assert_eq!(body["data"]["force_full_collect"], true, "GET 读回默认 true");
+
+    // 3. PATCH force_full_collect=false → 返回 false
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "PUT",
+            &format!("/api/crawler/tasks/{id}"),
+            &token,
+            Some(r#"{"force_full_collect":false}"#.to_string()),
+        ))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    assert_eq!(
+        body["data"]["force_full_collect"], false,
+        "PATCH false 后返回 false"
+    );
+
+    // 4. GET 读回 → false 持久化
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "GET",
+            &format!("/api/crawler/tasks/{id}"),
+            &token,
+            None,
+        ))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_eq!(
+        body["data"]["force_full_collect"], false,
+        "GET 读回 PATCH 后的 false（持久化，验证 bind/占位顺序正确）"
+    );
+
+    // 5. PATCH 回 true → 双向可切换
+    let resp = app
+        .oneshot(build_auth_request(
+            "PUT",
+            &format!("/api/crawler/tasks/{id}"),
+            &token,
+            Some(r#"{"force_full_collect":true}"#.to_string()),
+        ))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_eq!(
+        body["data"]["force_full_collect"], true,
+        "PATCH 回 true（双向可切换）"
+    );
 }
