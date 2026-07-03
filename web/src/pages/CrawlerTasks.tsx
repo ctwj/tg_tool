@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react'
 import {
-  Table, Button, Modal, Form, Input, InputNumber, Select, Switch, Space,
+  Table, Button, Modal, Form, Input, InputNumber, Select, Switch, Space, Radio,
   message, Tag, Popconfirm, Drawer, Tooltip, Typography, Alert, Empty,
   Card, Collapse, Progress,
 } from 'antd'
@@ -78,6 +78,8 @@ const CrawlerTasks: React.FC = () => {
 
   const [editorOpen, setEditorOpen] = useState(false)
   const [editing, setEditing] = useState<CrawlerTask | null>(null)
+  // 045：翻页方式（自动爬取翻页=入口/DOM 分页；手动配置翻页=URL 模板按页码生成）。二者互斥
+  const [paginationMode, setPaginationMode] = useState<'auto' | 'manual'>('auto')
   const [form] = Form.useForm<CrawlerTaskInput>()
 
   const [templates, setTemplates] = useState<CrawlerTemplate[]>([])
@@ -127,6 +129,7 @@ const CrawlerTasks: React.FC = () => {
     form.resetFields()
     const init = emptyInput()
     form.setFieldsValue(init as any)
+    setPaginationMode('auto')
     setEditorOpen(true)
   }
 
@@ -156,6 +159,7 @@ const CrawlerTasks: React.FC = () => {
       page_start: task.page_start ?? 1,
       page_end: task.page_end ?? 0,
     } as any)
+    setPaginationMode(task.page_url_template?.trim() ? 'manual' : 'auto')
     setEditorOpen(true)
   }
 
@@ -178,8 +182,14 @@ const CrawlerTasks: React.FC = () => {
         page_start: raw.page_start ?? 1,
         page_end: raw.page_end ?? 0,
       }
-      if (values.list_urls.length === 0) {
-        message.warning('请至少填写一个列表页 URL')
+      // 045：按翻页方式校验。手动配置翻页：URL 模板必填（list_urls 可空）；自动爬取翻页：入口 URL 必填
+      if (paginationMode === 'manual') {
+        if (!(values.page_url_template || '').trim()) {
+          message.warning('手动配置翻页需填写 URL 模板')
+          return
+        }
+      } else if (values.list_urls.length === 0) {
+        message.warning('自动爬取翻页需至少填一个入口 URL')
         return
       }
     } catch {
@@ -294,6 +304,7 @@ const CrawlerTasks: React.FC = () => {
       page_start: cfg.page_start ?? 1,
       page_end: cfg.page_end ?? 0,
     } as any)
+    setPaginationMode(cfg.page_url_template?.trim() ? 'manual' : 'auto')
     setTemplatePickerOpen(false)
     setEditorOpen(true)
     message.info(`已应用模板「${tpl.name}」，请调整 list_urls 与字段配置`)
@@ -514,168 +525,114 @@ const CrawlerTasks: React.FC = () => {
             </Space>
           </Card>
 
-          {/* Section 2: 列表页 URL */}
+          {/* Section 2: 列表页与翻页（自动爬取翻页 / 手动配置翻页 二选一，互斥） */}
           <Card
             size="small"
             style={CARD_STYLE}
             headStyle={CARD_HEAD_STYLE}
             bodyStyle={CARD_BODY_STYLE}
-            title={<span><LinkOutlined style={{ color: '#0ea5e9', marginRight: 6 }} />② 列表页 URL</span>}
+            title={<span><LinkOutlined style={{ color: '#0ea5e9', marginRight: 6 }} />② 列表页与翻页</span>}
           >
-            <Alert
-              type="info" showIcon
-              style={{ marginBottom: 12 }}
-              message="要抓取的入口页面，可填多个（如分页 page=1,2,3）"
-              description={(
-                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: '#6b7280', lineHeight: 1.7 }}>
-                  <li>每个 URL 都会被解析为多条详情链接</li>
-                  <li>无需分页：把每一页的完整 URL 都列出来即可</li>
-                  <li><b>需要自动翻页</b>：只需填第一页 URL，再到字段配置器新增 <code>pagination</code> 字段配分页规则（见下方 ②.b）</li>
-                </ul>
-              )}
-            />
-            <Form.Item label="URL 列表" required>
-              <Form.List name="list_urls">
-                {(fields, { add, remove }) => (
-                  <>
-                    {fields.map((f) => (
-                      <Space key={f.key} style={{ display: 'flex', marginBottom: 8 }} align="baseline">
-                        <Form.Item name={f.name} noStyle rules={[{ required: true, message: 'URL 不能为空' }]}>
-                          <Input
-                            placeholder="https://example.com/list?page=1"
-                            style={{ width: 720 }}
-                            prefix={<LinkOutlined style={{ color: '#bfbfbf' }} />}
-                          />
-                        </Form.Item>
-                        <Button type="text" danger size="small" icon={<DeleteOutlined />} onClick={() => remove(f.name)} />
-                      </Space>
-                    ))}
-                    <Button type="dashed" icon={<PlusOutlined />} onClick={() => add('')}>添加 URL</Button>
-                  </>
-                )}
-              </Form.List>
-            </Form.Item>
-          </Card>
-
-          {/* Section 2.b: 自动翻页（可选） */}
-          <Card
-            size="small"
-            style={CARD_STYLE}
-            headStyle={CARD_HEAD_STYLE}
-            bodyStyle={CARD_BODY_STYLE}
-            title={<span>②.b 自动翻页（可选）</span>}
-          >
-            <Alert
-              type="info" showIcon
-              style={{ marginBottom: 12 }}
-              message="分页规则在「字段配置器」里配置，不在这里填"
-              description={(
-                <div style={{ fontSize: 12, lineHeight: 1.7, color: '#6b7280' }}>
-                  自动翻页是一项需要验证的<b>数据</b>，应在抓取列表页源码后再配置：<br />
-                  ① 任务保存后进入「字段配置器」 → 输入列表 URL → 点继续抓源码<br />
-                  ② 在右侧字段树「列表页字段」下新增字段，name 选 <code>pagination</code>（自动联动为分页指针类型）<br />
-                  ③ 填 CSS 选择器（如 <code>.pagination a</code>、<code>.pg a</code>）匹配分页链接，点「验证」确认命中<br />
-                  ④ 验证无误后保存字段树，引擎即按此规则链式翻页（命中值作为下一页 URL，去重后扩散抓取）
-                </div>
-              )}
-            />
-            <Form.Item
-              label="翻页深度上限"
-              name="max_pagination_depth"
-              tooltip="字段配置器中 field_type=pagination 字段触发链式翻页时的最大页数（含种子页）。0=不限，默认 10。测试期建议填 3-5 防失控"
-              extra="页（0=不限，默认 10；为安全阀，防止抓取失控）"
-            >
-              <InputNumber min={0} max={10000} style={{ width: 200 }} />
-            </Form.Item>
-            <Form.Item
-              label="全量采集"
-              name="force_full_collect"
-              valuePropName="checked"
-              tooltip="开启：每次运行都翻到底，失败重跑也全量（适合首次全量打底）。关闭：连续 3 页无新增时自动停止深入（适合已成功全量一次后的增量维护）"
-              extra="关闭后靠早停省请求；首次全量请保持开启"
-            >
-              <Switch checkedChildren="全量" unCheckedChildren="增量" defaultChecked />
-            </Form.Item>
-
-            <Alert
-              type="info" showIcon
-              style={{ marginTop: 16, marginBottom: 12 }}
-              message="另一种方式：URL 模板分页（适配 JS 跳转站点）"
-              description={(
-                <div style={{ fontSize: 12, lineHeight: 1.7, color: '#6b7280' }}>
-                  若页面<b>没有</b>可提取的分页链接（靠前端 JS 按页码跳转，如 <code>page-2.html</code>、<code>?p=3</code>），
-                  填写下方 URL 模板，引擎将按页码递增自动生成每一页并抓取。<br />
-                  含 <code>{'{page}'}</code> 占位符；填写后<b>独占翻页</b>（不再使用字段配置器的 pagination 字段）。
-                  模板页同样受「翻页深度上限」与「全量采集/连续空页早停」约束。
-                </div>
-              )}
-            />
-            <Form.Item
-              label="URL 模板"
-              name="page_url_template"
-              tooltip="含 {page} 占位符的列表页 URL 模板。留空=用字段配置器的分页字段翻页；填写=按页码递增生成（适配 JS 跳转无分页链接的站点）"
-              extra="例：https://x.com/page-{page}.html ；留空表示用字段配置器的分页字段"
-            >
-              <Input placeholder="https://www.example.com/page-{page}.html（留空则用分页字段）" allowClear />
-            </Form.Item>
-            <Form.Item
-              label="起始页码"
-              name="page_start"
-              tooltip="模板生成页码的起始值（默认 1）。与种子页重复的会自动去重跳过"
-              extra="页码（默认 1）"
-            >
-              <InputNumber min={1} max={100000} style={{ width: 200 }} />
-            </Form.Item>
-            <Form.Item
-              label="终止页码"
-              name="page_end"
-              tooltip="模板生成页码上限。0=不限（受翻页深度上限与连续空页早停约束）"
-              extra="页码（0=不限）"
-            >
-              <InputNumber min={0} max={100000} style={{ width: 200 }} />
-            </Form.Item>
-          </Card>
-
-          {/* Section 3: 字段配置（提示 + 入口） */}
-          <Card
-            size="small"
-            style={CARD_STYLE}
-            headStyle={CARD_HEAD_STYLE}
-            bodyStyle={CARD_BODY_STYLE}
-            title={<span>③ 字段配置</span>}
-          >
-            <Alert
-              type="info" showIcon
-              style={{ marginBottom: 12 }}
-              message="可视化字段配置器：4 tab 源码预览 + 字段树（list/detail 双作用域）+ 20+ 预置字段库 + 6 种匹配模式"
-              description={(
-                <div style={{ fontSize: 12, lineHeight: 1.7, color: '#6b7280' }}>
-                  043 重构：原 042 内联 CSS 选择器表单已下线。任务保存后，进入「字段配置」可视化编辑器，
-                  支持 4 tab 源码预览（header/html/script/meta）+ 字段树（list/detail 双作用域，父子嵌套链接卡片）+
-                  20+ 预置字段库 + 6 种匹配模式（CSS / 正则 / 前后缀 / JSON Path / meta 属性 / 响应头）。
-                </div>
-              )}
-            />
-            {editing ? (
-              <Button
-                type="primary"
-                icon={<ControlOutlined />}
-                onClick={() => goToConfigurator(editing)}
+            <Form.Item label="翻页方式" style={{ marginBottom: 16 }}>
+              <Radio.Group
+                value={paginationMode}
+                onChange={(e) => {
+                  const mode = e.target.value as 'auto' | 'manual'
+                  setPaginationMode(mode)
+                  if (mode === 'auto') {
+                    // 切回自动爬取翻页：清空 URL 模板（翻页由字段配置器 pagination 字段驱动）
+                    form.setFieldValue('page_url_template', '')
+                  }
+                }}
               >
-                进入字段配置器
-              </Button>
+                <Radio value="auto">自动爬取翻页</Radio>
+                <Radio value="manual">手动配置翻页</Radio>
+              </Radio.Group>
+            </Form.Item>
+
+            {paginationMode === 'auto' ? (
+              <>
+                <Form.Item label="URL 列表" extra="入口页面，可填多个；翻页由字段配置器的 pagination 字段驱动">
+                  <Form.List name="list_urls">
+                    {(fields, { add, remove }) => (
+                      <>
+                        {fields.map((f) => (
+                          <Space key={f.key} style={{ display: 'flex', marginBottom: 8 }} align="baseline">
+                            <Form.Item name={f.name} noStyle rules={[{ required: true, message: 'URL 不能为空' }]}>
+                              <Input
+                                placeholder="https://example.com/list?page=1"
+                                style={{ width: 720 }}
+                                prefix={<LinkOutlined style={{ color: '#bfbfbf' }} />}
+                              />
+                            </Form.Item>
+                            <Button type="text" danger size="small" icon={<DeleteOutlined />} onClick={() => remove(f.name)} />
+                          </Space>
+                        ))}
+                        <Button type="dashed" icon={<PlusOutlined />} onClick={() => add('')}>添加 URL</Button>
+                      </>
+                    )}
+                  </Form.List>
+                </Form.Item>
+                <Space wrap size="middle">
+                  <Form.Item
+                    label="翻页深度上限"
+                    name="max_pagination_depth"
+                    tooltip="链式翻页的最大页数（含种子页）。0=不限，默认 10"
+                    extra="页（0=不限）"
+                  >
+                    <InputNumber min={0} max={10000} style={{ width: 160 }} />
+                  </Form.Item>
+                  <Form.Item
+                    label="全量采集"
+                    name="force_full_collect"
+                    valuePropName="checked"
+                    tooltip="开启：每次翻到底（首次全量打底）；关闭：连续 3 页无新增早停（增量维护）"
+                  >
+                    <Switch checkedChildren="全量" unCheckedChildren="增量" defaultChecked />
+                  </Form.Item>
+                </Space>
+              </>
             ) : (
-              <Button
-                type="primary"
-                ghost
-                icon={<ControlOutlined />}
-                onClick={() => handleSubmit((saved) => goToConfigurator(saved))}
-                loading={submitLoading}
-              >
-                保存并进入字段配置器
-              </Button>
+              <>
+                <Form.Item
+                  label="URL 模板"
+                  name="page_url_template"
+                  tooltip="含 {page} 占位符，按页码递增生成每一页。适配页面无分页链接、靠 JS 跳转的站点（如 page-2.html）"
+                  extra="例：https://x.com/page-{page}.html ；可不填入口 URL"
+                >
+                  <Input placeholder="https://www.example.com/page-{page}.html" allowClear style={{ width: 560 }} />
+                </Form.Item>
+                <Space wrap size="middle">
+                  <Form.Item
+                    label="起始页码"
+                    name="page_start"
+                    tooltip="模板生成页码的起始值（默认 1）"
+                    extra="页码"
+                  >
+                    <InputNumber min={1} max={100000} style={{ width: 160 }} />
+                  </Form.Item>
+                  <Form.Item
+                    label="终止页码"
+                    name="page_end"
+                    tooltip="模板生成页码上限（必须 > 0，作为翻页边界；模板模式不使用翻页深度）"
+                    extra="页码（>0）"
+                  >
+                    <InputNumber min={1} max={100000} style={{ width: 160 }} />
+                  </Form.Item>
+                </Space>
+                <Form.Item
+                  label="全量采集"
+                  name="force_full_collect"
+                  valuePropName="checked"
+                  tooltip="开启：每次翻到底；关闭：连续 3 页无新增早停"
+                >
+                  <Switch checkedChildren="全量" unCheckedChildren="增量" defaultChecked />
+                </Form.Item>
+              </>
             )}
           </Card>
+
+          {/* 045：字段配置入口移至任务列表行操作（goToConfigurator），编辑器表单不再显示字段配置 Card */}
 
           {/* Section 4: 调度与并发 */}
           <Card

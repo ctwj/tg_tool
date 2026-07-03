@@ -484,6 +484,9 @@ export interface CrawlerArticleListItem {
   image_count: number
   is_edited: boolean
   crawled_at: string
+  /** 后端注入：字段树提取结果拍平（key=field_path 末段，值=string|string[]），列表展示用它兜底 */
+  extra_fields?: Record<string, any>
+  extra_fields_json?: string | null
 }
 
 export interface CrawlerArticleLink {
@@ -548,7 +551,7 @@ export interface CrawlerRunHistory {
   started_at: string
   finished_at: string | null
   duration_ms: number | null
-  status: 'success' | 'partial' | 'failed' | 'blocked'
+  status: 'running' | 'success' | 'partial' | 'failed' | 'blocked'
   block_type: string | null
   crawled_count: number
   new_count: number
@@ -566,7 +569,7 @@ export interface CrawlerRunHistoryDetail {
   started_at: string
   finished_at: string | null
   duration_ms: number | null
-  status: 'success' | 'partial' | 'failed' | 'blocked'
+  status: 'running' | 'success' | 'partial' | 'failed' | 'blocked'
   block_type: string | null
   crawled_count: number
   new_count: number

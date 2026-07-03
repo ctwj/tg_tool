@@ -649,10 +649,42 @@ fn make_sub_material_from_hit(
 // 抓取主循环（US1 T035）
 // ============================================================================
 
+/// 045：判断任务是否正在运行（crawler_run_histories 存在 status='running' 行）
+///
+/// 用于手动 /run 与调度器 tick 触发前防重——同一任务同时只允许一个运行
+pub async fn is_task_running(db: &DbPool, task_id: i64) -> bool {
+    let row: Option<(i64,)> = match db {
+        DbPool::Sqlite(pool) => sqlx::query_as(
+            "SELECT id FROM crawler_run_histories WHERE task_id = ? AND status = 'running' LIMIT 1",
+        )
+        .bind(task_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten(),
+        DbPool::Postgres(pool) => sqlx::query_as(
+            "SELECT id FROM crawler_run_histories WHERE task_id = $1 AND status = 'running' LIMIT 1",
+        )
+        .bind(task_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten(),
+    };
+    row.is_some()
+}
+
 /// 立即运行一次任务
 pub async fn run_task(task_id: i64, state: &AppState) -> Result<RunSummary, String> {
     let started = Instant::now();
     let rt = load_task(&state.db, task_id).await?;
+
+    // 045：先插一条 running 历史行，让前端「爬虫历史」立即看到任务运行中；结尾 update 成最终状态
+    let run_id = insert_run_history(
+        &state.db, task_id, &rt.task_name, 0, "running", None, 0, 0, 0, 0, None, None,
+    )
+    .await
+    .unwrap_or(0);
 
     tracing::info!(
         target: "crawler",
@@ -679,18 +711,29 @@ pub async fn run_task(task_id: i64, state: &AppState) -> Result<RunSummary, Stri
     // 045 US2：跨 seed/跨页 全局详情去重集合（避免重复发起 detail 网络请求）
     let mut detail_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for seed_url in &rt.list_urls {
+    // 045：翻页起点。纯模板模式（配了模板且无入口 list_urls）用模板第 page_start 页作起点；
+    // 入口/混合模式用 list_urls 作种子。
+    let template_mode = !rt.page_url_template.is_empty();
+    let pure_template = template_mode && rt.list_urls.is_empty();
+    let seeds: Vec<String> = if pure_template {
+        build_template_url(&rt.page_url_template, rt.page_start, "")
+            .map(|u| vec![u])
+            .unwrap_or_default()
+    } else {
+        rt.list_urls.clone()
+    };
+
+    for seed_url in &seeds {
         // US5 T055：链式翻页，直到无下一页 / 达到 max_pagination_depth / 循环检测
         let mut current_url: Option<String> = Some(seed_url.clone());
         let mut depth = 0i64;
         let mut empty_pages = 0i64;          // 044：每 seed 独立的连续零新增页数
         const EMPTY_PAGE_LIMIT: i64 = 3;     // 044：连续 3 整页零新增即停
-        // 045 US1：模板分页模式（配置了 page_url_template 即启用，独占翻页，不读 DOM pagination 字段）
-        let template_mode = !rt.page_url_template.is_empty();
-        let mut template_page = rt.page_start; // 模板生成页码游标（每 seed 从 page_start 重新开始）
+        // 045 US1：template_mode 在循环外声明；纯模板模式第 page_start 页已作起点，游标从 +1 开始
+        let mut template_page = if pure_template { rt.page_start + 1 } else { rt.page_start };
         while let Some(list_url) = current_url.take() {
-            // 翻页深度限制（max_pagination_depth=0 表示不限；种子页算第 1 页）
-            if rt.max_pagination_depth > 0 && depth >= rt.max_pagination_depth {
+            // 翻页深度限制（仅入口/DOM 模式生效；模板模式由 page_end 独占边界，045）
+            if !template_mode && rt.max_pagination_depth > 0 && depth >= rt.max_pagination_depth {
                 break;
             }
             depth += 1;
@@ -912,16 +955,15 @@ pub async fn run_task(task_id: i64, state: &AppState) -> Result<RunSummary, Stri
     };
     let duration_ms = started.elapsed().as_millis() as i64;
 
-    // 写 run_history
+    // 写 run_history（045：把开头插的 running 行 update 成最终状态）
     let err_msg = if errors.is_empty() {
         None
     } else {
         Some(errors.join("; ").chars().take(500).collect())
     };
-    let _ = insert_run_history(
+    let _ = update_run_history(
         &state.db,
-        task_id,
-        &rt.task_name,
+        run_id,
         duration_ms,
         status,
         first_block.as_ref().map(|(b, _)| b.as_str()),
@@ -1387,12 +1429,14 @@ async fn insert_run_history(
     skipped: i64,
     failed: i64,
     error_message: Option<String>,
-) -> Result<(), String> {
-    let started_at = chrono::Utc::now().naive_utc() - chrono::Duration::milliseconds(duration_ms);
-    let finished_at = chrono::Utc::now().naive_utc();
+    // 045：finished_at — None = 运行中（留空）；Some = 已结束
+    finished_at: Option<chrono::NaiveDateTime>,
+) -> Result<i64, String> {
+    let started_at = chrono::Utc::now().naive_utc() - chrono::Duration::milliseconds(duration_ms.max(0));
+    let created_at = chrono::Utc::now().naive_utc();
     match db {
         DbPool::Sqlite(pool) => {
-            let _ = sqlx::query(
+            let r = sqlx::query(
                 "INSERT INTO crawler_run_histories \
                  (task_id, task_name, started_at, finished_at, duration_ms, status, block_type, \
                   crawled_count, new_count, skipped_count, failed_count, error_message, created_at) \
@@ -1410,16 +1454,19 @@ async fn insert_run_history(
             .bind(skipped)
             .bind(failed)
             .bind(&error_message)
-            .bind(started_at)
+            .bind(created_at)
             .execute(pool)
-            .await;
+            .await
+            .map_err(|e| e.to_string())?;
+            Ok(r.last_insert_rowid())
         }
         DbPool::Postgres(pool) => {
-            let _ = sqlx::query(
+            let r = sqlx::query(
                 "INSERT INTO crawler_run_histories \
                  (task_id, task_name, started_at, finished_at, duration_ms, status, block_type, \
                   crawled_count, new_count, skipped_count, failed_count, error_message, created_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
+                 RETURNING id",
             )
             .bind(task_id)
             .bind(task_name)
@@ -1433,9 +1480,75 @@ async fn insert_run_history(
             .bind(skipped)
             .bind(failed)
             .bind(&error_message)
-            .bind(started_at)
+            .bind(created_at)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+            let id_val: serde_json::Value = sqlx::Row::get(&r, "id");
+            Ok(id_val.as_i64().unwrap_or(0))
+        }
+    }
+}
+
+/// 045：把开头插入的 running 行 update 成最终状态（status/duration/counts/error/finished_at）
+async fn update_run_history(
+    db: &DbPool,
+    run_id: i64,
+    duration_ms: i64,
+    status: &str,
+    block_type: Option<String>,
+    crawled: i64,
+    new_count: i64,
+    skipped: i64,
+    failed: i64,
+    error_message: Option<String>,
+) -> Result<(), String> {
+    if run_id <= 0 {
+        return Ok(()); // 开头插入失败（run_id=0）则无可更新，等价于旧行为
+    }
+    let finished_at = chrono::Utc::now().naive_utc();
+    match db {
+        DbPool::Sqlite(pool) => {
+            sqlx::query(
+                "UPDATE crawler_run_histories \
+                 SET finished_at = ?, duration_ms = ?, status = ?, block_type = ?, \
+                     crawled_count = ?, new_count = ?, skipped_count = ?, failed_count = ?, error_message = ? \
+                 WHERE id = ?",
+            )
+            .bind(finished_at)
+            .bind(duration_ms)
+            .bind(status)
+            .bind(&block_type)
+            .bind(crawled)
+            .bind(new_count)
+            .bind(skipped)
+            .bind(failed)
+            .bind(&error_message)
+            .bind(run_id)
             .execute(pool)
-            .await;
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+        DbPool::Postgres(pool) => {
+            sqlx::query(
+                "UPDATE crawler_run_histories \
+                 SET finished_at = $1, duration_ms = $2, status = $3, block_type = $4, \
+                     crawled_count = $5, new_count = $6, skipped_count = $7, failed_count = $8, error_message = $9 \
+                 WHERE id = $10",
+            )
+            .bind(finished_at)
+            .bind(duration_ms)
+            .bind(status)
+            .bind(&block_type)
+            .bind(crawled)
+            .bind(new_count)
+            .bind(skipped)
+            .bind(failed)
+            .bind(&error_message)
+            .bind(run_id)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
         }
     }
     Ok(())

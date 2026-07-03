@@ -262,14 +262,33 @@ const CrawlerResources: React.FC = () => {
     return m
   }, [tasks])
 
+  // ─── extra_fields 字段取值辅助（爬虫字段树提取结果，后端已拍平注入到每条列表项） ─────────
+  // 列表的 title/thumbnail/网盘 列读的是空表（crawler_articles.title 等三张表无 INSERT），
+  // 真实字段值在 extra_fields（key=field_path 末段，值=string|string[]），用它兜底显示
+  const efStr = (r: CrawlerArticleListItem, key: string): string | null => {
+    const v = r.extra_fields?.[key]
+    if (Array.isArray(v)) return v[0] ?? null
+    return typeof v === 'string' && v ? v : null
+  }
+  const efCount = (r: CrawlerArticleListItem, key: string): number => {
+    const v = r.extra_fields?.[key]
+    if (Array.isArray(v)) return v.length
+    return v ? 1 : 0
+  }
+
   // ─── 列定义 ───────────────────────────────────────────────────────────────
   const columns = [
     {
       title: '', dataIndex: 'thumbnail', width: 70, key: 'thumbnail',
-      render: (thumb: string | null) => {
-        const url = thumb
-          ? (imageDomain ? `${imageDomain.replace(/\/+$/, '')}/${thumb}` : `/api/images/${thumb}`)
-          : null
+      render: (thumb: string | null, r: CrawlerArticleListItem) => {
+        // 优先用 extra_fields.cover（爬虫字段提取的封面 URL，可直接用作 img src）；
+        // 否则回退到图片代理（thumbnail=Telegram file_id）
+        const cover = efStr(r, 'cover')
+        const url = cover
+          ? cover
+          : thumb
+            ? (imageDomain ? `${imageDomain.replace(/\/+$/, '')}/${thumb}` : `/api/images/${thumb}`)
+            : null
         return url ? (
           <AntImage
             src={url}
@@ -291,16 +310,20 @@ const CrawlerResources: React.FC = () => {
     },
     {
       title: '标题', dataIndex: 'title', key: 'title', ellipsis: true,
-      render: (t: string | null, r: CrawlerArticleListItem) => (
-        <Space size={4}>
-          <Tooltip title={t ?? '(无标题)'}>
-            <a onClick={() => openDetail(r.id)} style={{ fontWeight: 500 }}>
-              {t || '(无标题)'}
-            </a>
-          </Tooltip>
-          {r.is_edited && <Tag color="purple" style={{ marginInlineStart: 0 }}>已编辑</Tag>}
-        </Space>
-      ),
+      render: (t: string | null, r: CrawlerArticleListItem) => {
+        // title 列（crawler_articles.title）常为空（字段名非 title/name 或 UPDATE 不刷新），用 extra_fields 兜底
+        const title = t || efStr(r, 'title') || efStr(r, 'name')
+        return (
+          <Space size={4}>
+            <Tooltip title={title ?? '(无标题)'}>
+              <a onClick={() => openDetail(r.id)} style={{ fontWeight: 500 }}>
+                {title || '(无标题)'}
+              </a>
+            </Tooltip>
+            {r.is_edited && <Tag color="purple" style={{ marginInlineStart: 0 }}>已编辑</Tag>}
+          </Space>
+        )
+      },
     },
     {
       title: '来源', dataIndex: 'source_type', width: 110, key: 'source_type',
@@ -315,9 +338,13 @@ const CrawlerResources: React.FC = () => {
       render: (c: string | null) => c ? <Tag color="blue">{c}</Tag> : <Text type="secondary">-</Text>,
     },
     {
-      title: '网盘', dataIndex: 'pan_link_count', width: 70, key: 'pan',
+      title: '下载', dataIndex: 'pan_link_count', width: 70, key: 'pan',
       align: 'center' as const,
-      render: (n: number) => n > 0 ? <Badge count={n} style={{ backgroundColor: '#4f46e5' }} /> : <Text type="secondary">0</Text>,
+      // 网盘/直链计数表（crawler_article_links）从未写入，恒为 0；用 extra_fields.download_url 命中数兜底
+      render: (n: number, r: CrawlerArticleListItem) => {
+        const c = Math.max(n, efCount(r, 'download_url'))
+        return c > 0 ? <Badge count={c} style={{ backgroundColor: '#4f46e5' }} /> : <Text type="secondary">0</Text>
+      },
     },
     {
       title: '直链', dataIndex: 'direct_link_count', width: 70, key: 'direct',

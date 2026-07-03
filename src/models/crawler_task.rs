@@ -139,8 +139,10 @@ impl CrawlerTaskInput {
         if self.name.trim().is_empty() {
             return Err("任务名不能为空".into());
         }
-        if self.list_urls.is_empty() {
-            return Err("list_urls 不能为空".into());
+        let template_mode = !self.page_url_template.is_empty();
+        // 045：入口模式（无模板）必须填 list_urls；模板模式 list_urls 可空（直接从模板第 1 页抓）
+        if !template_mode && self.list_urls.is_empty() {
+            return Err("未配置 URL 模板时 list_urls（入口）不能为空；若用 URL 模板分页请填写模板".into());
         }
         if self.interval_minutes < 1 {
             return Err("interval_minutes 必须 >= 1".into());
@@ -164,8 +166,8 @@ impl CrawlerTaskInput {
         if self.page_end < 0 {
             return Err("终止页码 page_end 必须 >= 0（0 表示不限）".into());
         }
-        // 045：URL 模板分页配置校验（仅当配置了模板时）
-        if !self.page_url_template.is_empty() {
+        // 045：URL 模板分页配置校验（模板模式）
+        if template_mode {
             let tpl = &self.page_url_template;
             if tpl.matches("{page}").count() != 1 {
                 return Err("URL 模板必须含且仅含一个 {page} 占位符".into());
@@ -175,7 +177,11 @@ impl CrawlerTaskInput {
             if stripped.matches('{').count() != 0 || stripped.matches('}').count() != 0 {
                 return Err("URL 模板含非法花括号".into());
             }
-            if self.page_end > 0 && self.page_end < self.page_start {
+            // 模板模式由 page_end 独占翻页边界（忽略 max_pagination_depth），必须 > 0
+            if self.page_end <= 0 {
+                return Err("URL 模板模式必须设置 page_end（终止页码 > 0）作为翻页边界".into());
+            }
+            if self.page_end < self.page_start {
                 return Err("终止页码 page_end 不能小于起始页码 page_start".into());
             }
         }
@@ -281,7 +287,36 @@ mod tests {
     #[test]
     fn validate_accepts_empty_template() {
         let i = minimal_valid_input();
-        // 空模板 = 未启用模板分页，跳过模板校验
-        assert!(i.validate().is_ok(), "空模板（未启用）应通过");
+        // 空模板 = 未启用模板分页（入口模式），跳过模板校验
+        assert!(i.validate().is_ok(), "空模板（入口模式）应通过");
+    }
+
+    /// 045：模板模式允许 list_urls 为空（纯模板，直接从 page_start 抓）
+    #[test]
+    fn validate_accepts_template_mode_without_list_urls() {
+        let mut i = minimal_valid_input();
+        i.list_urls = vec![];
+        i.page_url_template = "https://site.com/page-{page}.html".into();
+        i.page_start = 1;
+        i.page_end = 100;
+        assert!(i.validate().is_ok(), "纯模板模式允许 list_urls 为空");
+    }
+
+    /// 045：模板模式必须 page_end > 0（page_end 独占翻页边界）
+    #[test]
+    fn validate_rejects_template_mode_with_zero_page_end() {
+        let mut i = minimal_valid_input();
+        i.page_url_template = "https://site.com/page-{page}.html".into();
+        i.page_end = 0;
+        assert!(i.validate().is_err(), "模板模式 page_end=0 应拒绝（需终止边界）");
+    }
+
+    /// 045：入口模式（无模板）list_urls 为空应拒绝
+    #[test]
+    fn validate_rejects_dom_mode_with_empty_list_urls() {
+        let mut i = minimal_valid_input();
+        i.list_urls = vec![];
+        // page_url_template 保持空 = 入口模式
+        assert!(i.validate().is_err(), "入口模式（无模板）list_urls 为空应拒绝");
     }
 }

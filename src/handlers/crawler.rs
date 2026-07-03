@@ -595,6 +595,10 @@ pub async fn run_task(
             tracing::warn!(target: "crawler", "Run task {id} called but scheduler not running");
         }
     }
+    // 045：同一任务正在运行时拒绝重复触发（防止并发抓取）
+    if crate::services::crawler::engine::is_task_running(&state.db, id).await {
+        return Err(AppError::BadRequest("任务正在运行中，请等待当前运行完成".into()));
+    }
     // 后台 spawn — engine::run_task 内部会 finalize_run 写历史
     let st = state.clone();
     tokio::spawn(async move {

@@ -4212,3 +4212,67 @@ async fn test_crawler_task_rejects_invalid_url_template() {
         .unwrap();
     assert_eq!(resp.status(), 400, "无 {{page}} 占位符的模板应被 400 拒绝");
 }
+
+/// 045：纯模板模式（list_urls 为空 + URL 模板 + page_end>0）合法，应创建成功
+#[tokio::test]
+async fn test_crawler_task_template_mode_without_list_urls() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 纯模板模式：list_urls 为空 + URL 模板 + page_end>0 → 应创建成功（200）
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/crawler/tasks",
+            &token,
+            Some(
+                serde_json::json!({
+                    "name": "pure-template-test",
+                    "list_urls": [],
+                    "page_url_template": "https://example.com/page-{page}.html",
+                    "page_start": 1,
+                    "page_end": 50
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "纯模板模式（空 list_urls）应创建成功");
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    assert_eq!(body["data"]["page_url_template"], "https://example.com/page-{page}.html");
+    assert_eq!(body["data"]["list_urls"], serde_json::json!([]));
+}
+
+/// 045：模板模式 page_end=0（缺终止边界）应被 400 拒绝
+#[tokio::test]
+async fn test_crawler_task_template_mode_rejects_zero_page_end() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/crawler/tasks",
+            &token,
+            Some(
+                serde_json::json!({
+                    "name": "tpl-zero-end-test",
+                    "list_urls": [],
+                    "page_url_template": "https://example.com/page-{page}.html",
+                    "page_end": 0
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "模板模式 page_end=0 应被 400 拒绝（需终止边界）");
+}

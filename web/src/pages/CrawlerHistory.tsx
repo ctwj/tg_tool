@@ -5,7 +5,7 @@ import {
 } from 'antd'
 import {
   ReloadOutlined, CheckCircleOutlined, CloseCircleOutlined,
-  WarningOutlined, StopOutlined, ClockCircleOutlined,
+  WarningOutlined, StopOutlined, ClockCircleOutlined, LoadingOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useNavigate } from 'react-router-dom'
@@ -20,6 +20,7 @@ const { Text, Paragraph } = Typography
 
 // ─── 状态元信息 ──────────────────────────────────────────────────────────
 const STATUS_META: Record<string, { color: string; icon: React.ReactNode; label: string }> = {
+  running: { color: 'processing', icon: <LoadingOutlined spin />, label: '运行中' },
   success: { color: 'success', icon: <CheckCircleOutlined />, label: '成功' },
   partial: { color: 'warning', icon: <WarningOutlined />, label: '部分成功' },
   failed: { color: 'error', icon: <CloseCircleOutlined />, label: '失败' },
@@ -144,7 +145,8 @@ const CrawlerHistory: React.FC = () => {
     },
     {
       title: '耗时', dataIndex: 'duration_ms', width: 90, key: 'duration_ms',
-      render: (ms: number | null) => {
+      render: (ms: number | null, r: CrawlerRunHistory) => {
+        if (r.status === 'running') return <Text type="secondary">运行中…</Text>
         if (ms == null) return <Text type="secondary">-</Text>
         if (ms < 1000) return <Text>{ms}ms</Text>
         if (ms < 60_000) return <Text>{(ms / 1000).toFixed(1)}s</Text>
@@ -307,6 +309,7 @@ const CrawlerHistory: React.FC = () => {
           value={statusFilter}
           onChange={v => { setStatusFilter(v); setPage(1) }}
           options={[
+            { label: '运行中', value: 'running' },
             { label: '成功', value: 'success' },
             { label: '部分成功', value: 'partial' },
             { label: '失败', value: 'failed' },

@@ -53,9 +53,42 @@ pub async fn start_scheduler(state: AppState) {
     s.running = true;
     s.started_at = Some(std::time::Instant::now());
 
+    // 045：清理上次进程崩溃遗留的 status='running' 孤儿历史行
+    cleanup_orphan_running(&state.db).await;
+
     let handle = tokio::spawn(run_loop(state.clone(), cancel));
     s.handle = Some(handle);
     tracing::info!("Crawler scheduler started (30s tick)");
+}
+
+/// 045：启动时清理上次进程崩溃遗留的 status='running' 孤儿历史行（标记为 failed）
+async fn cleanup_orphan_running(db: &DbPool) {
+    let now = chrono::Utc::now().naive_utc();
+    let rows = match db {
+        DbPool::Sqlite(pool) => sqlx::query(
+            "UPDATE crawler_run_histories \
+             SET status = 'failed', error_message = '进程未正常结束（启动清理）', finished_at = ? \
+             WHERE status = 'running'",
+        )
+        .bind(now)
+        .execute(pool)
+        .await
+        .map(|r| r.rows_affected())
+        .unwrap_or(0),
+        DbPool::Postgres(pool) => sqlx::query(
+            "UPDATE crawler_run_histories \
+             SET status = 'failed', error_message = '进程未正常结束（启动清理）', finished_at = $1 \
+             WHERE status = 'running'",
+        )
+        .bind(now)
+        .execute(pool)
+        .await
+        .map(|r| r.rows_affected())
+        .unwrap_or(0),
+    };
+    if rows > 0 {
+        tracing::info!(target: "crawler", "清理 {rows} 条孤儿 running 历史行（上次进程未正常结束）");
+    }
 }
 
 async fn run_loop(state: AppState, cancel: CancellationToken) {
@@ -117,6 +150,17 @@ async fn tick(state: &AppState) -> Result<(), String> {
                 );
                 continue;
             }
+        }
+        // 045：DB 持久防重 — 手动 /run 触发的 running 行（内存 running_tasks 未记录）也跳过
+        if crate::services::crawler::engine::is_task_running(&state.db, task.id).await {
+            tracing::info!(
+                "Task {} ({}) has a running history row (manual trigger or orphan), skip this tick",
+                task.id, task.name
+            );
+            // 回退刚才的内存标记（这次不跑，等下次 tick）
+            let mut guard = running_set.lock().await;
+            guard.remove(&task.id);
+            continue;
         }
         let sem = sem.clone();
         let state = state.clone();
