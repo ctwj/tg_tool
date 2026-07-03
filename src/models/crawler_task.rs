@@ -6,6 +6,8 @@
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
+use crate::services::crawler::field_schema::FieldTree;
+
 /// 爬虫任务 — 每条记录代表一个独立的网站爬虫配置
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct CrawlerTask {
@@ -105,6 +107,12 @@ pub struct CrawlerTaskInput {
     /// 045：模板生成页码上限（0=不限）
     #[serde(default)]
     pub page_end: i64,
+
+    /// 导出/导入携带的字段树（嵌套 spec + children）。
+    /// 仅 `import_task` 消费（写入字段节点）；`create_task` / `update_task` /
+    /// `from_template` 忽略。导出文件含此字段；旧文件缺省 → None，向后兼容。
+    #[serde(default)]
+    pub field_tree: Option<FieldTree>,
 }
 
 fn default_true() -> bool {
@@ -235,6 +243,7 @@ mod tests {
             page_url_template: String::new(),
             page_start: 1,
             page_end: 0,
+            field_tree: None,
         }
     }
 

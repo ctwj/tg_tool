@@ -1491,6 +1491,7 @@ async fn insert_run_history(
 }
 
 /// 045：把开头插入的 running 行 update 成最终状态（status/duration/counts/error/finished_at）
+#[allow(clippy::too_many_arguments)]
 async fn update_run_history(
     db: &DbPool,
     run_id: i64,

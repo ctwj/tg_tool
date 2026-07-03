@@ -647,7 +647,12 @@ pub async fn export_task(
     let task = fetch_task(&state, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("爬虫任务 {id} 不存在")))?;
-    let input = decode_task_to_input(&task)?;
+    let mut input = decode_task_to_input(&task)?;
+    // 查询字段树并转为可移植结构（id/task_id/parent_id 置 None），塞入导出 JSON
+    let tree_model = fetch_field_tree_model(&state, id).await?;
+    let portable = db_tree_to_portable_tree(&tree_model)
+        .map_err(|e| AppError::Internal(format!("字段树导出失败: {e}")))?;
+    input.field_tree = Some(portable);
     let filename = format!(
         "crawler-task-{}-{}.json",
         sanitize_filename(&task.name),
@@ -671,16 +676,29 @@ pub async fn import_task(
     State(state): State<AppState>,
     Json(body): Json<CrawlerTaskInput>,
 ) -> Result<Json<Value>, AppError> {
-    // 与 create_task 同样的校验/插入逻辑，但显式语义
+    // 任务字段校验
     body.validate().map_err(|e| {
         AppError::BadRequest(format!("导入配置校验失败: {e}"))
     })?;
+    // 字段树校验（若携带）：name 正则 + rule/mode 一致性 + 节点数上限（对齐 create_field_node）
+    if let Some(tree) = body.field_tree.as_ref() {
+        crate::services::crawler::templates::validate_field_tree(tree)
+            .map_err(|e| AppError::BadRequest(format!("字段树校验失败: {e}")))?;
+        if flatten_field_tree(tree).len() > 100 {
+            return Err(AppError::BadRequest("字段节点总数上限 100".into()));
+        }
+    }
     let now = chrono::Utc::now().naive_utc();
     let list_urls_json = body.list_urls_json();
     let next_run_at = if body.enabled { Some(now) } else { None };
 
     let id: i64 = match &state.db {
         DbPool::Sqlite(pool) => {
+            let mut tx = pool
+                .begin()
+                .await
+                .map_err(|e| AppError::Internal(format!("开启事务失败: {e}")))?;
+
             let r = sqlx::query(
                 "INSERT INTO crawler_tasks (name, enabled, list_urls, two_stage, \
                  interval_minutes, task_concurrency, user_agent, request_delay_ms, proxy, \
@@ -712,12 +730,27 @@ pub async fn import_task(
             .bind(body.page_start)
             .bind(body.page_end)
             .bind(next_run_at)
-            .execute(pool)
+            .execute(&mut *tx)
             .await
-            .map_err(|e| map_unique_err(e, &body.name))?;
-            r.last_insert_rowid()
+            .map_err(|e| map_unique_err_tx(e, &body.name))?;
+            let new_id = r.last_insert_rowid();
+
+            // 若携带字段树：事务内递归插入（父子关系由 children 嵌套重建，不依赖 DB id）
+            if let Some(tree) = body.field_tree.as_ref() {
+                insert_template_field_nodes_sqlite(&mut tx, new_id, tree).await?;
+            }
+
+            tx.commit()
+                .await
+                .map_err(|e| AppError::Internal(format!("提交事务失败: {e}")))?;
+            new_id
         }
         DbPool::Postgres(pool) => {
+            let mut tx = pool
+                .begin()
+                .await
+                .map_err(|e| AppError::Internal(format!("开启事务失败: {e}")))?;
+
             let r = sqlx::query(
                 "INSERT INTO crawler_tasks (name, enabled, list_urls, two_stage, \
                  interval_minutes, task_concurrency, user_agent, request_delay_ms, proxy, \
@@ -750,11 +783,20 @@ pub async fn import_task(
             .bind(body.page_start)
             .bind(body.page_end)
             .bind(next_run_at)
-            .fetch_one(pool)
+            .fetch_one(&mut *tx)
             .await
-            .map_err(|e| map_unique_err(e, &body.name))?;
+            .map_err(|e| map_unique_err_tx(e, &body.name))?;
             let id_val: serde_json::Value = sqlx::Row::get(&r, "id");
-            id_val.as_i64().unwrap_or(0)
+            let new_id = id_val.as_i64().unwrap_or(0);
+
+            if let Some(tree) = body.field_tree.as_ref() {
+                insert_template_field_nodes_pg(&mut tx, new_id, tree).await?;
+            }
+
+            tx.commit()
+                .await
+                .map_err(|e| AppError::Internal(format!("提交事务失败: {e}")))?;
+            new_id
         }
     };
 
@@ -843,6 +885,7 @@ pub async fn create_task_from_template(
         page_url_template: String::new(),
         page_start: 1,
         page_end: 0,
+        field_tree: None,
     };
     probe_input.validate().map_err(AppError::BadRequest)?;
 
@@ -1030,7 +1073,7 @@ async fn insert_template_field_nodes_sqlite(
         .bind(s.is_active)
         .execute(&mut **executor)
         .await
-        .map_err(|e| AppError::Internal(format!("插入字段节点失败: {e}")))?;
+        .map_err(map_field_node_unique_err)?;
         ids[idx] = Some(r.last_insert_rowid());
     }
 
@@ -1071,7 +1114,7 @@ async fn insert_template_field_nodes_pg(
         .bind(s.is_active)
         .fetch_one(&mut **executor)
         .await
-        .map_err(|e| AppError::Internal(format!("插入字段节点失败: {e}")))?;
+        .map_err(map_field_node_unique_err)?;
         let id_val: serde_json::Value = sqlx::Row::get(&r, "id");
         ids[idx] = Some(id_val.as_i64().unwrap_or(0));
     }
@@ -1135,6 +1178,8 @@ fn decode_task_to_input(t: &CrawlerTask) -> Result<CrawlerTaskInput, AppError> {
         page_url_template: t.page_url_template.clone(),
         page_start: t.page_start,
         page_end: t.page_end,
+        // field_tree 由 export_task 单独查询 crawler_task_field_nodes 填充；decode 仅还原任务行
+        field_tree: None,
     })
 }
 
@@ -2694,6 +2739,85 @@ fn db_tree_to_spec(tree: &FieldTreeModel) -> Value {
         "list_page": tree.list_page.iter().map(convert_node).collect::<Vec<_>>(),
         "detail_page": tree.detail_page.iter().map(convert_node).collect::<Vec<_>>(),
     })
+}
+
+/// 导出用：把 DB 层 FieldTree（含真实 id/task_id/parent_id）转为「可移植」应用层 FieldTree
+/// —— id/task_id/parent_id 一律置 None（导入端靠 children 嵌套重建父子关系，本就忽略这些）。
+/// 任一节点 rule_json/post_processors_json 解析失败 → 整体 Err（fail-fast，不静默丢节点）。
+fn db_tree_to_portable_tree(tree: &FieldTreeModel) -> Result<field_schema::FieldTree, String> {
+    use crate::models::crawler_field_node::FieldTreeNode as ModelNode;
+
+    fn convert(node: &ModelNode) -> Result<field_schema::FieldTreeNode, String> {
+        let v = node.row.to_spec()?;
+        let spec = field_schema::FieldNodeSpec {
+            id: None,
+            task_id: None,
+            parent_id: None,
+            scope: v.scope,
+            name: v.name,
+            display_name: v.display_name,
+            field_type: v.field_type,
+            source_layer: v.source_layer,
+            extractor_mode: v.extractor_mode,
+            rule: v.rule,
+            post_processors: v.post_processors,
+            script_index: v.script_index,
+            sort_order: v.sort_order,
+            is_active: v.is_active,
+        };
+        let children = node
+            .children
+            .iter()
+            .map(convert)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(field_schema::FieldTreeNode { spec, children })
+    }
+
+    let list_page = tree
+        .list_page
+        .iter()
+        .map(convert)
+        .collect::<Result<Vec<_>, _>>()?;
+    let detail_page = tree
+        .detail_page
+        .iter()
+        .map(convert)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(field_schema::FieldTree { list_page, detail_page })
+}
+
+/// 查询任务的字段节点并组装为 DB 层 FieldTree（list_page + detail_page 双根，含父子嵌套）。
+/// export_task 与 get_field_tree 共用此查询。
+async fn fetch_field_tree_model(state: &AppState, task_id: i64) -> Result<FieldTreeModel, AppError> {
+    let rows: Vec<FieldNodeRow> = match &state.db {
+        DbPool::Sqlite(pool) => {
+            sqlx::query_as::<_, FieldNodeRow>(
+                "SELECT * FROM crawler_task_field_nodes WHERE task_id = ? ORDER BY scope, sort_order, id",
+            )
+            .bind(task_id)
+            .fetch_all(pool)
+            .await?
+        }
+        DbPool::Postgres(pool) => {
+            sqlx::query_as::<_, FieldNodeRow>(
+                "SELECT * FROM crawler_task_field_nodes WHERE task_id = $1 ORDER BY scope, sort_order, id",
+            )
+            .bind(task_id)
+            .fetch_all(pool)
+            .await?
+        }
+    };
+    Ok(field_tree_from_rows(rows))
+}
+
+/// 字段节点 UNIQUE(task_id, scope, parent_id, name) 违例 → 友好 BadRequest；其他 DB 错误透传。
+/// 导入事务回滚保证无脏数据。
+fn map_field_node_unique_err(e: sqlx::Error) -> AppError {
+    if e.to_string().contains("UNIQUE") {
+        AppError::BadRequest("字段节点 name 在同 scope + 同 parent 下已存在".into())
+    } else {
+        AppError::Database(e)
+    }
 }
 
 #[derive(Debug, Deserialize)]

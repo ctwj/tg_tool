@@ -431,6 +431,9 @@ export interface CrawlerTaskInput {
   page_start?: number
   /** 045：模板生成页码上限（0=不限，受翻页深度上限与连续空页早停约束） */
   page_end?: number
+  /** 导出/导入携带的字段树（嵌套 spec + children）。仅导入时写入字段节点；
+   *  create/update 忽略。缺省 = 无字段树（向后兼容旧导出文件） */
+  field_tree?: FieldTree
 }
 
 export interface CrawlerTask extends CrawlerTaskInput {

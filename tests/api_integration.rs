@@ -102,6 +102,9 @@ async fn setup_test_db() -> DbPool {
     // Migration 033: crawler_tasks URL 模板分页（feature 045：page_url_template/page_start/page_end）
     let m33 = include_str!("../migrations/033_crawler_tasks_url_template_sqlite.sql");
     let _ = sqlx::raw_sql(m33).execute(&pool).await;
+    // Migration 028: crawler_task_field_nodes（字段树表，导出/导入集成测试需要）
+    let m28 = include_str!("../migrations/028_crawler_task_field_nodes_sqlite.sql");
+    let _ = sqlx::raw_sql(m28).execute(&pool).await;
 
     // 插入 root 用户（使用当前 bcrypt 版本生成 hash）
     let hash = crypto::hash_password("123456").expect("Failed to hash root password");
@@ -4275,4 +4278,352 @@ async fn test_crawler_task_template_mode_rejects_zero_page_end() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 400, "模板模式 page_end=0 应被 400 拒绝（需终止边界）");
+}
+
+// ============================================================================
+// feature 046：爬虫导出/导入字段树（export_task 含 field_tree + import_task 事务恢复）
+// ============================================================================
+
+/// 取测试用 SQLite pool
+fn sqlite_pool(db: &DbPool) -> sqlx::SqlitePool {
+    match db {
+        DbPool::Sqlite(p) => p.clone(),
+        _ => panic!("expected sqlite"),
+    }
+}
+
+/// 往指定任务直接 SQL 插入字段节点（list 根 link_card + 子 title + detail 根 content）
+async fn seed_field_nodes_sql(pool: &sqlx::SqlitePool, task_id: i64) {
+    let r = sqlx::query(
+        "INSERT INTO crawler_task_field_nodes (task_id, parent_id, scope, name, display_name, \
+         field_type, source_layer, extractor_mode, rule_json, sort_order, is_active) \
+         VALUES (?, NULL, 'list_page', 'link_card', 'lc', 'link_card', 'html', 'css', ?, 0, 1)",
+    )
+    .bind(task_id)
+    .bind(r#"{"selector":".card","attr":"html"}"#)
+    .execute(pool)
+    .await
+    .unwrap();
+    let card_id = r.last_insert_rowid();
+    sqlx::query(
+        "INSERT INTO crawler_task_field_nodes (task_id, parent_id, scope, name, display_name, \
+         field_type, source_layer, extractor_mode, rule_json, sort_order, is_active) \
+         VALUES (?, ?, 'list_page', 'title', 't', 'string', 'html', 'css', ?, 0, 1)",
+    )
+    .bind(task_id)
+    .bind(card_id)
+    .bind(r#"{"selector":".t","attr":"text"}"#)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO crawler_task_field_nodes (task_id, parent_id, scope, name, display_name, \
+         field_type, source_layer, extractor_mode, rule_json, sort_order, is_active) \
+         VALUES (?, NULL, 'detail_page', 'content', 'c', 'string', 'html', 'css', ?, 0, 1)",
+    )
+    .bind(task_id)
+    .bind(r#"{"selector":".content","attr":"html"}"#)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// 导出 JSON 应包含完整字段树（含嵌套 children + id/task_id/parent_id 置 null）
+#[tokio::test]
+async fn test_export_task_includes_field_tree() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db.clone());
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/crawler/tasks",
+            &token,
+            Some(
+                serde_json::json!({"name":"export-ft-test","list_urls":["https://x.com"]})
+                    .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    let task_id = body["data"]["id"].as_i64().unwrap();
+
+    seed_field_nodes_sql(&sqlite_pool(&db), task_id).await;
+
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "GET",
+            &format!("/api/crawler/tasks/{task_id}/export"),
+            &token,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let export_json = parse_body(resp.into_body()).await;
+
+    let ft = export_json.get("field_tree").expect("导出应含 field_tree");
+    assert_eq!(ft["list_page"].as_array().unwrap().len(), 1, "list_page 1 根");
+    assert_eq!(ft["detail_page"].as_array().unwrap().len(), 1, "detail_page 1 根");
+    let card = &ft["list_page"][0];
+    assert_eq!(card["spec"]["name"], "link_card");
+    assert_eq!(card["spec"]["id"], serde_json::Value::Null, "导出 id 应为 null");
+    assert_eq!(card["spec"]["task_id"], serde_json::Value::Null);
+    assert_eq!(card["spec"]["parent_id"], serde_json::Value::Null);
+    assert_eq!(card["children"].as_array().unwrap().len(), 1, "link_card 下 1 子");
+    assert_eq!(card["children"][0]["spec"]["name"], "title");
+    assert_eq!(card["children"][0]["spec"]["id"], serde_json::Value::Null);
+    assert_eq!(ft["detail_page"][0]["spec"]["name"], "content");
+}
+
+/// 导入（往返）：export 任务 A 的 JSON → import 创建任务 B → B 的字段树结构与 A 一致
+#[tokio::test]
+async fn test_import_task_restores_field_tree() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db.clone());
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 建任务 A + 种字段节点
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/crawler/tasks",
+            &token,
+            Some(
+                serde_json::json!({"name":"restore-src","list_urls":["https://x.com"]})
+                    .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    let task_a = parse_body(resp.into_body()).await["data"]["id"]
+        .as_i64()
+        .unwrap();
+    seed_field_nodes_sql(&sqlite_pool(&db), task_a).await;
+
+    // export A
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "GET",
+            &format!("/api/crawler/tasks/{task_a}/export"),
+            &token,
+            None,
+        ))
+        .await
+        .unwrap();
+    let export_json = parse_body(resp.into_body()).await;
+
+    // import（改 name 避免任务名 UNIQUE 冲突）
+    let mut import_body = export_json.clone();
+    import_body["name"] = serde_json::json!("restore-dst");
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/crawler/tasks/import",
+            &token,
+            Some(import_body.to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "导入应成功");
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    let task_b = body["data"]["id"].as_i64().unwrap();
+
+    // GET /field-tree B，断言节点结构 + 父子关系已重建
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "GET",
+            &format!("/api/crawler/tasks/{task_b}/field-tree"),
+            &token,
+            None,
+        ))
+        .await
+        .unwrap();
+    let ft = parse_body(resp.into_body()).await;
+    let lp = ft["data"]["list_page"].as_array().unwrap();
+    let dp = ft["data"]["detail_page"].as_array().unwrap();
+    assert_eq!(lp.len(), 1, "list_page 1 根");
+    assert_eq!(dp.len(), 1, "detail_page 1 根");
+    assert_eq!(lp[0]["spec"]["name"], "link_card");
+    assert_eq!(
+        lp[0]["children"].as_array().unwrap().len(),
+        1,
+        "link_card 下 1 子（父子关系已重建）"
+    );
+    assert_eq!(lp[0]["children"][0]["spec"]["name"], "title");
+    assert_eq!(dp[0]["spec"]["name"], "content");
+}
+
+/// 向后兼容：旧格式 JSON（无 field_tree）仍可导入，字段树为空
+#[tokio::test]
+async fn test_import_task_legacy_without_field_tree() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/crawler/tasks/import",
+            &token,
+            Some(
+                serde_json::json!({"name":"legacy-import","list_urls":["https://x.com"]})
+                    .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    let task_id = body["data"]["id"].as_i64().unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "GET",
+            &format!("/api/crawler/tasks/{task_id}/field-tree"),
+            &token,
+            None,
+        ))
+        .await
+        .unwrap();
+    let ft = parse_body(resp.into_body()).await;
+    assert_eq!(ft["data"]["list_page"].as_array().unwrap().len(), 0);
+    assert_eq!(ft["data"]["detail_page"].as_array().unwrap().len(), 0);
+}
+
+/// 边界：field_tree 节点数 > 100 应被 400 拒绝（对齐 create_field_node 上限）
+#[tokio::test]
+async fn test_import_task_rejects_too_many_nodes() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    use tgTool::services::crawler::field_schema::{
+        CssRule, ExtractorMode, FieldNodeSpec, FieldType, FieldTree, FieldTreeNode, Rule, Scope,
+        SourceLayer,
+    };
+    let nodes: Vec<FieldTreeNode> = (0..101)
+        .map(|i| FieldTreeNode {
+            spec: FieldNodeSpec {
+                id: None,
+                task_id: None,
+                parent_id: None,
+                scope: Scope::ListPage,
+                name: format!("field_{i}"),
+                display_name: format!("f{i}"),
+                field_type: FieldType::String,
+                source_layer: SourceLayer::Html,
+                extractor_mode: ExtractorMode::Css,
+                rule: Rule::Css(CssRule {
+                    selector: ".x".into(),
+                    attr: "text".into(),
+                }),
+                post_processors: vec![],
+                script_index: None,
+                sort_order: i,
+                is_active: true,
+            },
+            children: vec![],
+        })
+        .collect();
+    let tree_val = serde_json::to_value(&FieldTree {
+        list_page: nodes,
+        detail_page: vec![],
+    })
+    .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/crawler/tasks/import",
+            &token,
+            Some(
+                serde_json::json!({
+                    "name": "too-many-test",
+                    "list_urls": ["https://x.com"],
+                    "field_tree": tree_val,
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, ">100 节点应被拒绝");
+}
+
+/// 校验：field_tree 含非法 name（大写+连字符）应被 400 拒绝
+#[tokio::test]
+async fn test_import_task_rejects_invalid_field_name() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    use tgTool::services::crawler::field_schema::{
+        CssRule, ExtractorMode, FieldNodeSpec, FieldType, FieldTree, FieldTreeNode, Rule, Scope,
+        SourceLayer,
+    };
+    let tree_val = serde_json::to_value(&FieldTree {
+        list_page: vec![FieldTreeNode {
+            spec: FieldNodeSpec {
+                id: None,
+                task_id: None,
+                parent_id: None,
+                scope: Scope::ListPage,
+                name: "Bad-Name".into(), // 大写 + 连字符，违反 ^[a-z][a-z0-9_]{0,31}$
+                display_name: "x".into(),
+                field_type: FieldType::String,
+                source_layer: SourceLayer::Html,
+                extractor_mode: ExtractorMode::Css,
+                rule: Rule::Css(CssRule {
+                    selector: ".x".into(),
+                    attr: "text".into(),
+                }),
+                post_processors: vec![],
+                script_index: None,
+                sort_order: 0,
+                is_active: true,
+            },
+            children: vec![],
+        }],
+        detail_page: vec![],
+    })
+    .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/crawler/tasks/import",
+            &token,
+            Some(
+                serde_json::json!({
+                    "name": "bad-name-test",
+                    "list_urls": ["https://x.com"],
+                    "field_tree": tree_val,
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "非法 name 应被拒绝");
 }
