@@ -101,6 +101,12 @@ pub struct TaskRuntime {
     pub max_pagination_depth: i64,
     /// 044：全量采集开关（true=每次全量；false=连续 3 页零新增早停）
     pub force_full_collect: bool,
+    /// 045：URL 模板分页模板（含 {page} 占位符）；空串=未启用（走字段树 pagination 分页）
+    pub page_url_template: String,
+    /// 045：模板生成页码起始值
+    pub page_start: i64,
+    /// 045：模板生成页码上限（0=不限）
+    pub page_end: i64,
     pub field_tree: FieldTree,
 }
 
@@ -332,6 +338,9 @@ pub async fn load_task(db: &DbPool, task_id: i64) -> Result<TaskRuntime, String>
         max_pages: task.max_pages,
         max_pagination_depth: task.max_pagination_depth,
         force_full_collect: task.force_full_collect,
+        page_url_template: task.page_url_template,
+        page_start: task.page_start.max(1),
+        page_end: task.page_end.max(0),
         field_tree,
     })
 }
@@ -665,13 +674,20 @@ pub async fn run_task(task_id: i64, state: &AppState) -> Result<RunSummary, Stri
     let sys_proxy = state.http_proxy_url().await;
     let proxy = rt.proxy.clone().or(sys_proxy);
 
+    // 045 US2：跨 seed 全局列表页去重集合（种子页/DOM 提取页/模板生成页三类来源统一判定）
+    let mut visited_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // 045 US2：跨 seed/跨页 全局详情去重集合（避免重复发起 detail 网络请求）
+    let mut detail_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     for seed_url in &rt.list_urls {
         // US5 T055：链式翻页，直到无下一页 / 达到 max_pagination_depth / 循环检测
-        let mut visited_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut current_url: Option<String> = Some(seed_url.clone());
         let mut depth = 0i64;
         let mut empty_pages = 0i64;          // 044：每 seed 独立的连续零新增页数
         const EMPTY_PAGE_LIMIT: i64 = 3;     // 044：连续 3 整页零新增即停
+        // 045 US1：模板分页模式（配置了 page_url_template 即启用，独占翻页，不读 DOM pagination 字段）
+        let template_mode = !rt.page_url_template.is_empty();
+        let mut template_page = rt.page_start; // 模板生成页码游标（每 seed 从 page_start 重新开始）
         while let Some(list_url) = current_url.take() {
             // 翻页深度限制（max_pagination_depth=0 表示不限；种子页算第 1 页）
             if rt.max_pagination_depth > 0 && depth >= rt.max_pagination_depth {
@@ -679,10 +695,23 @@ pub async fn run_task(task_id: i64, state: &AppState) -> Result<RunSummary, Stri
             }
             depth += 1;
 
-            // 循环检测：跳过已抓过的 URL
+            // 循环检测：跳过已抓过的 URL（045：跨 seed 全局）
             let canonical_list = normalize_url(&list_url);
             if !visited_urls.insert(canonical_list) {
-                break;
+                // 已处理过该列表页（跨 seed 重复 / 模板生成页与种子页重复）
+                if template_mode {
+                    // 模板模式：推进到下一页码继续（不中断整条翻页链）
+                    match next_template_page(&rt, template_page, seed_url) {
+                        Some(u) => {
+                            template_page += 1;
+                            current_url = Some(u);
+                            continue;
+                        }
+                        None => break,
+                    }
+                } else {
+                    break;
+                }
             }
 
             // 抓列表页素材
@@ -702,7 +731,19 @@ pub async fn run_task(task_id: i64, state: &AppState) -> Result<RunSummary, Stri
                     }
                     failed += 1;
                     errors.push(format!("list {list_url}: {}", e.message));
-                    break;
+                    // 045：模板模式单页失败（如 404）跳过该页继续下一页码；DOM 模式 break（现状）
+                    if template_mode {
+                        match next_template_page(&rt, template_page, seed_url) {
+                            Some(u) => {
+                                template_page += 1;
+                                current_url = Some(u);
+                                continue;
+                            }
+                            None => break,
+                        }
+                    } else {
+                        break;
+                    }
                 }
             };
 
@@ -735,6 +776,7 @@ pub async fn run_task(task_id: i64, state: &AppState) -> Result<RunSummary, Stri
                 &rt.field_tree.list_page,
                 &format!("/{}", Scope::ListPage.as_str()),
                 &material.final_url,
+                &mut detail_seen,
             );
 
             crawled += detail_links.len() as i64;
@@ -840,13 +882,20 @@ pub async fn run_task(task_id: i64, state: &AppState) -> Result<RunSummary, Stri
                 break;
             }
 
-            // US5 T055：定位下一页 URL（pagination 字段命中）
-            current_url = find_next_page_url(
-                &list_extractions,
-                &rt.field_tree.list_page,
-                &format!("/{}", Scope::ListPage.as_str()),
-                &material.final_url,
-            );
+            // 045：定位下一页 —— 模板模式优先独占（build_template_url），否则 DOM pagination 字段
+            if template_mode {
+                let next = next_template_page(&rt, template_page, &material.final_url);
+                template_page += 1;
+                current_url = next;
+            } else {
+                // US5 T055：DOM 模式 —— pagination 字段命中
+                current_url = find_next_page_url(
+                    &list_extractions,
+                    &rt.field_tree.list_page,
+                    &format!("/{}", Scope::ListPage.as_str()),
+                    &material.final_url,
+                );
+            }
 
             // 翻页间隔（避免过快）
             if current_url.is_some() && rt.request_delay_ms > 0 {
@@ -913,10 +962,9 @@ fn collect_detail_links(
     tree_nodes: &[FieldTreeNode],
     scope_path: &str,
     base_url: &str,
+    seen: &mut std::collections::HashSet<String>,
 ) -> Vec<String> {
-    use std::collections::HashSet;
     let mut links: Vec<String> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
 
     // 建立 field_path → field_type 的索引（与 extract_layer 的 parent_path 对齐）
     let type_by_path: HashMap<String, FieldType> = build_type_index(tree_nodes, scope_path);
@@ -948,7 +996,9 @@ fn collect_detail_links(
                 continue;
             }
             let abs = resolve_url(v, base_url);
-            if seen.insert(abs.clone()) {
+            // 045：key 统一规范化（normalize_url），修复 ?a=1&b=2 与 ?b=2&a=1 误判；seen 跨页/跨 seed 共享
+            let key = normalize_url(&abs);
+            if seen.insert(key) {
                 links.push(abs);
             }
         }
@@ -1003,6 +1053,30 @@ pub fn should_stop_after_page(
         *empty_pages = 0;
         false
     }
+}
+
+/// 045：URL 模板分页 —— 把含 `{page}` 占位符的模板替换为指定页码，并基于 base_url 绝对化
+///
+/// - 模板须含且仅含一个 `{page}`（否则返回 None，调用方据此判定模板无效/停止翻页）
+/// - 替换后用 `resolve_url(base_url)` 绝对化（支持相对模板，如 `page-{page}.html`）
+pub fn build_template_url(template: &str, page: i64, base_url: &str) -> Option<String> {
+    if template.matches("{page}").count() != 1 {
+        return None;
+    }
+    let filled = template.replace("{page}", &page.to_string());
+    Some(resolve_url(&filled, base_url))
+}
+
+/// 045：模板模式下生成指定页码的列表页 URL；页码超过 page_end 上限或模板无效则返回 None
+///
+/// - `page` 为"将要生成"的页码（调用方负责递增）
+/// - `page_end > 0` 时为页码上限；`page > page_end` → None（停止翻页）
+/// - `base_url` 用于相对模板绝对化（通常传前页 final_url 或种子页 URL）
+fn next_template_page(rt: &TaskRuntime, page: i64, base_url: &str) -> Option<String> {
+    if rt.page_end > 0 && page > rt.page_end {
+        return None;
+    }
+    build_template_url(&rt.page_url_template, page, base_url)
 }
 
 /// `scope_path` 为 list_page 的根路径（如 "/list_page"）
@@ -1471,11 +1545,13 @@ pub async fn test_run(
         &format!("/{}", Scope::ListPage.as_str()),
     );
 
+    let mut detail_seen = std::collections::HashSet::<String>::new();
     let detail_links = collect_detail_links(
         &list_extractions,
         &rt.field_tree.list_page,
         &format!("/{}", Scope::ListPage.as_str()),
         &material.final_url,
+        &mut detail_seen,
     );
 
     let mut articles = Vec::new();
@@ -1780,6 +1856,43 @@ mod tests {
         assert!(should_stop_after_page(false, 6, 6, &mut empty2, 3));  // empty=3 → 停
     }
 
+    /// 045：build_template_url —— {page} 占位符替换 + 相对 URL 绝对化
+    #[test]
+    fn build_template_url_replaces_placeholder() {
+        let u = build_template_url("https://site.com/page-{page}.html", 4, "https://site.com/");
+        assert_eq!(u.as_deref(), Some("https://site.com/page-4.html"));
+    }
+
+    #[test]
+    fn build_template_url_relative_resolves() {
+        let u = build_template_url("page-{page}.html", 2, "https://site.com/list/");
+        assert_eq!(u.as_deref(), Some("https://site.com/list/page-2.html"));
+    }
+
+    #[test]
+    fn build_template_url_page_in_query() {
+        let u = build_template_url("https://site.com/list?p={page}", 7, "https://site.com/");
+        assert_eq!(u.as_deref(), Some("https://site.com/list?p=7"));
+    }
+
+    #[test]
+    fn build_template_url_no_placeholder_returns_none() {
+        assert_eq!(
+            build_template_url("https://site.com/page-4.html", 4, "https://site.com/"),
+            None,
+            "无 {{page}} 占位符应返回 None"
+        );
+    }
+
+    #[test]
+    fn build_template_url_multiple_placeholders_returns_none() {
+        assert_eq!(
+            build_template_url("{page}/{page}", 1, "https://site.com/"),
+            None,
+            "多个 {{page}} 占位符应返回 None"
+        );
+    }
+
     /// US5 T055：find_next_page_url 从 pagination 字段命中取下一页 URL
     #[test]
     fn find_next_page_url_returns_first_pagination_hit() {
@@ -1968,11 +2081,13 @@ mod tests {
         assert_eq!(cover_ext.hits.len(), 3, "cover 应在每条父命中上各命中 1 次");
 
         // ---- collect_detail_links 应返回 3 条绝对 URL ----
+        let mut seen = std::collections::HashSet::<String>::new();
         let detail_links = collect_detail_links(
             &list_extractions,
             &tree.list_page,
             &format!("/{}", Scope::ListPage.as_str()),
             &list_material.final_url,
+            &mut seen,
         );
         assert_eq!(detail_links.len(), 3, "应收集 3 条 detail 链接");
         assert!(detail_links.iter().all(|u| u.starts_with("https://example.com/p/")));
@@ -2079,11 +2194,13 @@ mod tests {
             },
         ];
 
+        let mut seen = std::collections::HashSet::<String>::new();
         let links = collect_detail_links(
             &extractions,
             &tree.list_page,
             "/list_page",
             "https://example.com/list",
+            &mut seen,
         );
 
         // 应只收集 2 条合法 URL（/p/1, /p/2），跳过 outerHTML 与含空白值

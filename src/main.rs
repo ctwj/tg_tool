@@ -848,6 +848,20 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::info!("SQLite migration 032 applied (crawler_tasks.force_full_collect)");
                 }
             }
+            // Migration 033: crawler_tasks URL 模板分页配置（045：page_url_template/page_start/page_end）
+            {
+                let m33 = include_str!("../migrations/033_crawler_tasks_url_template_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m33).execute(pool).await {
+                    let msg = e.to_string();
+                    if msg.contains("duplicate column") || msg.contains("already exists") {
+                        tracing::debug!("SQLite migration 033 skipped (already applied)");
+                    } else {
+                        panic!("Failed to run SQLite migration 033: {e}");
+                    }
+                } else {
+                    tracing::info!("SQLite migration 033 applied (crawler_tasks URL template pagination)");
+                }
+            }
             // 043：种子化 crawler_field_library（若表为空则用应用层 BUILTIN_PRESETS 补种）
             {
                 if let Err(e) = tgTool::services::crawler::preset_library::seed_if_empty_sqlite(pool).await {
@@ -1289,6 +1303,20 @@ async fn run_migrations(pool: &DbPool) {
                     }
                 } else {
                     tracing::info!("PostgreSQL migration 032 applied (crawler_tasks.force_full_collect)");
+                }
+            }
+            // Migration 033: crawler_tasks URL 模板分页配置（045：page_url_template/page_start/page_end）
+            {
+                let m33 = include_str!("../migrations/033_crawler_tasks_url_template_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m33).execute(pool).await {
+                    let msg = e.to_string();
+                    if msg.contains("already exists") || msg.contains("already") {
+                        tracing::debug!("PostgreSQL migration 033 skipped (already applied)");
+                    } else {
+                        panic!("Failed to run PostgreSQL migration 033: {e}");
+                    }
+                } else {
+                    tracing::info!("PostgreSQL migration 033 applied (crawler_tasks URL template pagination)");
                 }
             }
             // 043：种子化 crawler_field_library

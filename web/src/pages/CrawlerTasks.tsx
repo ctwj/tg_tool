@@ -52,6 +52,9 @@ function emptyInput(): CrawlerTaskInput {
     template_source: '',
     max_pagination_depth: 10,
     force_full_collect: true,
+    page_url_template: '',
+    page_start: 1,
+    page_end: 0,
   }
 }
 
@@ -149,6 +152,9 @@ const CrawlerTasks: React.FC = () => {
       template_source: task.template_source ?? '',
       max_pagination_depth: task.max_pagination_depth ?? 10,
       force_full_collect: task.force_full_collect ?? true,
+      page_url_template: task.page_url_template ?? '',
+      page_start: task.page_start ?? 1,
+      page_end: task.page_end ?? 0,
     } as any)
     setEditorOpen(true)
   }
@@ -168,6 +174,9 @@ const CrawlerTasks: React.FC = () => {
         template_source: raw.template_source?.trim() || null,
         max_pagination_depth: raw.max_pagination_depth ?? 10,
         force_full_collect: raw.force_full_collect ?? true,
+        page_url_template: (raw.page_url_template || '').trim(),
+        page_start: raw.page_start ?? 1,
+        page_end: raw.page_end ?? 0,
       }
       if (values.list_urls.length === 0) {
         message.warning('请至少填写一个列表页 URL')
@@ -281,6 +290,9 @@ const CrawlerTasks: React.FC = () => {
       template_source: cfg.template_source ?? tpl.key,
       max_pagination_depth: cfg.max_pagination_depth ?? 10,
       force_full_collect: cfg.force_full_collect ?? true,
+      page_url_template: cfg.page_url_template ?? '',
+      page_start: cfg.page_start ?? 1,
+      page_end: cfg.page_end ?? 0,
     } as any)
     setTemplatePickerOpen(false)
     setEditorOpen(true)
@@ -583,6 +595,44 @@ const CrawlerTasks: React.FC = () => {
               extra="关闭后靠早停省请求；首次全量请保持开启"
             >
               <Switch checkedChildren="全量" unCheckedChildren="增量" defaultChecked />
+            </Form.Item>
+
+            <Alert
+              type="info" showIcon
+              style={{ marginTop: 16, marginBottom: 12 }}
+              message="另一种方式：URL 模板分页（适配 JS 跳转站点）"
+              description={(
+                <div style={{ fontSize: 12, lineHeight: 1.7, color: '#6b7280' }}>
+                  若页面<b>没有</b>可提取的分页链接（靠前端 JS 按页码跳转，如 <code>page-2.html</code>、<code>?p=3</code>），
+                  填写下方 URL 模板，引擎将按页码递增自动生成每一页并抓取。<br />
+                  含 <code>{'{page}'}</code> 占位符；填写后<b>独占翻页</b>（不再使用字段配置器的 pagination 字段）。
+                  模板页同样受「翻页深度上限」与「全量采集/连续空页早停」约束。
+                </div>
+              )}
+            />
+            <Form.Item
+              label="URL 模板"
+              name="page_url_template"
+              tooltip="含 {page} 占位符的列表页 URL 模板。留空=用字段配置器的分页字段翻页；填写=按页码递增生成（适配 JS 跳转无分页链接的站点）"
+              extra="例：https://x.com/page-{page}.html ；留空表示用字段配置器的分页字段"
+            >
+              <Input placeholder="https://www.example.com/page-{page}.html（留空则用分页字段）" allowClear />
+            </Form.Item>
+            <Form.Item
+              label="起始页码"
+              name="page_start"
+              tooltip="模板生成页码的起始值（默认 1）。与种子页重复的会自动去重跳过"
+              extra="页码（默认 1）"
+            >
+              <InputNumber min={1} max={100000} style={{ width: 200 }} />
+            </Form.Item>
+            <Form.Item
+              label="终止页码"
+              name="page_end"
+              tooltip="模板生成页码上限。0=不限（受翻页深度上限与连续空页早停约束）"
+              extra="页码（0=不限）"
+            >
+              <InputNumber min={0} max={100000} style={{ width: 200 }} />
             </Form.Item>
           </Card>
 

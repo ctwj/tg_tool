@@ -36,6 +36,12 @@ pub struct CrawlerTask {
     /// 044：全量采集开关。true=每次全量（跑满 max_pagination_depth/翻完，失败重跑也全量）；
     /// false=连续 3 页零新增时自动早停（适合已成功全量一次后的增量维护）
     pub force_full_collect: bool,
+    /// 045：URL 模板分页模板（含 {page} 占位符）；空串=未启用（走字段树 pagination 分页）
+    pub page_url_template: String,
+    /// 045：模板生成页码起始值（默认 1）
+    pub page_start: i64,
+    /// 045：模板生成页码上限（0=不限）
+    pub page_end: i64,
     pub status: String,
     pub consecutive_failures: i64,
     pub last_run_at: Option<NaiveDateTime>,
@@ -90,6 +96,15 @@ pub struct CrawlerTaskInput {
     /// 044：全量采集开关（默认 true）。true=每次全量；false=连续 3 页零新增早停
     #[serde(default = "default_true")]
     pub force_full_collect: bool,
+    /// 045：URL 模板分页模板（含 {page} 占位符）；空串=未启用（走字段树 pagination 分页）
+    #[serde(default)]
+    pub page_url_template: String,
+    /// 045：模板生成页码起始值（默认 1）
+    #[serde(default = "default_one")]
+    pub page_start: i64,
+    /// 045：模板生成页码上限（0=不限）
+    #[serde(default)]
+    pub page_end: i64,
 }
 
 fn default_true() -> bool {
@@ -142,6 +157,28 @@ impl CrawlerTaskInput {
         if self.max_pagination_depth < 0 {
             return Err("max_pagination_depth 必须 >= 0（0 表示不限）".into());
         }
+        // 045：page_start/page_end 基本范围（始终校验，防负数 / 非法起始）
+        if self.page_start < 1 {
+            return Err("起始页码 page_start 必须 >= 1".into());
+        }
+        if self.page_end < 0 {
+            return Err("终止页码 page_end 必须 >= 0（0 表示不限）".into());
+        }
+        // 045：URL 模板分页配置校验（仅当配置了模板时）
+        if !self.page_url_template.is_empty() {
+            let tpl = &self.page_url_template;
+            if tpl.matches("{page}").count() != 1 {
+                return Err("URL 模板必须含且仅含一个 {page} 占位符".into());
+            }
+            // 除 {page} 外不得有未配对/非法花括号
+            let stripped = tpl.replace("{page}", "");
+            if stripped.matches('{').count() != 0 || stripped.matches('}').count() != 0 {
+                return Err("URL 模板含非法花括号".into());
+            }
+            if self.page_end > 0 && self.page_end < self.page_start {
+                return Err("终止页码 page_end 不能小于起始页码 page_start".into());
+            }
+        }
         Ok(())
     }
 }
@@ -167,5 +204,84 @@ mod tests {
         )
         .expect("反序列化成功");
         assert!(!input.force_full_collect);
+    }
+
+    /// 045：构造一个默认合法的 input，测试时按需覆盖字段
+    fn minimal_valid_input() -> CrawlerTaskInput {
+        CrawlerTaskInput {
+            name: "t".into(),
+            enabled: true,
+            list_urls: vec!["https://x.com".into()],
+            two_stage: true,
+            interval_minutes: 30,
+            task_concurrency: 1,
+            user_agent: None,
+            request_delay_ms: 1000,
+            proxy: None,
+            auto_link_check: false,
+            block_detection_config: None,
+            max_consecutive_failures: 3,
+            template_source: None,
+            pagination_selector: None,
+            max_pages: 0,
+            max_pagination_depth: 10,
+            force_full_collect: true,
+            page_url_template: String::new(),
+            page_start: 1,
+            page_end: 0,
+        }
+    }
+
+    #[test]
+    fn validate_rejects_template_without_placeholder() {
+        let mut i = minimal_valid_input();
+        i.page_url_template = "https://site.com/page-4.html".into();
+        assert!(i.validate().is_err(), "无 {{page}} 占位符必须拒绝");
+    }
+
+    #[test]
+    fn validate_rejects_template_with_multiple_placeholders() {
+        let mut i = minimal_valid_input();
+        i.page_url_template = "{page}/{page}".into();
+        assert!(i.validate().is_err(), "多个 {{page}} 占位符必须拒绝");
+    }
+
+    #[test]
+    fn validate_rejects_template_with_stray_braces() {
+        let mut i = minimal_valid_input();
+        i.page_url_template = "page-{page}-{other}".into();
+        assert!(i.validate().is_err(), "除 {{page}} 外的花括号必须拒绝");
+    }
+
+    #[test]
+    fn validate_rejects_page_start_below_one() {
+        let mut i = minimal_valid_input();
+        i.page_start = 0;
+        assert!(i.validate().is_err(), "page_start < 1 必须拒绝");
+    }
+
+    #[test]
+    fn validate_rejects_page_end_below_start() {
+        let mut i = minimal_valid_input();
+        i.page_url_template = "page-{page}.html".into();
+        i.page_start = 5;
+        i.page_end = 3;
+        assert!(i.validate().is_err(), "page_end < page_start 必须拒绝");
+    }
+
+    #[test]
+    fn validate_accepts_valid_template_config() {
+        let mut i = minimal_valid_input();
+        i.page_url_template = "https://site.com/page-{page}.html".into();
+        i.page_start = 2;
+        i.page_end = 50;
+        assert!(i.validate().is_ok(), "合法模板配置应通过");
+    }
+
+    #[test]
+    fn validate_accepts_empty_template() {
+        let i = minimal_valid_input();
+        // 空模板 = 未启用模板分页，跳过模板校验
+        assert!(i.validate().is_ok(), "空模板（未启用）应通过");
     }
 }

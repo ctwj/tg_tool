@@ -78,7 +78,7 @@ src/
 │   │   ├── probe.rs           # [043] 字段验证探针 run_probe（含父子嵌套 US2 + 结构化 ProbeError）
 │   │   ├── preset_library.rs  # [043] ≥20 类预置字段库常量（与 crawler_field_library 表种子一致）
 │   │   ├── scheduler.rs       # 任务调度（30s tick + Semaphore 全局并发）
-│   │   ├── engine.rs          # [043 重写] 单任务抓取引擎（字段树驱动两阶段 list/detail + 分页遍历 US5 → 落库 crawler_article_field_values）
+│   │   ├── engine.rs          # [043 重写] 单任务抓取引擎（字段树驱动两阶段 list/detail + 分页遍历 US5 → 落库 crawler_article_field_values）；[045] URL 模板分页（`{page}` 占位符，适配 JS 跳转无分页链接站点，模板优先独占）+ 跨 seed 全局列表页/详情去重
 │   │   ├── image_uploader.rs  # 图片下载 → 上传图床异步管线
 │   │   └── templates.rs       # [043 重写] 内置字段树预置模板（Discuz / WordPress / 通用，同名取代 042 旧版）
 │   └── crypto.rs        # JWT/密码哈希
@@ -201,4 +201,5 @@ shell commands, and other important information, read the current plan:
 - [推送候选集漏数据修复 Plan](specs/041-fix-push-empty-filter/plan.md) — 修复"DB 有未推送数据但推送显示没有"：废弃候选 SQL 入口 A 的 is_pushed 全局过滤（多配置语义错配，FR-009）+ insert_push_status_batch ON CONFLICT DO UPDATE 修复 failed→pushed 转换 + 候选 SQL 加 ORDER BY + SkipReason 扩展 5 类 + OptionCache 严格/宽松开关；零 schema 变更
 - [爬虫采集子系统 已实现](specs/042-web-crawler-collector/plan.md) — 配置驱动的多网站爬虫（已完成 Phase 1-7）：CSS 选择器+正则两阶段抓取、9 平台网盘识别（PanCheck 对齐，`pan_detector.rs`）、独立 crawler_* 表（migrations 020-024）、任务级自动 PanCheck 校验、图片走"下载→上传图床"新路径（`image_uploader.rs`，不复用两阶段转存）、拦截感知（403/429/503+登录墙/验证码）+ 连续失败自动停用、全局并发上限 3（`crawler_global_concurrency`）任务级可降、source_type 取任务名为推送接入预留；调度状态注入 `/api/status.crawler`；菜单：爬虫采集 → 任务管理/文章管理/运行历史
 - [爬虫可视化字段配置器 已实现](specs/043-crawler-configurator/plan.md) — **直接取代 042 旧抓取路径**（项目尚未上线，无旧数据需保留）：左侧 4 tab 源码（header/html/script/meta）+ 右侧字段树（list/detail 双作用域，父子嵌套链接卡片）+ ≥ 20 类预置字段库勾选 + 6 种匹配模式（CSS/正则/前后缀/JSON Path/meta/响应头）+ 字段验证探针 + 字段命中率面板（FR-027）+ 分页字段遍历（US5，max_pagination_depth 默认 10）；删除 042 旧 `extractor.rs`/`FieldSelectors`/`selectors` 列/`/test-selectors` API/旧 3 个内置模板，由新 `extractor.rs`（多模式）+ `field_schema.rs` + `source_layer.rs` + `probe.rs` + `templates.rs`（字段树预置模板，Discuz/WordPress/通用重生）+ `preset_library.rs` 同名替换；migrations 026 删旧 selectors 列、027-029 新增字段树/字段库/文章扩展值三张表、030 新增 max_pagination_depth 列；新增依赖 `serde_json_path`；测试：495 单元 + 79 集成全过，`cargo clippy --all-targets -- -D warnings` 零警告
+- [爬虫分页去重与 URL 模板翻页增强 Plan](specs/045-crawler-pagination-enhance/plan.md) — 新增 URL 模板分页（`{page}` 占位符，适配 JS 跳转、页面无 `<a>` 分页链接的站点，如 `page-{page}.html`）+ 全局列表页去重（`visited_urls` 提升跨 seed）+ 跨页/跨 seed 详情去重（`seen` 提升 + normalize key 修复）；migration 033 新增 `page_url_template`/`page_start`/`page_end` 三列（双库，手写 runner 注册 main.rs）；模板模式与 DOM 分页互斥（模板优先独占），复用连续空页早停与 `max_pagination_depth`；TDD，向后兼容（未配模板任务零回归）
 <!-- SPECKIT END -->

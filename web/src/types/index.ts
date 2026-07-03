@@ -424,6 +424,13 @@ export interface CrawlerTaskInput {
   /** 044：全量采集开关。true=每次全量（跑满翻页深度/翻完，失败重跑也全量）；
    *  false=连续 3 页无新增时自动停止深入（增量维护） */
   force_full_collect?: boolean
+  /** 045：URL 模板分页。含 {page} 占位符（如 https://x.com/page-{page}.html）。
+   *  留空=未启用（走字段配置器的 pagination 字段翻页）；填写后独占翻页，适配 JS 跳转无分页链接的站点 */
+  page_url_template?: string
+  /** 045：模板生成页码起始值（默认 1） */
+  page_start?: number
+  /** 045：模板生成页码上限（0=不限，受翻页深度上限与连续空页早停约束） */
+  page_end?: number
 }
 
 export interface CrawlerTask extends CrawlerTaskInput {

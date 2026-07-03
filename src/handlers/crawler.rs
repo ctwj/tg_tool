@@ -79,7 +79,7 @@ pub async fn list_tasks(
          interval_minutes, task_concurrency, user_agent, request_delay_ms, \
          proxy, auto_link_check, block_detection_config, max_consecutive_failures, \
          template_source, pagination_selector, max_pages, max_pagination_depth, \
-         force_full_collect, \
+         force_full_collect, page_url_template, page_start, page_end, \
          status, consecutive_failures, last_run_at, next_run_at, \
          created_at, updated_at";
 
@@ -148,9 +148,9 @@ pub async fn create_task(
                  interval_minutes, task_concurrency, user_agent, request_delay_ms, proxy, \
                  auto_link_check, block_detection_config, max_consecutive_failures, \
                  template_source, pagination_selector, max_pages, max_pagination_depth, \
-                 force_full_collect, \
+                 force_full_collect, page_url_template, page_start, page_end, \
                  status, consecutive_failures, next_run_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, ?)",
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, ?)",
             )
             .bind(&body.name)
             .bind(body.enabled)
@@ -170,6 +170,9 @@ pub async fn create_task(
             .bind(body.max_pages)
             .bind(body.max_pagination_depth)
             .bind(body.force_full_collect)
+            .bind(&body.page_url_template)
+            .bind(body.page_start)
+            .bind(body.page_end)
             .bind(next_run_at)
             .execute(pool)
             .await
@@ -182,9 +185,9 @@ pub async fn create_task(
                  interval_minutes, task_concurrency, user_agent, request_delay_ms, proxy, \
                  auto_link_check, block_detection_config, max_consecutive_failures, \
                  template_source, pagination_selector, max_pages, max_pagination_depth, \
-                 force_full_collect, \
+                 force_full_collect, page_url_template, page_start, page_end, \
                  status, consecutive_failures, next_run_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, 'active', 0, $18) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, 'active', 0, $21) \
                  RETURNING id",
             )
             .bind(&body.name)
@@ -205,6 +208,9 @@ pub async fn create_task(
             .bind(body.max_pages)
             .bind(body.max_pagination_depth)
             .bind(body.force_full_collect)
+            .bind(&body.page_url_template)
+            .bind(body.page_start)
+            .bind(body.page_end)
             .bind(next_run_at)
             .fetch_one(pool)
             .await
@@ -302,6 +308,15 @@ pub async fn update_task(
     if let Some(b) = body.get("force_full_collect").and_then(|v| v.as_bool()) {
         merged.force_full_collect = b;
     }
+    if let Some(t) = body.get("page_url_template").and_then(|v| v.as_str()) {
+        merged.page_url_template = t.to_string();
+    }
+    if let Some(ps) = body.get("page_start").and_then(|v| v.as_i64()) {
+        merged.page_start = ps;
+    }
+    if let Some(pe) = body.get("page_end").and_then(|v| v.as_i64()) {
+        merged.page_end = pe;
+    }
     merged.validate().map_err(AppError::BadRequest)?;
 
     let now = chrono::Utc::now().naive_utc();
@@ -327,7 +342,7 @@ pub async fn update_task(
                  two_stage=?, interval_minutes=?, task_concurrency=?, user_agent=?, \
                  request_delay_ms=?, proxy=?, auto_link_check=?, block_detection_config=?, \
                  max_consecutive_failures=?, pagination_selector=?, max_pages=?, max_pagination_depth=?, \
-                 force_full_collect=?, \
+                 force_full_collect=?, page_url_template=?, page_start=?, page_end=?, \
                  next_run_at=?, updated_at=? WHERE id=?",
             )
             .bind(&merged.name)
@@ -347,6 +362,9 @@ pub async fn update_task(
             .bind(merged.max_pages)
             .bind(merged.max_pagination_depth)
             .bind(merged.force_full_collect)
+            .bind(&merged.page_url_template)
+            .bind(merged.page_start)
+            .bind(merged.page_end)
             .bind(next_run_at)
             .bind(now)
             .bind(id)
@@ -360,8 +378,8 @@ pub async fn update_task(
                  two_stage=$4, interval_minutes=$5, task_concurrency=$6, user_agent=$7, \
                  request_delay_ms=$8, proxy=$9, auto_link_check=$10, block_detection_config=$11, \
                  max_consecutive_failures=$12, pagination_selector=$13, max_pages=$14, max_pagination_depth=$15, \
-                 force_full_collect=$16, \
-                 next_run_at=$17, updated_at=$18 WHERE id=$19",
+                 force_full_collect=$16, page_url_template=$17, page_start=$18, page_end=$19, \
+                 next_run_at=$20, updated_at=$21 WHERE id=$22",
             )
             .bind(&merged.name)
             .bind(merged.enabled)
@@ -380,6 +398,9 @@ pub async fn update_task(
             .bind(merged.max_pages)
             .bind(merged.max_pagination_depth)
             .bind(merged.force_full_collect)
+            .bind(&merged.page_url_template)
+            .bind(merged.page_start)
+            .bind(merged.page_end)
             .bind(next_run_at)
             .bind(now)
             .bind(id)
@@ -661,9 +682,9 @@ pub async fn import_task(
                  interval_minutes, task_concurrency, user_agent, request_delay_ms, proxy, \
                  auto_link_check, block_detection_config, max_consecutive_failures, \
                  template_source, pagination_selector, max_pages, max_pagination_depth, \
-                 force_full_collect, \
+                 force_full_collect, page_url_template, page_start, page_end, \
                  status, consecutive_failures, next_run_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, ?)",
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, ?)",
             )
             .bind(&body.name)
             .bind(body.enabled)
@@ -683,6 +704,9 @@ pub async fn import_task(
             .bind(body.max_pages)
             .bind(body.max_pagination_depth)
             .bind(body.force_full_collect)
+            .bind(&body.page_url_template)
+            .bind(body.page_start)
+            .bind(body.page_end)
             .bind(next_run_at)
             .execute(pool)
             .await
@@ -695,9 +719,9 @@ pub async fn import_task(
                  interval_minutes, task_concurrency, user_agent, request_delay_ms, proxy, \
                  auto_link_check, block_detection_config, max_consecutive_failures, \
                  template_source, pagination_selector, max_pages, max_pagination_depth, \
-                 force_full_collect, \
+                 force_full_collect, page_url_template, page_start, page_end, \
                  status, consecutive_failures, next_run_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, 'active', 0, $18) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, 'active', 0, $21) \
                  RETURNING id",
             )
             .bind(&body.name)
@@ -718,6 +742,9 @@ pub async fn import_task(
             .bind(body.max_pages)
             .bind(body.max_pagination_depth)
             .bind(body.force_full_collect)
+            .bind(&body.page_url_template)
+            .bind(body.page_start)
+            .bind(body.page_end)
             .bind(next_run_at)
             .fetch_one(pool)
             .await
@@ -809,6 +836,9 @@ pub async fn create_task_from_template(
         max_pages: 0,
         max_pagination_depth: 10,
         force_full_collect: true,
+        page_url_template: String::new(),
+        page_start: 1,
+        page_end: 0,
     };
     probe_input.validate().map_err(AppError::BadRequest)?;
 
@@ -842,7 +872,7 @@ pub async fn create_task_from_template(
                  interval_minutes, task_concurrency, user_agent, request_delay_ms, proxy, \
                  auto_link_check, block_detection_config, max_consecutive_failures, \
                  template_source, pagination_selector, max_pages, \
-                 force_full_collect, \
+                 force_full_collect, page_url_template, page_start, page_end, \
                  status, consecutive_failures, next_run_at) \
                  VALUES (?, ?, ?, true, 60, NULL, NULL, NULL, NULL, false, NULL, NULL, \
                  ?, NULL, NULL, true, 'active', 0, ?)",
@@ -879,7 +909,7 @@ pub async fn create_task_from_template(
                  interval_minutes, task_concurrency, user_agent, request_delay_ms, proxy, \
                  auto_link_check, block_detection_config, max_consecutive_failures, \
                  template_source, pagination_selector, max_pages, \
-                 force_full_collect, \
+                 force_full_collect, page_url_template, page_start, page_end, \
                  status, consecutive_failures, next_run_at) \
                  VALUES ($1, $2, $3, true, 60, NULL, NULL, NULL, NULL, false, NULL, NULL, \
                  $4, NULL, NULL, true, 'active', 0, $5) RETURNING id",
@@ -1062,7 +1092,7 @@ async fn fetch_task(state: &AppState, id: i64) -> Result<Option<CrawlerTask>, Ap
      interval_minutes, task_concurrency, user_agent, request_delay_ms, \
      proxy, auto_link_check, block_detection_config, max_consecutive_failures, \
      template_source, pagination_selector, max_pages, max_pagination_depth, \
-     force_full_collect, \
+     force_full_collect, page_url_template, page_start, page_end, \
      status, consecutive_failures, last_run_at, next_run_at, \
      created_at, updated_at FROM crawler_tasks WHERE id = ?";
     let sql_pg = sql.replace("WHERE id = ?", "WHERE id = $1");
@@ -1098,6 +1128,9 @@ fn decode_task_to_input(t: &CrawlerTask) -> Result<CrawlerTaskInput, AppError> {
         max_pages: t.max_pages,
         max_pagination_depth: t.max_pagination_depth,
         force_full_collect: t.force_full_collect,
+        page_url_template: t.page_url_template.clone(),
+        page_start: t.page_start,
+        page_end: t.page_end,
     })
 }
 

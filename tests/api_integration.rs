@@ -84,11 +84,11 @@ async fn setup_test_db() -> DbPool {
     let m17 = include_str!("../migrations/017_client_name_username_sqlite.sql");
     let _ = sqlx::raw_sql(m17).execute(&pool).await;
 
-    // Migration 020-032: crawler 子系统表（feature 044 集成测试需要 crawler_tasks 当前 schema）
+    // Migration 020-033: crawler 子系统表（feature 045 集成测试需要 crawler_tasks 当前 schema）
     // 按生产顺序跑 crawler_tasks 建表 + 其 ALTER：
     //   020 建表（含旧 selectors 列）/ 025 pagination_selector+max_pages /
     //   026 drop selectors（043，必须跑否则 selectors NOT NULL 无默认会让 create INSERT 失败）/
-    //   030 max_pagination_depth / 032 force_full_collect
+    //   030 max_pagination_depth / 032 force_full_collect / 033 URL 模板分页（045）
     let m20 = include_str!("../migrations/020_crawler_tasks_sqlite.sql");
     let _ = sqlx::raw_sql(m20).execute(&pool).await;
     let m25 = include_str!("../migrations/025_crawler_tasks_pagination_sqlite.sql");
@@ -99,6 +99,9 @@ async fn setup_test_db() -> DbPool {
     let _ = sqlx::raw_sql(m30).execute(&pool).await;
     let m32 = include_str!("../migrations/032_crawler_tasks_force_full_collect_sqlite.sql");
     let _ = sqlx::raw_sql(m32).execute(&pool).await;
+    // Migration 033: crawler_tasks URL 模板分页（feature 045：page_url_template/page_start/page_end）
+    let m33 = include_str!("../migrations/033_crawler_tasks_url_template_sqlite.sql");
+    let _ = sqlx::raw_sql(m33).execute(&pool).await;
 
     // 插入 root 用户（使用当前 bcrypt 版本生成 hash）
     let hash = crypto::hash_password("123456").expect("Failed to hash root password");
@@ -4104,4 +4107,108 @@ async fn test_crawler_task_force_full_collect_roundtrip() {
         body["data"]["force_full_collect"], true,
         "PATCH 回 true（双向可切换）"
     );
+}
+
+/// 045：crawler_tasks URL 模板分页字段（page_url_template/page_start/page_end）DB 往返集成测试
+/// 覆盖 migration 033 DEFAULT 回填 + PATCH 持久化（验证 INSERT/UPDATE 列数与 bind 顺序）
+#[tokio::test]
+async fn test_crawler_task_url_template_roundtrip() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 1. 创建任务（最小 body，模板字段缺省）→ 默认 page_url_template="" / page_start=1 / page_end=0
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/crawler/tasks",
+            &token,
+            Some(
+                serde_json::json!({
+                    "name": "url-tpl-roundtrip-test",
+                    "list_urls": ["https://example.com/list"]
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    let id = body["data"]["id"].as_i64().expect("新建任务应返回 id");
+    assert_eq!(body["data"]["page_url_template"], "", "默认模板为空串（未启用）");
+    assert_eq!(body["data"]["page_start"], 1, "默认 page_start=1（migration 033 DEFAULT 1）");
+    assert_eq!(body["data"]["page_end"], 0, "默认 page_end=0（不限）");
+
+    // 2. PATCH 设模板 + 起止页 → 读回持久化
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "PUT",
+            &format!("/api/crawler/tasks/{id}"),
+            &token,
+            Some(
+                serde_json::json!({
+                    "page_url_template": "https://example.com/page-{page}.html",
+                    "page_start": 2,
+                    "page_end": 50
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    assert_eq!(body["data"]["page_url_template"], "https://example.com/page-{page}.html");
+    assert_eq!(body["data"]["page_start"], 2);
+    assert_eq!(body["data"]["page_end"], 50);
+
+    // 3. GET 读回 → 持久化（验证 bind/占位顺序正确）
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "GET",
+            &format!("/api/crawler/tasks/{id}"),
+            &token,
+            None,
+        ))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_eq!(body["data"]["page_url_template"], "https://example.com/page-{page}.html", "GET 读回模板");
+    assert_eq!(body["data"]["page_start"], 2, "GET 读回 page_start");
+    assert_eq!(body["data"]["page_end"], 50, "GET 读回 page_end");
+}
+
+/// 045：非法 URL 模板（无 {page} 占位符）在保存期被拒（400）
+#[tokio::test]
+async fn test_crawler_task_rejects_invalid_url_template() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 创建任务时带非法模板（无 {page}）→ 400 BadRequest
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/crawler/tasks",
+            &token,
+            Some(
+                serde_json::json!({
+                    "name": "invalid-tpl-test",
+                    "list_urls": ["https://example.com/list"],
+                    "page_url_template": "https://example.com/page-4.html"
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "无 {{page}} 占位符的模板应被 400 拒绝");
 }
