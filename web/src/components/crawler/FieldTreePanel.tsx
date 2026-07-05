@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Alert,
   Badge,
@@ -49,6 +49,7 @@ const MODE_COLORS: Record<ExtractorMode, string> = {
   meta_attr: 'gold',
   header_field: 'orange',
   follow_url: 'magenta',
+  script: 'volcano', // [feature 046] JS 沙箱
 }
 
 export interface FieldTreePanelProps {
@@ -136,6 +137,19 @@ export default function FieldTreePanel({
     setPresetScope(scope)
     setPresetOpen(true)
   }
+
+  // [US2] 当前作用域已存在的兄弟字段名（排除正在编辑的字段，供 ScriptRuleEditor 提示）
+  const siblingFieldNames = useMemo(() => {
+    if (!tree) return [] as string[]
+    const nodes = editorScope === 'list_page' ? tree.list_page : tree.detail_page
+    const excludeName = editorInitial?.name
+    const names: string[] = []
+    for (const n of nodes) {
+      const nm = n.spec?.name
+      if (nm && nm !== excludeName) names.push(nm)
+    }
+    return names
+  }, [tree, editorScope, editorInitial?.name])
 
   const handleDelete = (node: FieldNode) => {
     const spec = node.spec
@@ -294,6 +308,7 @@ export default function FieldTreePanel({
         proxy={proxy}
         initial={editorInitial}
         creationPreset={editorPreset}
+        siblingFieldNames={siblingFieldNames}
         onSaved={() => {
           setEditorOpen(false)
           onRefresh()

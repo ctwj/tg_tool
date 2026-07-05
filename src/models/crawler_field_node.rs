@@ -36,6 +36,9 @@ pub struct FieldNodeRow {
     pub script_index: Option<i32>,
     pub sort_order: i32,
     pub is_active: bool,
+    /// [feature 046] 仅 extractor_mode=script 时允许 true；其它模式必须 false
+    #[sqlx(default)]
+    pub refresh_on_read: bool,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
@@ -79,6 +82,7 @@ impl FieldNodeRow {
             script_index: self.script_index,
             sort_order: self.sort_order,
             is_active: self.is_active,
+            refresh_on_read: self.refresh_on_read,
         })
     }
 }
@@ -106,6 +110,9 @@ pub struct FieldNodeSpecView {
     pub sort_order: i32,
     #[serde(default = "default_true")]
     pub is_active: bool,
+    /// [feature 046] 仅 extractor_mode=script 时允许 true
+    #[serde(default)]
+    pub refresh_on_read: bool,
 }
 
 fn default_true() -> bool {
@@ -234,6 +241,7 @@ mod tests {
             script_index: None,
             sort_order: sort,
             is_active: true,
+            refresh_on_read: false,
             created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
             updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
         }

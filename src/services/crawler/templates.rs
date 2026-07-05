@@ -74,6 +74,7 @@ fn spec(
         script_index: None,
         sort_order,
         is_active: true,
+        refresh_on_read: false,
     }
 }
 

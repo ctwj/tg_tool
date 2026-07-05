@@ -349,6 +349,11 @@ pub fn build_router(state: AppState) -> Router {
             "/crawler/articles/{id}/images/{image_id}/retry",
             post(handlers::crawler::retry_image),
         )
+        // [feature 046 US4] 手动刷新文章字段（仅 script 字段，admin 权限）
+        .route(
+            "/crawler/articles/{article_id}/fields/{field_name}/refresh",
+            post(handlers::crawler::refresh_article_field),
+        )
         // Crawler — 历史与统计端点（US3）
         .route("/crawler/histories/stats", get(handlers::crawler::get_history_stats))
         .route(

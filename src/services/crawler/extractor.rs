@@ -184,6 +184,9 @@ impl<'a> ExtractInput<'a> {
 /// - `Rule::HeaderField` — source_layer=Header（直接查 headers，大小写不敏感）
 /// - `Rule::FollowUrl` — **同步路径不支持**，返回 `UnsupportedMode`。
 ///   两阶段提取需由 async 调用层（probe/engine）通过 `follow_url::extract_follow_url_async` 完成。
+/// - `Rule::Script` — [feature 046] **同步路径不支持**，返回 `UnsupportedMode`。
+///   rquickjs 沙箱求值是 async 路径，由 `script_runner::run_script` 完成后再回填到 `ctx.value`；
+///   6 模式先跑（命中或空），脚本接管 `ctx.value` 做最终变换。
 pub fn extract(rule: &Rule, input: &ExtractInput<'_>) -> Result<Vec<Hit>, ExtractError> {
     match rule {
         Rule::Css(css) => extract_css(css, input),
@@ -196,6 +199,11 @@ pub fn extract(rule: &Rule, input: &ExtractInput<'_>) -> Result<Vec<Hit>, Extrac
             ExtractErrorKind::UnsupportedMode,
             "follow_url 需 async 两阶段提取（中转 URL → fetch → 子规则提取），\
              extractor 同步路径不支持，请通过 probe/engine 调用",
+        )),
+        Rule::Script(_) => Err(ExtractError::new(
+            ExtractErrorKind::UnsupportedMode,
+            "script 模式需 async 沙箱求值（rquickjs），extractor 同步路径不支持，\
+             由 script_runner::run_script 在 engine/probe 调用",
         )),
     }
 }
@@ -678,7 +686,7 @@ fn decode_one_entity(entity: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::services::crawler::field_schema::{
-        CssRule, PrefixSuffixRule, RegexRule,
+        CssRule, PrefixSuffixRule, RegexRule, ScriptRule,
     };
     use once_cell::sync::Lazy;
     use std::collections::HashMap;
@@ -1553,5 +1561,20 @@ mod tests {
             // Rule 内部带 "mode" tag，SubRule 也是 "mode" tag，序列化文本应一致
             assert_eq!(s_sub, s_rule, "SubRule ↔ Rule 序列化不一致");
         }
+    }
+
+    // ---- [feature 046] Script variant: extract() 同步路径不支持 ----
+
+    #[test]
+    fn t_extract_returns_unsupported_for_script_rule() {
+        // 与 FollowUrl 同策略：同步 extract 收到 Script 返回 UnsupportedMode
+        let rule = Rule::Script(ScriptRule {
+            body: "return ctx.value".into(),
+            api_version: "v1".into(),
+        });
+        let input = make_input("<html></html>", "https://example.com/");
+        let err = extract(&rule, &input).unwrap_err();
+        assert_eq!(err.kind, ExtractErrorKind::UnsupportedMode);
+        assert!(err.message.contains("script"));
     }
 }

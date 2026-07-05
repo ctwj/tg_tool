@@ -12,6 +12,7 @@ import {
   ControlOutlined, BarChartOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
+import { fmtUtc, utcToLocal } from '../utils/time'
 import { useNavigate } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import { useTableScrollY } from '../hooks/useTableScroll'
@@ -59,7 +60,7 @@ function emptyInput(): CrawlerTaskInput {
 }
 
 const STATUS_META: Record<string, { color: string; text: string }> = {
-  active: { color: 'success', text: '运行中' },
+  active: { color: 'success', text: '已启用' },
   paused: { color: 'default', text: '已暂停' },
   auto_blocked: { color: 'error', text: '已自动停用' },
   deleted: { color: 'default', text: '已删除' },
@@ -238,6 +239,16 @@ const CrawlerTasks: React.FC = () => {
     } catch (e: any) { message.error('切换失败: ' + (e.message ?? '')) }
   }
 
+  /** 列表内直接切换全量/增量模式（无需进入编辑） */
+  const handleToggleForceFull = async (task: CrawlerTask) => {
+    const next = !task.force_full_collect
+    try {
+      await crawlerApi.updateTask(task.id, { force_full_collect: next } as any)
+      message.success(next ? '已切换为全量采集' : '已切换为增量采集')
+      fetchTasks()
+    } catch (e: any) { message.error('切换失败: ' + (e.message ?? '')) }
+  }
+
   const handleDelete = async (task: CrawlerTask, cascade: boolean) => {
     try {
       await crawlerApi.deleteTask(task.id, cascade)
@@ -352,16 +363,36 @@ const CrawlerTasks: React.FC = () => {
       ),
     },
     {
-      title: '状态', dataIndex: 'status', width: 120,
-      render: (v: string) => {
+      title: '状态', dataIndex: 'status', width: 170,
+      render: (v: string, r: CrawlerTask) => {
         const m = STATUS_META[v] ?? { color: 'default', text: v }
-        return <Tag color={m.color}>{m.text}</Tag>
+        const tip = r.enabled
+          ? v === 'auto_blocked'
+            ? '连续失败被自动停用（开关仍 ON），点击关闭后可重新启用'
+            : '已启用定时调度（按间隔自动采集），点击关闭'
+          : '已关闭定时调度（仍可手动立即运行），点击启用'
+        return (
+          <Space size={6}>
+            <Tag color={m.color} style={{ margin: 0 }}>{m.text}</Tag>
+            <Tooltip title={tip}>
+              <Switch size="small" checked={r.enabled} onChange={() => handleToggle(r)} />
+            </Tooltip>
+          </Space>
+        )
       },
     },
     {
-      title: '启用', dataIndex: 'enabled', width: 70,
+      title: '全量采集', dataIndex: 'force_full_collect', width: 95, align: 'center' as const,
       render: (v: boolean, r: CrawlerTask) => (
-        <Switch checked={v} size="small" onChange={() => handleToggle(r)} />
+        <Tooltip title={v ? '当前：每次跑满翻页深度（点击切为增量）' : '当前：连续 3 页零新增早停（点击切为全量）'}>
+          <Switch
+            checked={!!v}
+            size="small"
+            checkedChildren="全量"
+            unCheckedChildren="增量"
+            onChange={() => handleToggleForceFull(r)}
+          />
+        </Tooltip>
       ),
     },
     {
@@ -369,11 +400,32 @@ const CrawlerTasks: React.FC = () => {
     },
     {
       title: '上次运行', dataIndex: 'last_run_at', width: 160,
-      render: (v: string | null) => v ? dayjs(v).format('MM-DD HH:mm:ss') : <Text type="secondary">—</Text>,
+      render: (v: string | null) => v ? fmtUtc(v) : <Text type="secondary">—</Text>,
     },
     {
-      title: '下次运行', dataIndex: 'next_run_at', width: 160,
-      render: (v: string | null) => v ? dayjs(v).format('MM-DD HH:mm:ss') : <Text type="secondary">—</Text>,
+      title: '下次运行', dataIndex: 'next_run_at', width: 180,
+      render: (v: string | null, r: CrawlerTask) => {
+        if (!v) {
+          // NULL 语义：active+enabled 应立即跑；paused/auto_blocked 视为不调度
+          if (r.enabled && r.status === 'active') {
+            return <Tooltip title="next_run_at 为空 — 调度器下一个 30s tick 应立即拉起；若长期不动可能是 scheduler 未启动或 is_task_running 误判"><Tag color="processing">待调度</Tag></Tooltip>
+          }
+          return <Text type="secondary">—</Text>
+        }
+        const t = utcToLocal(v)
+        if (!t) return <Text type="secondary">—</Text>
+        const diffMin = t.diff(dayjs(), 'minute')
+        const overdue = diffMin < 0
+        const rel = overdue ? `已超期 ${Math.abs(diffMin)} 分钟` : `还有 ${diffMin} 分钟`
+        return (
+          <Tooltip title={rel + (overdue ? '（应已触发，若不动见诊断）' : '')}>
+            <Space direction="vertical" size={0}>
+              <Text type={overdue ? 'danger' : undefined}>{t.format('MM-DD HH:mm:ss')}</Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>{rel}</Text>
+            </Space>
+          </Tooltip>
+        )
+      },
     },
     {
       title: '连续失败', dataIndex: 'consecutive_failures', width: 90, align: 'center' as const,
@@ -443,7 +495,7 @@ const CrawlerTasks: React.FC = () => {
           value={statusFilter || undefined}
           onChange={(v) => { setStatusFilter(v || ''); setPage(1) }}
           options={[
-            { value: 'active', label: '运行中' },
+            { value: 'active', label: '已启用' },
             { value: 'paused', label: '已暂停' },
             { value: 'auto_blocked', label: '已自动停用' },
           ]}
@@ -460,7 +512,7 @@ const CrawlerTasks: React.FC = () => {
         loading={loading}
         dataSource={tasks}
         columns={columns as any}
-        scroll={{ x: 1200, y: tableScrollY }}
+        scroll={{ x: 1300, y: tableScrollY }}
         size="middle"
         pagination={{
           current: page, pageSize, total,

@@ -333,6 +333,20 @@ pub async fn update_task(
     } else {
         None
     };
+    // 同步 status：enabled 字段变化时按 active/paused 对齐（与 toggle 接口语义一致），
+    // 否则保留原 status（如 auto_blocked 不应被无关字段编辑抹掉）。
+    // 修复 bug：旧版只更新 enabled 不同步 status，会产生 enabled=0+status=active 的矛盾态，
+    // 进而使调度 SQL `WHERE enabled=1 AND status='active'` 永远扫不到该任务。
+    let enabled_changed = merged.enabled != existing.enabled;
+    let new_status: String = if enabled_changed {
+        if merged.enabled {
+            "active".to_string()
+        } else {
+            "paused".to_string()
+        }
+    } else {
+        existing.status.clone()
+    };
 
     let list_urls_json = merged.list_urls_json();
     match &state.db {
@@ -343,7 +357,7 @@ pub async fn update_task(
                  request_delay_ms=?, proxy=?, auto_link_check=?, block_detection_config=?, \
                  max_consecutive_failures=?, pagination_selector=?, max_pages=?, max_pagination_depth=?, \
                  force_full_collect=?, page_url_template=?, page_start=?, page_end=?, \
-                 next_run_at=?, updated_at=? WHERE id=?",
+                 status=?, next_run_at=?, updated_at=? WHERE id=?",
             )
             .bind(&merged.name)
             .bind(merged.enabled)
@@ -365,6 +379,7 @@ pub async fn update_task(
             .bind(&merged.page_url_template)
             .bind(merged.page_start)
             .bind(merged.page_end)
+            .bind(&new_status)
             .bind(next_run_at)
             .bind(now)
             .bind(id)
@@ -379,7 +394,7 @@ pub async fn update_task(
                  request_delay_ms=$8, proxy=$9, auto_link_check=$10, block_detection_config=$11, \
                  max_consecutive_failures=$12, pagination_selector=$13, max_pages=$14, max_pagination_depth=$15, \
                  force_full_collect=$16, page_url_template=$17, page_start=$18, page_end=$19, \
-                 next_run_at=$20, updated_at=$21 WHERE id=$22",
+                 status=$20, next_run_at=$21, updated_at=$22 WHERE id=$23",
             )
             .bind(&merged.name)
             .bind(merged.enabled)
@@ -401,6 +416,7 @@ pub async fn update_task(
             .bind(&merged.page_url_template)
             .bind(merged.page_start)
             .bind(merged.page_end)
+            .bind(&new_status)
             .bind(next_run_at)
             .bind(now)
             .bind(id)
@@ -1055,8 +1071,8 @@ async fn insert_template_field_nodes_sqlite(
         let r = sqlx::query(
             "INSERT INTO crawler_task_field_nodes \
              (task_id, parent_id, scope, name, display_name, field_type, source_layer, extractor_mode, \
-              rule_json, post_processors_json, script_index, sort_order, is_active) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              rule_json, post_processors_json, script_index, sort_order, is_active, refresh_on_read) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(task_id)
         .bind(parent_id)
@@ -1071,6 +1087,7 @@ async fn insert_template_field_nodes_sqlite(
         .bind(s.script_index)
         .bind(s.sort_order)
         .bind(s.is_active)
+        .bind(s.refresh_on_read)
         .execute(&mut **executor)
         .await
         .map_err(map_field_node_unique_err)?;
@@ -1096,8 +1113,8 @@ async fn insert_template_field_nodes_pg(
         let r = sqlx::query(
             "INSERT INTO crawler_task_field_nodes \
              (task_id, parent_id, scope, name, display_name, field_type, source_layer, extractor_mode, \
-              rule_json, post_processors_json, script_index, sort_order, is_active) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id",
+              rule_json, post_processors_json, script_index, sort_order, is_active, refresh_on_read) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id",
         )
         .bind(task_id)
         .bind(parent_id)
@@ -1112,6 +1129,7 @@ async fn insert_template_field_nodes_pg(
         .bind(s.script_index)
         .bind(s.sort_order)
         .bind(s.is_active)
+        .bind(s.refresh_on_read)
         .fetch_one(&mut **executor)
         .await
         .map_err(map_field_node_unique_err)?;
@@ -2764,6 +2782,7 @@ fn db_tree_to_portable_tree(tree: &FieldTreeModel) -> Result<field_schema::Field
             script_index: v.script_index,
             sort_order: v.sort_order,
             is_active: v.is_active,
+            refresh_on_read: v.refresh_on_read,
         };
         let children = node
             .children
@@ -2838,6 +2857,9 @@ pub struct CreateFieldNodeBody {
     pub sort_order: i32,
     #[serde(default = "default_true_bool")]
     pub is_active: bool,
+    /// [feature 046] 仅 extractor_mode=script 时允许 true（validate_field_node_spec 强制）
+    #[serde(default)]
+    pub refresh_on_read: bool,
     /// field_type（默认按 SourceLayer 推断：url/url → url，image → image，其余 string）
     #[serde(default)]
     pub field_type: Option<field_schema::FieldType>,
@@ -2910,13 +2932,33 @@ pub async fn create_field_node(
 
     let (rule_json, pp_json) = serialize_node(&body.rule, &body.post_processors);
 
+    // [feature 046] 字段树一致性校验：list_page + script 拒绝；refresh_on_read 仅 script 允许
+    let spec_for_check = field_schema::FieldNodeSpec {
+        id: None,
+        task_id: Some(id),
+        parent_id: body.parent_id,
+        scope: body.scope,
+        name: body.name.clone(),
+        display_name: body.display_name.clone(),
+        field_type,
+        source_layer: body.source_layer,
+        extractor_mode: body.extractor_mode,
+        rule: body.rule.clone(),
+        post_processors: body.post_processors.clone(),
+        script_index: body.script_index,
+        sort_order: body.sort_order,
+        is_active: body.is_active,
+        refresh_on_read: body.refresh_on_read,
+    };
+    field_schema::validate_field_node_spec(&spec_for_check).map_err(AppError::BadRequest)?;
+
     let new_id: i64 = match &state.db {
         DbPool::Sqlite(pool) => {
             sqlx::query_scalar::<_, i64>(
                 "INSERT INTO crawler_task_field_nodes \
                  (task_id, parent_id, scope, name, display_name, field_type, source_layer, extractor_mode, \
-                  rule_json, post_processors_json, script_index, sort_order, is_active) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+                  rule_json, post_processors_json, script_index, sort_order, is_active, refresh_on_read) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
             )
             .bind(id)
             .bind(body.parent_id)
@@ -2931,6 +2973,7 @@ pub async fn create_field_node(
             .bind(body.script_index)
             .bind(body.sort_order)
             .bind(body.is_active)
+            .bind(body.refresh_on_read)
             .fetch_one(pool)
             .await?
         }
@@ -2938,8 +2981,8 @@ pub async fn create_field_node(
             sqlx::query_scalar::<_, i64>(
                 "INSERT INTO crawler_task_field_nodes \
                  (task_id, parent_id, scope, name, display_name, field_type, source_layer, extractor_mode, \
-                  rule_json, post_processors_json, script_index, sort_order, is_active) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id",
+                  rule_json, post_processors_json, script_index, sort_order, is_active, refresh_on_read) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id",
             )
             .bind(id)
             .bind(body.parent_id)
@@ -2954,6 +2997,7 @@ pub async fn create_field_node(
             .bind(body.script_index)
             .bind(body.sort_order)
             .bind(body.is_active)
+            .bind(body.refresh_on_read)
             .fetch_one(pool)
             .await?
         }
@@ -3018,13 +3062,34 @@ pub async fn update_field_node(
         .unwrap_or_else(|| infer_field_type(&body.source_layer, &body.extractor_mode));
     let (rule_json, pp_json) = serialize_node(&body.rule, &body.post_processors);
 
+    // [feature 046] 字段树一致性校验：list_page + script 拒绝；refresh_on_read 仅 script 允许
+    let spec_for_check = field_schema::FieldNodeSpec {
+        id: Some(node_id),
+        task_id: Some(id),
+        parent_id: body.parent_id,
+        scope: body.scope,
+        name: body.name.clone(),
+        display_name: body.display_name.clone(),
+        field_type,
+        source_layer: body.source_layer,
+        extractor_mode: body.extractor_mode,
+        rule: body.rule.clone(),
+        post_processors: body.post_processors.clone(),
+        script_index: body.script_index,
+        sort_order: body.sort_order,
+        is_active: body.is_active,
+        refresh_on_read: body.refresh_on_read,
+    };
+    field_schema::validate_field_node_spec(&spec_for_check).map_err(AppError::BadRequest)?;
+
     let updated: i64 = match &state.db {
         DbPool::Sqlite(pool) => {
             sqlx::query(
                 "UPDATE crawler_task_field_nodes SET \
                  parent_id = ?, scope = ?, name = ?, display_name = ?, field_type = ?, \
                  source_layer = ?, extractor_mode = ?, rule_json = ?, post_processors_json = ?, \
-                 script_index = ?, sort_order = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP \
+                 script_index = ?, sort_order = ?, is_active = ?, refresh_on_read = ?, \
+                 updated_at = CURRENT_TIMESTAMP \
                  WHERE id = ?",
             )
             .bind(body.parent_id)
@@ -3039,6 +3104,7 @@ pub async fn update_field_node(
             .bind(body.script_index)
             .bind(body.sort_order)
             .bind(body.is_active)
+            .bind(body.refresh_on_read)
             .bind(node_id)
             .execute(pool)
             .await?
@@ -3049,8 +3115,9 @@ pub async fn update_field_node(
                 "UPDATE crawler_task_field_nodes SET \
                  parent_id = $1, scope = $2, name = $3, display_name = $4, field_type = $5, \
                  source_layer = $6, extractor_mode = $7, rule_json = $8, post_processors_json = $9, \
-                 script_index = $10, sort_order = $11, is_active = $12, updated_at = CURRENT_TIMESTAMP \
-                 WHERE id = $13",
+                 script_index = $10, sort_order = $11, is_active = $12, refresh_on_read = $13, \
+                 updated_at = CURRENT_TIMESTAMP \
+                 WHERE id = $14",
             )
             .bind(body.parent_id)
             .bind(body.scope.as_str())
@@ -3064,6 +3131,7 @@ pub async fn update_field_node(
             .bind(body.script_index)
             .bind(body.sort_order)
             .bind(body.is_active)
+            .bind(body.refresh_on_read)
             .bind(node_id)
             .execute(pool)
             .await?
@@ -3470,6 +3538,62 @@ pub async fn get_task_field_stats(
         "data": {
             "window_days": days,
             "stats": stats,
+        }
+    })))
+}
+
+// ============================================================================
+// [feature 046 US4] 手动刷新文章字段（仅 script 模式 + admin 权限）
+// ============================================================================
+
+/// POST `/api/crawler/articles/:article_id/fields/:field_name/refresh`
+///
+/// 强制重跑指定脚本字段（force_refresh=Some(true)），写回 final_value。
+/// 鉴权：admin_guard 已保证 role >= 10。
+pub async fn refresh_article_field(
+    State(state): State<AppState>,
+    Path((article_id, field_name)): Path<(i64, String)>,
+) -> Result<Json<Value>, AppError> {
+    use crate::services::crawler::refresh;
+
+    let db = state.db.clone();
+    // http_client：复用任务级 UA/proxy。get_article_field_for_use 内部会加载 task ua/proxy。
+    // 为简化实现 + 复用连接池，此处 None（refresh 函数自身会在需要时加载 task UA/proxy）；
+    // 但 ctx.fetch 仍需要外部 client，故这里也尝试构造一个简单 client 作为兜底。
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .ok();
+
+    let result = refresh::get_article_field_for_use(
+        article_id,
+        &field_name,
+        Some(true),
+        &db,
+        client.as_ref(),
+    )
+    .await
+    .map_err(|e| match e {
+        refresh::RefreshError::ArticleNotFound { article_id } => {
+            AppError::NotFound(format!("文章 {article_id} 不存在"))
+        }
+        refresh::RefreshError::FieldNodeNotFound { field_name, .. } => {
+            AppError::NotFound(format!("字段 {field_name} 不存在"))
+        }
+        refresh::RefreshError::NotScriptField { field_name, mode } => AppError::BadRequest(
+            format!("字段 {field_name} 不是 script 模式（mode={mode}），不可刷新"),
+        ),
+        refresh::RefreshError::ScriptFailed { category, message } => AppError::Internal(format!(
+            "脚本求值失败 [{category}]: {message}"
+        )),
+        other => AppError::Internal(other.to_string()),
+    })?;
+
+    Ok(Json(json!({
+        "data": {
+            "old_value": result.old_value,
+            "new_value": result.new_value,
+            "duration_ms": result.duration_ms,
         }
     })))
 }

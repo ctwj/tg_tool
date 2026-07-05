@@ -258,29 +258,56 @@ pub async fn resolve_redirects(
 }
 
 /// 相对 URL → 绝对 URL（基于 base_url）；已是绝对路径则原样返回
+///
+/// 应用 RFC 3986 § 5.2.4 路径规范化：消除 `..` / `.` 段，避免拼接后产生
+/// `https://example.com/../xiazai/article.html` 这类无效路径（实际请求会 503/404）。
 pub fn resolve_url(href: &str, base: &str) -> String {
     if href.starts_with("http://") || href.starts_with("https://") {
         return href.to_string();
     }
-    if let Some(idx) = base.find("://") {
-        let base_scheme_end = idx + 3;
-        let after_scheme = &base[base_scheme_end..];
-        if let Some(slash) = after_scheme.find('/') {
-            let origin = &base[..base_scheme_end + slash];
-            if let Some(stripped) = href.strip_prefix('/') {
-                return format!("{origin}/{stripped}");
-            }
+    let Some(idx) = base.find("://") else {
+        return href.to_string();
+    };
+    let base_scheme_end = idx + 3;
+    let after_scheme = &base[base_scheme_end..];
+    let raw = if let Some(slash) = after_scheme.find('/') {
+        let origin = &base[..base_scheme_end + slash];
+        if let Some(stripped) = href.strip_prefix('/') {
+            format!("{origin}/{stripped}")
+        } else {
             let base_path = &after_scheme[slash..];
             if let Some(last_slash) = base_path.rfind('/') {
                 let dir = &base_path[..last_slash + 1];
-                let origin_full = &base[..base_scheme_end + slash];
-                return format!("{origin_full}{dir}{href}");
+                format!("{origin}{dir}{href}")
+            } else {
+                format!("{origin}/{href}")
             }
-            return format!("{origin}/{href}");
         }
-        return format!("{base}/{href}");
-    }
-    href.to_string()
+    } else {
+        format!("{base}/{href}")
+    };
+    normalize_resolved_url_path(&raw)
+}
+
+/// 仅规范化 URL 的 path 段，保留 scheme / authority / query / fragment 不变
+fn normalize_resolved_url_path(url: &str) -> String {
+    let Some(scheme_idx) = url.find("://") else {
+        return url.to_string();
+    };
+    let after_scheme_start = scheme_idx + 3;
+    let after_scheme = &url[after_scheme_start..];
+    let Some(slash) = after_scheme.find('/') else {
+        return url.to_string(); // 无 path，无需规范化
+    };
+    let auth_end_in_url = after_scheme_start + slash;
+    // 切出 path 起点到结尾，再分离 query/fragment
+    let path_and_after = &url[auth_end_in_url..];
+    let (path, suffix) = match path_and_after.find(['?', '#']) {
+        Some(idx) => (&path_and_after[..idx], &path_and_after[idx..]),
+        None => (path_and_after, ""),
+    };
+    let path_norm = crate::services::crawler::url_normalize::remove_dot_segments(path);
+    format!("{}{path_norm}{suffix}", &url[..auth_end_in_url])
 }
 
 /// 从 HTML 中按 CSS 选择器提取分页链接
@@ -621,6 +648,194 @@ async fn collect_follow_url_extractions(
     futures::future::join_all(futures_iter).await
 }
 
+/// [feature 046] 对 detail_page 顶层 Script 字段并发执行脚本求值
+///
+/// 与 `collect_follow_url_extractions` 同构：extract_layer 同步路径对 Script 返回
+/// `UnsupportedMode` 跳过，由本函数异步接管。
+///
+/// **US1 行为**：
+/// - ctx.value = ""（6 模式未匹配时脚本仍跑，Clarifications Q1）
+/// - ctx.fields = {}（US2 才填兄弟字段）
+/// - ctx.url = detail_url
+/// - ctx.fetch = None（US3 才注入 http_client）
+///
+/// **US2 行为**（本函数实现）：
+/// - 从 `prior_extractions`（同一详情页已提取的非脚本字段值）构造 `ctx_fields`
+/// - 仅含 is_active=true 字段；失败字段（hits 为空）不放入 map（→ JS 侧 undefined）
+/// - 脚本字段之间不互相依赖（并发执行，避免顺序耦合）
+///
+/// 单字段失败 graceful degrade：返回带 error 的 FieldExtraction，不 panic、不影响其他字段。
+async fn collect_script_extractions(
+    nodes: &[FieldTreeNode],
+    material: &crate::services::crawler::source_layer::SourceMaterial,
+    prior_extractions: &[FieldExtraction],
+    user_agent: Option<&str>,
+    proxy: Option<&str>,
+) -> Vec<FieldExtraction> {
+    use crate::services::crawler::field_schema::ScriptRule;
+    use crate::services::crawler::script_runner::{self, ScriptOpts};
+
+    // 仅处理顶层（rule=Script）节点；list_page 作用域在 validate_field_node_spec 已拒绝
+    let script_node_names: std::collections::HashSet<&str> = nodes
+        .iter()
+        .filter_map(|n| {
+            n.row.to_spec().ok().and_then(|s| {
+                if matches!(s.rule, Rule::Script(_)) {
+                    Some(n.row.name.as_str())
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
+
+    // US2：从 prior_extractions 构造 ctx_fields（兄弟字段最新值）
+    let ctx_fields = build_sibling_ctx_fields(prior_extractions, &script_node_names);
+
+    // 仅处理顶层（rule=Script）节点；list_page 作用域在 validate_field_node_spec 已拒绝
+    let script_nodes: Vec<&FieldTreeNode> = nodes
+        .iter()
+        .filter(|n| {
+            n.row
+                .to_spec()
+                .map(|s| matches!(s.rule, Rule::Script(_)))
+                .unwrap_or(false)
+        })
+        .collect();
+    if script_nodes.is_empty() {
+        return Vec::new();
+    }
+
+    let opts = ScriptOpts::default();
+    // US3：构造任务级 reqwest client（含 proxy/UA），所有脚本字段共享同一 client
+    let client = match build_reqwest_client(user_agent, proxy) {
+        Ok(c) => Some(c),
+        Err(e) => {
+            tracing::warn!(
+                target: "crawler",
+                "构造脚本 fetch client 失败（脚本 ctx.fetch 不可用，将忽略）：{e}"
+            );
+            None
+        }
+    };
+    let futures_iter = script_nodes.into_iter().map(|n| {
+        let opts = opts.clone();
+        let ctx_fields = ctx_fields.clone();
+        let client_ref = client.as_ref();
+        async move {
+        let spec = match n.row.to_spec() {
+            Ok(s) => s,
+            Err(e) => {
+                return FieldExtraction {
+                    field_path: format!("/{}/{}", Scope::DetailPage.as_str(), n.row.name),
+                    field_node_id: Some(n.row.id),
+                    scope: Scope::DetailPage.as_str().to_string(),
+                    hits: Vec::new(),
+                    error: Some(format!("字段 spec 解析失败: {e}")),
+                };
+            }
+        };
+        let script_rule = match &spec.rule {
+            Rule::Script(ScriptRule { body, .. }) => ScriptRule {
+                body: body.clone(),
+                api_version: "v1".into(),
+            },
+            _ => unreachable!("filter 已保证只处理 Script"),
+        };
+        let started = std::time::Instant::now();
+        let result = script_runner::run_script(
+            &script_rule,
+            String::new(),
+            ctx_fields,
+            &material.final_url,
+            client_ref,
+            &opts,
+        )
+        .await;
+        let (mut hits, err) = match result {
+            Ok(v) => (
+                vec![Hit {
+                    value: v,
+                    source_fragment: "script:body".into(),
+                    location: None,
+                    context_html: None,
+                }],
+                None,
+            ),
+            Err(e) => (
+                Vec::new(),
+                Some(format!("[{}] {}", e.category.as_str(), e.message)),
+            ),
+        };
+        // 应用 post_processors（与 extract_one 一致）
+        if !spec.post_processors.is_empty() {
+            hits = apply_post_processors(hits, &spec.post_processors, &material.final_url);
+        }
+        // [feature 046 FR-016] 结构化日志：field_name / 命中数 / 失败分类 / 耗时
+        let elapsed = started.elapsed();
+        let final_preview: String = hits
+            .first()
+            .map(|h| h.value.chars().take(100).collect())
+            .unwrap_or_default();
+        let category_str = err
+            .as_deref()
+            .and_then(|s| s.strip_prefix('[').and_then(|s| s.split(']').next()))
+            .unwrap_or("");
+        tracing::trace!(
+            target: "crawler",
+            field_name = %n.row.name,
+            hits = hits.len(),
+            duration_ms = elapsed.as_millis() as u64,
+            failure_category = %category_str,
+            final_preview = %final_preview,
+            "script field extracted"
+        );
+        tracing::debug!(
+            target: "crawler",
+            "script field '{}' extracted: {} hits, error={:?}",
+            n.row.name,
+            hits.len(),
+            err
+        );
+        FieldExtraction {
+            field_path: format!("/{}/{}", Scope::DetailPage.as_str(), n.row.name),
+            field_node_id: Some(n.row.id),
+            scope: Scope::DetailPage.as_str().to_string(),
+            hits,
+            error: err,
+        }
+        }
+    });
+    futures::future::join_all(futures_iter).await
+}
+
+/// [feature 046 US2] 从同一详情页的已提取结果构造 ctx_fields（兄弟字段最新值映射）
+///
+/// 规则（与 Clarifications Q2 对齐）：
+/// - `field_path` 末段作为字段名（形如 `/detail_page/<name>`）
+/// - 跳过 `script_names` 中的字段（脚本字段之间不互相依赖，避免并发顺序耦合）
+/// - 失败字段（`error.is_some()` 或 `hits.is_empty()`）**不**放入 map → JS 侧 `ctx.fields.<name> === undefined`
+/// - 仅取 `hits[0].value`（标量首位；多 hit 场景目前不支持传给脚本）
+fn build_sibling_ctx_fields(
+    prior_extractions: &[FieldExtraction],
+    script_names: &std::collections::HashSet<&str>,
+) -> HashMap<String, String> {
+    let mut map: HashMap<String, String> = HashMap::new();
+    for ext in prior_extractions {
+        let Some(name) = ext.field_path.rsplit('/').next() else {
+            continue;
+        };
+        if script_names.contains(name) {
+            continue;
+        }
+        if ext.error.is_some() || ext.hits.is_empty() {
+            continue;
+        }
+        map.insert(name.to_string(), ext.hits[0].value.clone());
+    }
+    map
+}
+
 /// 把父字段命中片段（HTML 文本）包装为可被提取器消费的子素材
 ///
 /// 优先使用 `hit.context_html`（CSS 模式下捕获的命中元素外部 HTML），
@@ -884,6 +1099,37 @@ pub async fn run_task(task_id: i64, state: &AppState) -> Result<RunSummary, Stri
                     detail_extractions.extend(fu_extractions);
                 }
 
+                // [feature 046] script 字段并发求值（extract_layer 同步路径返回 UnsupportedMode 跳过）
+                // US2：传入本次抓取的 detail_extractions，让脚本可通过 ctx.fields.<name> 访问兄弟字段
+                let script_extractions = collect_script_extractions(
+                    &rt.field_tree.detail_page,
+                    &dmaterial,
+                    &detail_extractions,
+                    rt.user_agent.as_deref(),
+                    proxy.as_deref(),
+                )
+                .await;
+                if !script_extractions.is_empty() {
+                    tracing::debug!(
+                        target: "crawler",
+                        "detail {detail_url}: script 字段提取 {} 条",
+                        script_extractions.len()
+                    );
+                    detail_extractions.extend(script_extractions);
+                }
+
+                // 把 list_page 该卡片下配对的子字段值（如 link_card 下的 title/cover）合并进
+                // detail_extractions。让仅在 list_page 作用域配置的字段也能写入 article。
+                // detail 同名字段优先（详见 merge_list_pair_for_detail 冲突策略）。
+                let article_extractions = merge_list_pair_for_detail(
+                    &list_extractions,
+                    &rt.field_tree.list_page,
+                    &format!("/{}", Scope::ListPage.as_str()),
+                    detail_url,
+                    &material.final_url,
+                    detail_extractions,
+                );
+
                 // upsert 文章 + 写 field_values + extra_fields_json
                 match upsert_article_with_fields(
                     &state.db,
@@ -891,7 +1137,7 @@ pub async fn run_task(task_id: i64, state: &AppState) -> Result<RunSummary, Stri
                     &rt.source_type,
                     detail_url,
                     &canonical_d,
-                    &detail_extractions,
+                    &article_extractions,
                 )
                 .await
                 {
@@ -1062,6 +1308,121 @@ fn build_type_index(
         map.extend(build_type_index(&node.children, &p));
     }
     map
+}
+
+/// 解析子字段 hit.location 中最外层 `parent[i]` 的索引 i。
+///
+/// `extract_layer` 提取嵌套子字段时，按父命中的枚举顺序在子字段 hit.location 前缀
+/// 打上 `parent[i]` 标记（多层嵌套时形如 `parent[i]::parent[j]`，最外层在最左侧）。
+/// 本函数取最外层 i —— 即该 hit 来自直接父字段的第 i 个命中。
+///
+/// 无父级（顶层字段）/ 无 location / 格式异常 → None。
+fn parse_parent_index(hit: &Hit) -> Option<usize> {
+    let loc = hit.location.as_deref()?;
+    const PREFIX: &str = "parent[";
+    let after = loc.strip_prefix(PREFIX)?;
+    let end = after.find(']')?;
+    after[..end].parse().ok()
+}
+
+/// 把 list_page 提取结果中、与某条 detail URL 对应的 link_card 子字段值（任意深度）
+/// 配对出来，用于合并进该 article 的落库 extractions。
+///
+/// 配对逻辑：
+/// 1. 找 field_type=LinkCard 的字段
+/// 2. 在该字段 hits 中按 resolve_url(value, base_url) == detail_url 定位 hit_index
+/// 3. 收集所有以 `{link_card_path}/` 为前缀的子字段提取结果，过滤出
+///    `parse_parent_index == Some(hit_index)` 的命中（即该卡片的子字段值）
+///
+/// 找不到匹配 link_card / hit_index → 空 Vec（向后兼容，仅用 detail extractions 入库）。
+fn pair_list_card_fields_for_url(
+    list_extractions: &[FieldExtraction],
+    type_by_path: &HashMap<String, FieldType>,
+    detail_url: &str,
+    base_url: &str,
+) -> Vec<FieldExtraction> {
+    let mut out = Vec::new();
+    let mut handled_cards: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for ext in list_extractions {
+        // 只对 LinkCard 类型字段做配对（Url 字段无嵌套子字段，无意义）
+        let is_card = type_by_path
+            .get(&ext.field_path)
+            .map(|t| matches!(t, FieldType::LinkCard))
+            .unwrap_or(false);
+        if !is_card {
+            continue;
+        }
+        // 在该 LinkCard 的 hits 中定位 detail_url 对应的 hit_index
+        let hit_index = ext.hits.iter().position(|h| {
+            let v = h.value.trim();
+            // 复用 collect_detail_links 的合法性过滤：含 <> / 多段空白 视为非 URL
+            if v.contains('<') || v.contains('>') || v.split_whitespace().count() > 1 {
+                return false;
+            }
+            resolve_url(v, base_url) == detail_url
+        });
+        let Some(hit_index) = hit_index else {
+            continue;
+        };
+        // 同一个 link_card_path 仅处理一次（理论上一次就完成所有子字段配对）
+        if !handled_cards.insert(ext.field_path.clone()) {
+            continue;
+        }
+
+        let prefix = format!("{}/", ext.field_path);
+        for sub_ext in list_extractions {
+            if !sub_ext.field_path.starts_with(&prefix) {
+                continue;
+            }
+            let paired_hits: Vec<Hit> = sub_ext
+                .hits
+                .iter()
+                .filter(|h| parse_parent_index(h) == Some(hit_index))
+                .cloned()
+                .collect();
+            if !paired_hits.is_empty() {
+                out.push(FieldExtraction {
+                    field_path: sub_ext.field_path.clone(),
+                    field_node_id: sub_ext.field_node_id,
+                    scope: sub_ext.scope.clone(),
+                    hits: paired_hits,
+                    error: None,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// run_task / test_run 的 detail 循环里把 list_page 配对子字段合并进 detail_extractions。
+///
+/// 冲突策略：detail 优先。若 detail 已有同 name（field_path 末段）字段，list 配对项被跳过，
+/// 保证 `crawler_articles.title` / `extra_fields_json` 都来自更精确的 detail 作用域。
+fn merge_list_pair_for_detail(
+    list_extractions: &[FieldExtraction],
+    list_tree: &[FieldTreeNode],
+    scope_path: &str,
+    detail_url: &str,
+    base_url: &str,
+    detail_extractions: Vec<FieldExtraction>,
+) -> Vec<FieldExtraction> {
+    let type_by_path = build_type_index(list_tree, scope_path);
+    let paired = pair_list_card_fields_for_url(list_extractions, &type_by_path, detail_url, base_url);
+
+    // 冲突过滤：detail 已有的字段 name，list 跳过
+    let detail_names: std::collections::HashSet<String> = detail_extractions
+        .iter()
+        .map(|e| e.field_path.rsplit('/').next().unwrap_or("").to_string())
+        .collect();
+    let mut combined = detail_extractions;
+    for p in paired {
+        let name = p.field_path.rsplit('/').next().unwrap_or("");
+        if !name.is_empty() && !detail_names.contains(name) {
+            combined.push(p);
+        }
+    }
+    combined
 }
 
 /// US5 T055：从 list_page 字段树中找 `field_type='pagination'` 节点的命中 URL
@@ -1565,6 +1926,7 @@ async fn update_task_schedule(db: &DbPool, task_id: i64, status: &str) -> Result
                 sqlx::query(
                     "UPDATE crawler_tasks \
                      SET last_run_at = ?, \
+                         next_run_at = datetime('now', '+' || interval_minutes || ' minutes'), \
                          consecutive_failures = consecutive_failures + 1, \
                          status = CASE \
                              WHEN consecutive_failures + 1 >= max_consecutive_failures \
@@ -1580,7 +1942,9 @@ async fn update_task_schedule(db: &DbPool, task_id: i64, status: &str) -> Result
             } else {
                 sqlx::query(
                     "UPDATE crawler_tasks \
-                     SET last_run_at = ?, consecutive_failures = 0, updated_at = ? \
+                     SET last_run_at = ?, \
+                         next_run_at = datetime('now', '+' || interval_minutes || ' minutes'), \
+                         consecutive_failures = 0, updated_at = ? \
                      WHERE id = ?",
                 )
                 .bind(now)
@@ -1596,6 +1960,7 @@ async fn update_task_schedule(db: &DbPool, task_id: i64, status: &str) -> Result
                 sqlx::query(
                     "UPDATE crawler_tasks \
                      SET last_run_at = $1, \
+                         next_run_at = (NOW() AT TIME ZONE 'UTC') + (interval_minutes || ' minutes')::INTERVAL, \
                          consecutive_failures = consecutive_failures + 1, \
                          status = CASE \
                              WHEN consecutive_failures + 1 >= max_consecutive_failures \
@@ -1611,7 +1976,9 @@ async fn update_task_schedule(db: &DbPool, task_id: i64, status: &str) -> Result
             } else {
                 sqlx::query(
                     "UPDATE crawler_tasks \
-                     SET last_run_at = $1, consecutive_failures = 0, updated_at = $2 \
+                     SET last_run_at = $1, \
+                         next_run_at = (NOW() AT TIME ZONE 'UTC') + (interval_minutes || ' minutes')::INTERVAL, \
+                         consecutive_failures = 0, updated_at = $2 \
                      WHERE id = $3",
                 )
                 .bind(now)
@@ -1697,9 +2064,20 @@ pub async fn test_run(
             }
         };
 
-        let title = find_first_value(&detail_extractions, "title")
-            .or_else(|| find_first_value(&detail_extractions, "name"));
-        let content = find_first_value(&detail_extractions, "content");
+        // 与 run_task 同款：把 list_page 该卡片下的配对子字段（如 link_card.title）合并进来
+        // 让仅在 list_page 作用域配置的字段也能在预览中展示
+        let article_extractions = merge_list_pair_for_detail(
+            &list_extractions,
+            &rt.field_tree.list_page,
+            &format!("/{}", Scope::ListPage.as_str()),
+            url,
+            &material.final_url,
+            detail_extractions,
+        );
+
+        let title = find_first_value(&article_extractions, "title")
+            .or_else(|| find_first_value(&article_extractions, "name"));
+        let content = find_first_value(&article_extractions, "content");
         let content_snippet = content.map(|c| c.chars().take(200).collect::<String>());
 
         articles.push(TestPreviewArticle {
@@ -1766,6 +2144,36 @@ mod tests {
             resolve_url("foo", "https://example.com"),
             "https://example.com/foo"
         );
+    }
+
+    #[test]
+    fn resolve_url_strips_parent_dir_from_base() {
+        // 真实场景：base 是列表分页结果 `page-2.html`，链接含 `../`
+        // 应消除 `..`，否则会拼出 `https://example.com/../xiazai/article.html` → 503
+        let r = resolve_url(
+            "../xiazai/article-5000.html",
+            "https://example.com/page-2.html",
+        );
+        assert_eq!(r, "https://example.com/xiazai/article-5000.html");
+    }
+
+    #[test]
+    fn resolve_url_absolute_path_with_dot_dot() {
+        // href 以 `/` 开头但仍含 `..` 段
+        let r = resolve_url(
+            "/a/b/../c.html",
+            "https://example.com/somewhere",
+        );
+        assert_eq!(r, "https://example.com/a/c.html");
+    }
+
+    #[test]
+    fn resolve_url_preserves_query_after_dot_segment_normalize() {
+        let r = resolve_url(
+            "../x.html?id=42#frag",
+            "https://example.com/p-1.html",
+        );
+        assert_eq!(r, "https://example.com/x.html?id=42#frag");
     }
 
     #[test]
@@ -1892,7 +2300,7 @@ mod tests {
             id, task_id: 1, parent_id: parent, scope: "list_page".into(), name: name.into(),
             display_name: name.into(), field_type: ft.into(), source_layer: "html".into(),
             extractor_mode: "css".into(), rule_json: r#"{"selector":".x"}"#.into(),
-            post_processors_json: None, script_index: None, sort_order: 0, is_active: true,
+            post_processors_json: None, script_index: None, sort_order: 0, is_active: true, refresh_on_read: false,
             created_at: ts, updated_at: ts,
         };
         let rows = vec![
@@ -2016,7 +2424,7 @@ mod tests {
             id, task_id: 1, parent_id: parent, scope: "list_page".into(), name: name.into(),
             display_name: name.into(), field_type: ft.into(), source_layer: "html".into(),
             extractor_mode: "css".into(), rule_json: r#"{"selector":".x"}"#.into(),
-            post_processors_json: None, script_index: None, sort_order: 0, is_active: true,
+            post_processors_json: None, script_index: None, sort_order: 0, is_active: true, refresh_on_read: false,
             created_at: ts, updated_at: ts,
         };
         let rows = vec![
@@ -2063,7 +2471,7 @@ mod tests {
             id, task_id: 1, parent_id: None, scope: "list_page".into(), name: name.into(),
             display_name: name.into(), field_type: ft.into(), source_layer: "html".into(),
             extractor_mode: "css".into(), rule_json: r#"{"selector":".x"}"#.into(),
-            post_processors_json: None, script_index: None, sort_order: 0, is_active: true,
+            post_processors_json: None, script_index: None, sort_order: 0, is_active: true, refresh_on_read: false,
             created_at: ts, updated_at: ts,
         };
         // 无 pagination 字段
@@ -2163,7 +2571,7 @@ mod tests {
             id, task_id: 1, parent_id: parent, scope: scope.into(), name: name.into(),
             display_name: name.into(), field_type: ft.into(), source_layer: layer.into(),
             extractor_mode: mode.into(), rule_json: rule.into(),
-            post_processors_json: None, script_index: None, sort_order: 0, is_active: true,
+            post_processors_json: None, script_index: None, sort_order: 0, is_active: true, refresh_on_read: false,
             created_at: ts, updated_at: ts,
         };
         let rows = vec![
@@ -2247,7 +2655,7 @@ mod tests {
             name: format!("f{id}"), display_name: format!("f{id}"),
             field_type: ft.into(), source_layer: "html".into(),
             extractor_mode: "css".into(), rule_json: rule.into(),
-            post_processors_json: None, script_index: None, sort_order: 0, is_active: true,
+            post_processors_json: None, script_index: None, sort_order: 0, is_active: true, refresh_on_read: false,
             created_at: ts, updated_at: ts,
         };
         let rows = vec![
@@ -2322,6 +2730,241 @@ mod tests {
         assert!(links.iter().all(|u| u.starts_with("https://example.com/p/")));
     }
 
+    /// `parse_parent_index` 解析 `parent[i]` 标记，最外层优先；非法格式返回 None
+    #[test]
+    fn parse_parent_index_basic() {
+        let mk = |loc: Option<&str>| Hit {
+            value: "v".into(),
+            source_fragment: "css".into(),
+            location: loc.map(String::from),
+            context_html: None,
+        };
+        assert_eq!(parse_parent_index(&mk(Some("parent[0]"))), Some(0));
+        assert_eq!(parse_parent_index(&mk(Some("parent[3]"))), Some(3));
+        // 多层嵌套取最外层
+        assert_eq!(
+            parse_parent_index(&mk(Some("parent[2]::parent[1]"))),
+            Some(2)
+        );
+        // 无 location
+        assert_eq!(parse_parent_index(&mk(None)), None);
+        // 非 parent 前缀
+        assert_eq!(parse_parent_index(&mk(Some("node[3]"))), None);
+        // 缺右括号
+        assert_eq!(parse_parent_index(&mk(Some("parent[3"))), None);
+        // 非数字
+        assert_eq!(parse_parent_index(&mk(Some("parent[abc]"))), None);
+    }
+
+    /// **核心修复场景**：list_page 配 link_card 含 title 子字段，detail_page 没配 title。
+    /// merge_list_pair_for_detail 应把对应卡片的 title 注入 article_extractions，
+    /// 使 find_first_value("title") 命中（写入 crawler_articles.title）。
+    #[test]
+    fn merge_list_pair_injects_card_title_when_detail_missing() {
+        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc();
+        let mk = |id: i64, parent: Option<i64>, name: &str, ft: &str, rule: &str| FieldNodeRow {
+            id, task_id: 1, parent_id: parent, scope: "list_page".into(),
+            name: name.into(), display_name: name.into(),
+            field_type: ft.into(), source_layer: "html".into(),
+            extractor_mode: "css".into(), rule_json: rule.into(),
+            post_processors_json: None, script_index: None, sort_order: 0, is_active: true, refresh_on_read: false,
+            created_at: ts, updated_at: ts,
+        };
+        // 字段树：list_page 根下 1 个 link_card，下挂 title 子字段
+        let rows = vec![
+            mk(1, None, "link_card", "link_card", r#"{"selector":"a.card","attr":"href"}"#),
+            mk(2, Some(1), "title", "string", r#"{"selector":"h3","attr":"text"}"#),
+        ];
+        let tree = crate::models::crawler_field_node::from_rows(rows);
+
+        // 模拟 list_page 提取：link_card 3 个命中（url1/2/3），title 子字段 3 个命中（带 parent[i] 标记）
+        let list_extractions = vec![
+            FieldExtraction {
+                field_path: "/list_page/link_card".into(),
+                field_node_id: Some(1),
+                scope: "list_page".into(),
+                hits: vec![
+                    Hit { value: "https://example.com/p/1".into(), source_fragment: "css".into(), location: None, context_html: None },
+                    Hit { value: "https://example.com/p/2".into(), source_fragment: "css".into(), location: None, context_html: None },
+                    Hit { value: "https://example.com/p/3".into(), source_fragment: "css".into(), location: None, context_html: None },
+                ],
+                error: None,
+            },
+            FieldExtraction {
+                field_path: "/list_page/link_card/title".into(),
+                field_node_id: Some(2),
+                scope: "list_page".into(),
+                hits: vec![
+                    Hit { value: "T1".into(), source_fragment: "css".into(), location: Some("parent[0]".into()), context_html: None },
+                    Hit { value: "T2".into(), source_fragment: "css".into(), location: Some("parent[1]".into()), context_html: None },
+                    Hit { value: "T3".into(), source_fragment: "css".into(), location: Some("parent[2]".into()), context_html: None },
+                ],
+                error: None,
+            },
+        ];
+
+        // detail_page 无 title 字段（用户只在 list_page 配了 title）
+        let detail_extractions = vec![FieldExtraction {
+            field_path: "/detail_page/content".into(),
+            field_node_id: None,
+            scope: "detail_page".into(),
+            hits: vec![Hit { value: "正文".into(), source_fragment: "css".into(), location: None, context_html: None }],
+            error: None,
+        }];
+
+        // 配对第 2 个卡片的 detail URL
+        let merged = merge_list_pair_for_detail(
+            &list_extractions,
+            &tree.list_page,
+            "/list_page",
+            "https://example.com/p/2",
+            "https://example.com/list",
+            detail_extractions.clone(),
+        );
+
+        // 应注入 title=T2（来自 list_page link_card 的第 2 个命中卡片）
+        let title = find_first_value(&merged, "title");
+        assert_eq!(title.as_deref(), Some("T2"), "list_page link_card 下的 title 应按卡片索引精确配对注入");
+
+        // content 应保留（来自 detail_page）
+        let content = find_first_value(&merged, "content");
+        assert_eq!(content.as_deref(), Some("正文"));
+
+        // extra_fields 应同时含 title 和 content
+        let ef = build_extra_fields_json(&merged).expect("应生成 extra_fields_json");
+        let v: serde_json::Value = serde_json::from_str(&ef).unwrap();
+        assert_eq!(v["title"], serde_json::Value::String("T2".into()));
+        assert_eq!(v["content"], serde_json::Value::String("正文".into()));
+
+        // 配对第 3 个卡片验证不同 URL 配不同 title
+        let merged3 = merge_list_pair_for_detail(
+            &list_extractions,
+            &tree.list_page,
+            "/list_page",
+            "https://example.com/p/3",
+            "https://example.com/list",
+            detail_extractions,
+        );
+        assert_eq!(
+            find_first_value(&merged3, "title").as_deref(),
+            Some("T3"),
+            "第 3 个卡片应配对 title=T3"
+        );
+    }
+
+    /// **冲突场景**：detail_page 已有 title，list_page link_card 也有 title。
+    /// detail 应优先（被采纳），list 同名字段被跳过。
+    #[test]
+    fn merge_list_pair_detail_wins_when_name_conflict() {
+        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc();
+        let mk = |id: i64, parent: Option<i64>, name: &str, ft: &str| FieldNodeRow {
+            id, task_id: 1, parent_id: parent, scope: "list_page".into(),
+            name: name.into(), display_name: name.into(),
+            field_type: ft.into(), source_layer: "html".into(),
+            extractor_mode: "css".into(), rule_json: r#"{"selector":"x","attr":"text"}"#.into(),
+            post_processors_json: None, script_index: None, sort_order: 0, is_active: true, refresh_on_read: false,
+            created_at: ts, updated_at: ts,
+        };
+        let rows = vec![
+            mk(1, None, "link_card", "link_card"),
+            mk(2, Some(1), "title", "string"),
+        ];
+        let tree = crate::models::crawler_field_node::from_rows(rows);
+
+        let list_extractions = vec![
+            FieldExtraction {
+                field_path: "/list_page/link_card".into(),
+                field_node_id: Some(1),
+                scope: "list_page".into(),
+                hits: vec![Hit { value: "https://example.com/p/1".into(), source_fragment: "css".into(), location: None, context_html: None }],
+                error: None,
+            },
+            FieldExtraction {
+                field_path: "/list_page/link_card/title".into(),
+                field_node_id: Some(2),
+                scope: "list_page".into(),
+                hits: vec![Hit { value: "LIST_T".into(), source_fragment: "css".into(), location: Some("parent[0]".into()), context_html: None }],
+                error: None,
+            },
+        ];
+
+        // detail_page 也有 title
+        let detail_extractions = vec![FieldExtraction {
+            field_path: "/detail_page/title".into(),
+            field_node_id: None,
+            scope: "detail_page".into(),
+            hits: vec![Hit { value: "DETAIL_T".into(), source_fragment: "css".into(), location: None, context_html: None }],
+            error: None,
+        }];
+
+        let merged = merge_list_pair_for_detail(
+            &list_extractions,
+            &tree.list_page,
+            "/list_page",
+            "https://example.com/p/1",
+            "https://example.com/list",
+            detail_extractions,
+        );
+
+        // detail 优先：title=DETAIL_T
+        assert_eq!(
+            find_first_value(&merged, "title").as_deref(),
+            Some("DETAIL_T"),
+            "detail 同名字段应优先；list 配对应被跳过"
+        );
+
+        // 只应有 1 条 title 提取记录（detail 的那条），list title 被过滤
+        let title_records: Vec<_> = merged.iter().filter(|e| e.field_path.ends_with("/title")).collect();
+        assert_eq!(title_records.len(), 1, "同 name 冲突时 list 配对应被丢弃，不重复入 extractions");
+    }
+
+    /// **无 link_card 场景**：list_page 没有 link_card 字段时，merge 返回原 detail_extractions 不变（向后兼容）
+    #[test]
+    fn merge_list_pair_no_link_card_passthrough() {
+        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc();
+        let mk = |id: i64, name: &str, ft: &str| FieldNodeRow {
+            id, task_id: 1, parent_id: None, scope: "list_page".into(),
+            name: name.into(), display_name: name.into(),
+            field_type: ft.into(), source_layer: "html".into(),
+            extractor_mode: "css".into(), rule_json: r#"{"selector":"x","attr":"text"}"#.into(),
+            post_processors_json: None, script_index: None, sort_order: 0, is_active: true, refresh_on_read: false,
+            created_at: ts, updated_at: ts,
+        };
+        // list_page 只有 1 个 url 字段（非 link_card），无子字段可配对
+        let rows = vec![mk(1, "url", "url")];
+        let tree = crate::models::crawler_field_node::from_rows(rows);
+
+        let list_extractions = vec![FieldExtraction {
+            field_path: "/list_page/url".into(),
+            field_node_id: Some(1),
+            scope: "list_page".into(),
+            hits: vec![Hit { value: "https://example.com/p/1".into(), source_fragment: "css".into(), location: None, context_html: None }],
+            error: None,
+        }];
+
+        let detail_extractions = vec![FieldExtraction {
+            field_path: "/detail_page/title".into(),
+            field_node_id: None,
+            scope: "detail_page".into(),
+            hits: vec![Hit { value: "DT".into(), source_fragment: "css".into(), location: None, context_html: None }],
+            error: None,
+        }];
+
+        let merged = merge_list_pair_for_detail(
+            &list_extractions,
+            &tree.list_page,
+            "/list_page",
+            "https://example.com/p/1",
+            "https://example.com/list",
+            detail_extractions.clone(),
+        );
+
+        // 无 link_card 时 merged 应等于 detail_extractions 原样（仅 1 条记录）
+        assert_eq!(merged.len(), 1, "无 link_card 时不应注入任何 list 字段");
+        assert_eq!(merged[0].field_path, "/detail_page/title");
+        assert_eq!(find_first_value(&merged, "title").as_deref(), Some("DT"));
+    }
+
     /// **未命中字段不出错**：CSS 选择器不匹配任何元素时返回空 hits + 不抛错（FR-019 单字段失败不中断）
     #[test]
     fn field_tree_unhit_does_not_propagate_error() {
@@ -2347,7 +2990,7 @@ mod tests {
             extractor_mode: "css".into(),
             rule_json: r#"{"selector":".missing","attr":"text"}"#.into(),
             post_processors_json: None, script_index: None, sort_order: 0,
-            is_active: true, created_at: ts, updated_at: ts,
+            is_active: true, refresh_on_read: false, created_at: ts, updated_at: ts,
         };
         let tree = crate::models::crawler_field_node::from_rows(vec![row]);
 
@@ -2361,5 +3004,81 @@ mod tests {
         assert_eq!(ext.len(), 1);
         assert!(ext[0].hits.is_empty(), "未命中字段应为空 hits");
         assert!(ext[0].error.is_none(), "未命中（CSS 找不到元素）不应被记为 error");
+    }
+
+    // ---- [feature 046 US2] build_sibling_ctx_fields：跨字段 ctx_fields 构造 ----
+
+    fn make_ext(path: &str, value: Option<&str>, error: Option<&str>) -> FieldExtraction {
+        FieldExtraction {
+            field_path: path.into(),
+            field_node_id: None,
+            scope: "detail_page".into(),
+            hits: match value {
+                Some(v) => vec![Hit {
+                    value: v.into(),
+                    source_fragment: "test".into(),
+                    location: None,
+                    context_html: None,
+                }],
+                None => Vec::new(),
+            },
+            error: error.map(|s| s.into()),
+        }
+    }
+
+    #[test]
+    fn t_build_ctx_fields_includes_normal_sibling() {
+        let exts = vec![
+            make_ext("/detail_page/pan_type", Some("quark"), None),
+            make_ext("/detail_page/title", Some("MyTitle"), None),
+        ];
+        let scripts: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let m = build_sibling_ctx_fields(&exts, &scripts);
+        assert_eq!(m.get("pan_type").map(String::as_str), Some("quark"));
+        assert_eq!(m.get("title").map(String::as_str), Some("MyTitle"));
+    }
+
+    #[test]
+    fn t_build_ctx_fields_skips_script_field_names() {
+        // 脚本字段之间不互相依赖：脚本字段不应出现在 ctx_fields 中
+        let exts = vec![
+            make_ext("/detail_page/pan_type", Some("quark"), None),
+            make_ext("/detail_page/derived", Some("should_be_skipped"), None),
+        ];
+        let mut scripts: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        scripts.insert("derived");
+        let m = build_sibling_ctx_fields(&exts, &scripts);
+        assert_eq!(m.get("pan_type").map(String::as_str), Some("quark"));
+        assert!(!m.contains_key("derived"), "脚本字段不应放入 ctx_fields");
+    }
+
+    #[test]
+    fn t_build_ctx_fields_omits_failed_sibling_as_undefined() {
+        // 失败字段（error 或 hits 为空）→ 不放入 map（JS 侧 undefined，Clarifications Q2）
+        let exts = vec![
+            make_ext("/detail_page/ok", Some("good"), None),
+            make_ext("/detail_page/errored", None, Some("404 not found")),
+            make_ext("/detail_page/empty_hits", None, None),
+        ];
+        let scripts: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let m = build_sibling_ctx_fields(&exts, &scripts);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m.get("ok").map(String::as_str), Some("good"));
+        assert!(!m.contains_key("errored"));
+        assert!(!m.contains_key("empty_hits"));
+    }
+
+    #[test]
+    fn t_build_ctx_fields_parses_field_path_trailing_segment() {
+        // field_path 末段作为 name；含 `/` 也能正确解析
+        let exts = vec![make_ext(
+            "/list_page/link_card/title",
+            Some("nested"),
+            None,
+        )];
+        let scripts: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let m = build_sibling_ctx_fields(&exts, &scripts);
+        // 末段 "title"
+        assert_eq!(m.get("title").map(String::as_str), Some("nested"));
     }
 }

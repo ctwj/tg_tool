@@ -53,6 +53,9 @@ scraper = "0.22"
 # JSON Path 提取（crawler feature 043 — 字段配置器 <script> 内嵌 JSON 提取）
 serde_json_path = "0.7"
 
+# JS sandbox for crawler script extractor (feature 046 — rquickjs: QuickJS Rust binding)
+rquickjs = { version = "0.7", features = ["bindgen", "loader", "allocator"] }
+
 # Captcha
 captcha-rs = "0.5"
 image = { version = "0.25", default-features = false, features = ["png"] }

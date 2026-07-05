@@ -10,6 +10,9 @@
 //! - [`engine`]: 单任务抓取引擎（列表页 → 详情页，落库）
 //! - [`image_uploader`]: 图片下载→上传图床群组异步管线（research.md R3+R7）
 //! - [`templates`]: 内置 + 自定义站点模板
+//! - [`script_engine`] / [`script_runner`] / [`script_fetch`]: feature 046-crawler-script-extractor
+//!   第 7 种提取模式 script（rquickjs 沙箱），脚本字段 + ctx.fetch（含 SSRF 防护）
+//! - [`refresh`]: feature 046 按需懒刷新（lazy refresh on read）
 
 pub mod block_detector;
 pub mod engine;
@@ -20,7 +23,11 @@ pub mod image_uploader;
 pub mod pan_detector;
 pub mod preset_library;
 pub mod probe;
+pub mod refresh;
 pub mod scheduler;
+pub mod script_engine;
+pub mod script_fetch;
+pub mod script_runner;
 pub mod source_layer;
 pub mod templates;
 pub mod url_normalize;

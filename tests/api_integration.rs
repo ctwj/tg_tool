@@ -105,6 +105,9 @@ async fn setup_test_db() -> DbPool {
     // Migration 028: crawler_task_field_nodes（字段树表，导出/导入集成测试需要）
     let m28 = include_str!("../migrations/028_crawler_task_field_nodes_sqlite.sql");
     let _ = sqlx::raw_sql(m28).execute(&pool).await;
+    // Migration 037: crawler_task_field_nodes.refresh_on_read（feature 046）
+    let m37 = include_str!("../migrations/037_crawler_field_nodes_refresh_on_read_sqlite.sql");
+    let _ = sqlx::raw_sql(m37).execute(&pool).await;
 
     // 插入 root 用户（使用当前 bcrypt 版本生成 hash）
     let hash = crypto::hash_password("123456").expect("Failed to hash root password");
@@ -4539,6 +4542,7 @@ async fn test_import_task_rejects_too_many_nodes() {
                 script_index: None,
                 sort_order: i,
                 is_active: true,
+                refresh_on_read: false,
             },
             children: vec![],
         })
@@ -4601,6 +4605,7 @@ async fn test_import_task_rejects_invalid_field_name() {
                 script_index: None,
                 sort_order: 0,
                 is_active: true,
+                refresh_on_read: false,
             },
             children: vec![],
         }],
@@ -4626,4 +4631,249 @@ async fn test_import_task_rejects_invalid_field_name() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 400, "非法 name 应被拒绝");
+}
+
+// ============================================================================
+// [feature 046] Crawler Script Extractor — field-node CRUD 集成测试（US1 T016）
+// ============================================================================
+
+/// 辅助：创建一个最小 crawler 任务，返回 task_id（root token 内置）
+async fn create_minimal_crawler_task_for_script_test(
+    app: &mut axum::Router,
+    token: &str,
+    name: &str,
+) -> i64 {
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/crawler/tasks",
+            token,
+            Some(
+                serde_json::json!({
+                    "name": name,
+                    "list_urls": ["https://example.com/list"]
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    body["data"]["id"].as_i64().expect("task id")
+}
+
+/// T016：POST /api/crawler/tasks/:id/field-nodes 接受 extractor_mode=script + rule={mode:script, body:...}
+#[tokio::test]
+async fn t_field_node_crud_accepts_script_mode() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+    let task_id = create_minimal_crawler_task_for_script_test(&mut app, &token, "script-crud-ok").await;
+
+    let body = serde_json::json!({
+        "scope": "detail_page",
+        "name": "computed",
+        "display_name": "computed",
+        "source_layer": "html",
+        "extractor_mode": "script",
+        "rule": {
+            "mode": "script",
+            "spec": {"body": "return ctx.value + '!'", "api_version": "v1"}
+        },
+        "sort_order": 0,
+        "is_active": true,
+        "refresh_on_read": false
+    });
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            &format!("/api/crawler/tasks/{task_id}/field-nodes"),
+            &token,
+            Some(body.to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "script 模式应被接受");
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    let node_id = body["data"]["id"].as_i64().expect("返回 node id");
+
+    // GET field-tree 验证 round-trip
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "GET",
+            &format!("/api/crawler/tasks/{task_id}/field-tree"),
+            &token,
+            None,
+        ))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    let detail = body["data"]["detail_page"].as_array().unwrap();
+    assert_eq!(detail.len(), 1);
+    assert_eq!(detail[0]["spec"]["name"], "computed");
+    assert_eq!(detail[0]["spec"]["extractor_mode"], "script");
+    assert_eq!(detail[0]["spec"]["rule"]["mode"], "script");
+    assert!(detail[0]["spec"]["rule"]["spec"]["body"]
+        .as_str()
+        .unwrap()
+        .contains("ctx.value"));
+
+    let _ = node_id;
+}
+
+/// T016：scope=list_page + extractor_mode=script → 400（FR-024）
+#[tokio::test]
+async fn t_field_node_crud_rejects_list_scope_with_script() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+    let task_id =
+        create_minimal_crawler_task_for_script_test(&mut app, &token, "script-crud-list-scope").await;
+
+    let body = serde_json::json!({
+        "scope": "list_page",
+        "name": "bad",
+        "display_name": "bad",
+        "source_layer": "html",
+        "extractor_mode": "script",
+        "rule": {"mode": "script", "spec": {"body": "return ''", "api_version": "v1"}},
+        "sort_order": 0,
+        "is_active": true
+    });
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            &format!("/api/crawler/tasks/{task_id}/field-nodes"),
+            &token,
+            Some(body.to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "list_page + script 必须拒绝");
+}
+
+/// T016：body > 64KB → 400（FR limit）
+#[tokio::test]
+async fn t_field_node_crud_rejects_oversized_body() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+    let task_id =
+        create_minimal_crawler_task_for_script_test(&mut app, &token, "script-crud-oversized").await;
+
+    // 65_553 字节（> 64KB 上限 65_536）
+    let big = "x".repeat(65_537);
+    let body = serde_json::json!({
+        "scope": "detail_page",
+        "name": "too_big",
+        "display_name": "big",
+        "source_layer": "html",
+        "extractor_mode": "script",
+        "rule": {"mode": "script", "spec": {"body": big, "api_version": "v1"}},
+        "sort_order": 0,
+        "is_active": true
+    });
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            &format!("/api/crawler/tasks/{task_id}/field-nodes"),
+            &token,
+            Some(body.to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "超大 body 必须拒绝");
+}
+
+/// T016：refresh_on_read=true 在 script 模式下应被接受并落库
+#[tokio::test]
+async fn t_field_node_crud_persists_refresh_on_read() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+    let task_id =
+        create_minimal_crawler_task_for_script_test(&mut app, &token, "script-crud-ror").await;
+
+    let body = serde_json::json!({
+        "scope": "detail_page",
+        "name": "lazy",
+        "display_name": "lazy",
+        "source_layer": "html",
+        "extractor_mode": "script",
+        "rule": {"mode": "script", "spec": {"body": "return ctx.value", "api_version": "v1"}},
+        "sort_order": 0,
+        "is_active": true,
+        "refresh_on_read": true
+    });
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            &format!("/api/crawler/tasks/{task_id}/field-nodes"),
+            &token,
+            Some(body.to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "refresh_on_read=true 在 script 下应接受");
+
+    // GET 验证 round-trip 包含 refresh_on_read=true
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "GET",
+            &format!("/api/crawler/tasks/{task_id}/field-tree"),
+            &token,
+            None,
+        ))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    let detail = body["data"]["detail_page"].as_array().unwrap();
+    assert_eq!(detail[0]["spec"]["refresh_on_read"], true);
+}
+
+/// T016：refresh_on_read=true 在非 script 模式（如 css）下应被 400 拒绝
+#[tokio::test]
+async fn t_field_node_crud_rejects_refresh_on_read_with_non_script_mode() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+    let task_id =
+        create_minimal_crawler_task_for_script_test(&mut app, &token, "script-crud-ror-css").await;
+
+    let body = serde_json::json!({
+        "scope": "detail_page",
+        "name": "bad",
+        "display_name": "bad",
+        "source_layer": "html",
+        "extractor_mode": "css",
+        "rule": {"mode": "css", "spec": {"selector": "a", "attr": "text"}},
+        "sort_order": 0,
+        "is_active": true,
+        "refresh_on_read": true
+    });
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            &format!("/api/crawler/tasks/{task_id}/field-nodes"),
+            &token,
+            Some(body.to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "非 script + refresh_on_read=true 必须拒绝");
 }

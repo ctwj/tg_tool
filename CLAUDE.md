@@ -103,6 +103,8 @@ src/
 - **CrawlerImageUploader**: 异步图片管线（30s tick 扫描 `crawler_article_images.status IN ('pending','failed')`，下载 → 落盘 `image_cache_dir/crawler/` → grammers `upload_file` + `send_message` 到图床群组 A → 写回 `image_message_id`），与两阶段转存解耦
 - **PanDetector**: 9 平台网盘识别（quark/uc/baidu/tianyi/123pan/115/aliyun/xunlei/mobile），与 `src/services/link_checker.rs:65` 的 PanCheck 完全对齐
 - **BlockDetector**: 反爬拦截感知（HTTP 403/429/503 + 登录墙关键词 + 验证码关键词 + Cloudflare challenge）；连续 `max_consecutive_failures` 次失败自动 `status='auto_blocked'`
+- **ScriptEnginePool**（feature 046）: rquickjs 沙箱池（`script_engine.rs`），单字段求值墙钟超时 100ms（可配）；6 模式未匹配仍跑脚本，失败 hard fail（不覆盖旧值）；ctx 注入 `value`/`fields`/`url`/`fetch`（同步阻塞语义，SSRF 防护 + 1MB 大小上限）
+- **lazy refresh on read**（feature 046）: 字段级 `refresh_on_read`（默认 false）+ 调用方 `force_refresh: Option<bool>` 双层控制（`refresh.rs::get_article_field_for_use`）；管理性读取直接读库，消费性读取（下载/上传/推送）按需重跑
 
 ## API Routes
 
@@ -128,6 +130,7 @@ src/
 - `/api/crawler/tasks/fetch-source` `/fetch-detail-sample` `/field-probe` — [043] 4 tab 素材拉取 + 详情样本（US3）+ 字段验证探针（结构化 ProbeError）
 - `/api/crawler/field-library` `/task-templates` `/tasks/from-template` — [043] 预置字段库 + 字段树模板（Discuz / WordPress / 通用）
 - `/api/crawler/articles` — 爬虫文章列表/详情（含 extra_fields 嵌套结构 + field_stats）/编辑/删除/批量删除/重试图片/触发链接校验（管理员）
+- `POST /api/crawler/articles/:article_id/fields/:field_name/refresh` — [feature 046 US4] 手动刷新文章脚本字段（admin only，force_refresh=true；hard fail 不覆盖旧值）
 - `/api/crawler/histories` — 爬虫运行历史列表/详情/统计（成功率/拦截细分/连续失败任务）
 - `/api/status` 的 `crawler` 字段 — 爬虫调度状态（scheduler_running/active_tasks/auto_blocked_tasks/next_run_at/scan_interval_secs/pending_uploads）
 
@@ -156,6 +159,10 @@ cargo clippy --all-targets -- -D warnings  # 零警告（CI 必过）
 - `services::crawler::block_detector::tests::*` — 5 类拦截信号识别
 - `services::crawler::templates::tests::*` — [043 重写] 3 内置字段树模板（Discuz / WordPress / 通用）可被 validate 通过
 - `handlers::crawler::field_stats_tests::*` — [043 Phase 8] 命中率 classify 三态边界（healthy ≥0.80 / degraded 0.10~0.80 / stale_warning <0.10）
+- `services::crawler::script_engine::tests::*` — [046 US1] 10 条沙箱逃逸向量（`Function`/`eval`/`this.constructor`/`process`/`require`/`import`/WebAssembly/`globalThis`/原型链/`while(true)`）→ SecurityViolation；+ timeout/syntax/runtime 错误分类
+- `services::crawler::script_runner::tests::*` — [046 US1+US2+US3] ctx.value/fields/url 注入 + run_script 端到端 + ctx.fetch 注入检测 + 127.0.0.1 SSRF 返回空串（23 个测试）
+- `services::crawler::script_fetch::tests::*` — [046 US3] SSRF 防护全分支（loopback 127/8、私网 10/172.16-31/192.168、链路本地 169.254 + 元数据 169.254.169.254、IPv6 ::1/fe80/fc00、CGNAT 100.64/10、unspecified 0.0.0.0）+ scheme 校验 + size 上限
+- `services::crawler::refresh::tests::t_should_refresh_truth_table` — [046 US4] FR-019 决策矩阵全 6 组合
 
 ## Rust 重写状态
 
@@ -202,4 +209,6 @@ shell commands, and other important information, read the current plan:
 - [爬虫采集子系统 已实现](specs/042-web-crawler-collector/plan.md) — 配置驱动的多网站爬虫（已完成 Phase 1-7）：CSS 选择器+正则两阶段抓取、9 平台网盘识别（PanCheck 对齐，`pan_detector.rs`）、独立 crawler_* 表（migrations 020-024）、任务级自动 PanCheck 校验、图片走"下载→上传图床"新路径（`image_uploader.rs`，不复用两阶段转存）、拦截感知（403/429/503+登录墙/验证码）+ 连续失败自动停用、全局并发上限 3（`crawler_global_concurrency`）任务级可降、source_type 取任务名为推送接入预留；调度状态注入 `/api/status.crawler`；菜单：爬虫采集 → 任务管理/文章管理/运行历史
 - [爬虫可视化字段配置器 已实现](specs/043-crawler-configurator/plan.md) — **直接取代 042 旧抓取路径**（项目尚未上线，无旧数据需保留）：左侧 4 tab 源码（header/html/script/meta）+ 右侧字段树（list/detail 双作用域，父子嵌套链接卡片）+ ≥ 20 类预置字段库勾选 + 6 种匹配模式（CSS/正则/前后缀/JSON Path/meta/响应头）+ 字段验证探针 + 字段命中率面板（FR-027）+ 分页字段遍历（US5，max_pagination_depth 默认 10）；删除 042 旧 `extractor.rs`/`FieldSelectors`/`selectors` 列/`/test-selectors` API/旧 3 个内置模板，由新 `extractor.rs`（多模式）+ `field_schema.rs` + `source_layer.rs` + `probe.rs` + `templates.rs`（字段树预置模板，Discuz/WordPress/通用重生）+ `preset_library.rs` 同名替换；migrations 026 删旧 selectors 列、027-029 新增字段树/字段库/文章扩展值三张表、030 新增 max_pagination_depth 列；新增依赖 `serde_json_path`；测试：495 单元 + 79 集成全过，`cargo clippy --all-targets -- -D warnings` 零警告
 - [爬虫分页去重与 URL 模板翻页增强 Plan](specs/045-crawler-pagination-enhance/plan.md) — 新增 URL 模板分页（`{page}` 占位符，适配 JS 跳转、页面无 `<a>` 分页链接的站点，如 `page-{page}.html`）+ 全局列表页去重（`visited_urls` 提升跨 seed）+ 跨页/跨 seed 详情去重（`seen` 提升 + normalize key 修复）；migration 033 新增 `page_url_template`/`page_start`/`page_end` 三列（双库，手写 runner 注册 main.rs）；模板模式与 DOM 分页互斥（模板优先独占），复用连续空页早停与 `max_pagination_depth`；TDD，向后兼容（未配模板任务零回归）
+- [爬虫字段自定义脚本提取器 Plan](specs/046-crawler-script-extractor/plan.md) — 第 7 种提取模式 `script`：JS 沙箱（rquickjs）求值 `async function(ctx)`，ctx 含 `value`/`fields`/`url`/`fetch`（SSRF 防护 + 大小上限）；6 模式未匹配仍跑脚本（Clarifications Q1）；脚本字段仅 detail_page 作用域（FR-024）；按需懒刷新（lazy refresh on read）：字段级 `refresh_on_read` + 调用方 `force_refresh` 双层控制；管理性读取永不触发，消费性读取（未来下载/上传/推送）按需重跑；失败 hard fail（不覆盖旧值）；migration 037 双库各加 `refresh_on_read` 列；新增 modules `script_engine.rs`（rquickjs 池+沙箱）/`script_runner.rs`（async 求值）/`script_fetch.rs`（SSRF 防护）/`refresh.rs`（按需刷新服务）；FR-018~024 共 7 条新需求；24 FR / 4 User Story / 7 SC
 <!-- SPECKIT END -->
+

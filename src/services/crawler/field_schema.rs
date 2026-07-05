@@ -128,7 +128,7 @@ impl SourceLayer {
     }
 }
 
-/// 匹配模式：7 种（6 同步模式 + follow_url 异步两阶段）
+/// 匹配模式：8 种（6 同步模式 + follow_url 异步两阶段 + script JS 沙箱求值）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtractorMode {
@@ -141,6 +141,11 @@ pub enum ExtractorMode {
     /// 跟随 URL 两阶段：先抓中转 URL → 请求该 URL → 在响应上提取。
     /// 需 async 调用层（probe/engine）支持，extractor 同步路径会返回 UnsupportedMode。
     FollowUrl,
+    /// [feature 046] JS 沙箱求值：把 `ScriptRule.body` 包装为
+    /// `async function(__ctx) { ${body} }` 在 rquickjs 中执行，
+    /// 注入 `ctx.value/fields/url/fetch`，返回字符串。
+    /// 仅 detail_page 作用域合法（FR-020），单字段失败不中断。
+    Script,
 }
 
 impl ExtractorMode {
@@ -153,6 +158,7 @@ impl ExtractorMode {
             ExtractorMode::MetaAttr => "meta_attr",
             ExtractorMode::HeaderField => "header_field",
             ExtractorMode::FollowUrl => "follow_url",
+            ExtractorMode::Script => "script",
         }
     }
 
@@ -166,6 +172,7 @@ impl ExtractorMode {
             "meta_attr" => Some(ExtractorMode::MetaAttr),
             "header_field" => Some(ExtractorMode::HeaderField),
             "follow_url" => Some(ExtractorMode::FollowUrl),
+            "script" => Some(ExtractorMode::Script),
             _ => None,
         }
     }
@@ -247,7 +254,39 @@ pub struct HeaderFieldRule {
     pub header_name: String,
 }
 
-/// 7 模式 Rule 联合（6 同步 + follow_url 异步两阶段；discriminated by `mode`，但实际持久化按 mode_json 分别解析）
+/// [feature 046] JS 沙箱脚本规则（data-model.md E6 / contracts/script-runtime.md）
+///
+/// `body` 是一段 JS 函数体，被包装为 `async function(__ctx) { ${body} }`，
+/// 在 rquickjs 沙箱中执行；通过 `ctx.value` / `ctx.fields` / `ctx.url` / `ctx.fetch`
+/// 访问上游提取值与请求能力，最终 `return` 字符串。
+///
+/// 校验约束（FR-020）：
+/// - body 非空（trim 后仍非空）
+/// - body ≤ 64 KB（`crawler_script_max_body_size` 默认上限）
+/// - api_version 当前固定 "v1"，未来向后兼容时新增枚举
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptRule {
+    /// JS 函数体（不含外层 `function(ctx) { ... }` 包裹）
+    pub body: String,
+    /// API 版本，默认 "v1"
+    #[serde(default = "default_script_api_version")]
+    pub api_version: String,
+}
+
+impl Default for ScriptRule {
+    fn default() -> Self {
+        Self {
+            body: String::new(),
+            api_version: default_script_api_version(),
+        }
+    }
+}
+
+fn default_script_api_version() -> String {
+    "v1".to_string()
+}
+
+/// 8 模式 Rule 联合（6 同步 + follow_url 异步两阶段 + script JS 沙箱；discriminated by `mode`，但实际持久化按 mode_json 分别解析）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "mode", content = "spec", rename_all = "snake_case")]
 pub enum Rule {
@@ -259,6 +298,8 @@ pub enum Rule {
     HeaderField(HeaderFieldRule),
     /// 跟随 URL 两阶段提取：transit 子规则抓中转 URL → fetch → extract 子规则抓最终值
     FollowUrl(FollowUrlRule),
+    /// [feature 046] JS 沙箱脚本：body 在 rquickjs 中求值
+    Script(ScriptRule),
 }
 
 impl Rule {
@@ -272,6 +313,7 @@ impl Rule {
             Rule::MetaAttr(_) => "meta_attr",
             Rule::HeaderField(_) => "header_field",
             Rule::FollowUrl(_) => "follow_url",
+            Rule::Script(_) => "script",
         }
     }
 }
@@ -393,6 +435,11 @@ pub struct FieldNodeSpec {
     pub sort_order: i32,
     #[serde(default = "default_true")]
     pub is_active: bool,
+    /// [feature 046] 是否在消费性读取时按需刷新脚本字段（FR-019）。
+    /// 仅 extractor_mode=Script 时允许为 true（`validate_field_node_spec` 拒绝其它模式）。
+    /// 管理性读取（列表/详情/字段命中率面板）不受此字段影响，直接读库。
+    #[serde(default)]
+    pub refresh_on_read: bool,
 }
 
 fn default_true() -> bool {
@@ -488,7 +535,58 @@ pub fn validate_rule(mode: ExtractorMode, rule_json: &str) -> Result<(), String>
             }
             Ok(())
         }
+        ExtractorMode::Script => {
+            let r: ScriptRule = serde_json::from_value(value)
+                .map_err(|e| format!("script 规则反序列化失败: {e}"))?;
+            validate_script_rule(&r)
+        }
     }
+}
+
+/// [feature 046] 校验 ScriptRule（FR-020）：
+/// - body trim 后非空
+/// - body 长度 ≤ 64 KB（与 ScriptOpts::default::max_body_size 对齐）
+/// - api_version 必须是 "v1"（未知版本拒绝，避免未来 silently 不兼容）
+pub fn validate_script_rule(r: &ScriptRule) -> Result<(), String> {
+    if r.body.trim().is_empty() {
+        return Err("script.body 不能为空".into());
+    }
+    const MAX_BODY_BYTES: usize = 65_536;
+    if r.body.len() > MAX_BODY_BYTES {
+        return Err(format!(
+            "script.body 长度 {} 超过上限 {} 字节",
+            r.body.len(),
+            MAX_BODY_BYTES
+        ));
+    }
+    if r.api_version != "v1" {
+        return Err(format!(
+            "script.api_version 必须为 'v1'，实际 '{}'",
+            r.api_version
+        ));
+    }
+    Ok(())
+}
+
+/// [feature 046] 字段节点级交叉校验（FR-020）：
+/// - scope=ListPage + extractor_mode=Script → 拒绝（脚本仅 detail 作用域合法）
+/// - extractor_mode≠Script + refresh_on_read=true → 拒绝（refresh_on_read 仅脚本字段有意义）
+///
+/// 单独的 `validate_rule` 只校验单字段 rule，不感知 scope/refresh_on_read；
+/// 本函数在字段树 CRUD 入口被调用（handler 层组装完 FieldNodeSpec 后调用）。
+pub fn validate_field_node_spec(node: &FieldNodeSpec) -> Result<(), String> {
+    if node.scope == Scope::ListPage && node.extractor_mode == ExtractorMode::Script {
+        return Err(
+            "script 模式仅 detail_page 作用域合法（list_page 不支持脚本字段）".into(),
+        );
+    }
+    if node.refresh_on_read && node.extractor_mode != ExtractorMode::Script {
+        return Err(format!(
+            "refresh_on_read=true 仅在 extractor_mode=script 时允许（当前 mode={}）",
+            node.extractor_mode.as_str()
+        ));
+    }
+    Ok(())
 }
 
 fn validate_css_rule(r: &CssRule) -> Result<(), String> {
@@ -591,6 +689,10 @@ pub fn deserialize_rule(mode: ExtractorMode, rule_json: &str) -> Result<Rule, St
         ExtractorMode::FollowUrl => Rule::FollowUrl(
             serde_json::from_value(value)
                 .map_err(|e| format!("follow_url 反序列化失败: {e}"))?,
+        ),
+        ExtractorMode::Script => Rule::Script(
+            serde_json::from_value(value)
+                .map_err(|e| format!("script 反序列化失败: {e}"))?,
         ),
     })
 }
@@ -995,5 +1097,187 @@ mod tests {
     fn t_compile_regex_unknown_flags_filtered() {
         // 未知 flag 字符应被忽略而非报错
         assert!(compile_regex("title", "iZQ").is_ok());
+    }
+
+    // ---- [feature 046] Script variant ----
+
+    #[test]
+    fn t_extractor_mode_includes_script_variant() {
+        // 序列化为 "script"
+        assert_eq!(
+            serde_json::to_string(&ExtractorMode::Script).unwrap(),
+            "\"script\""
+        );
+        // 反序列化 round-trip
+        let m: ExtractorMode = serde_json::from_str("\"script\"").unwrap();
+        assert_eq!(m, ExtractorMode::Script);
+        // from_str / as_str 对齐
+        assert_eq!(ExtractorMode::from_str("script"), Some(ExtractorMode::Script));
+        assert_eq!(ExtractorMode::Script.as_str(), "script");
+    }
+
+    #[test]
+    fn t_rule_script_variant_round_trip() {
+        let json = r#"{"body":"return ctx.value.toUpperCase()","api_version":"v1"}"#;
+        let r: ScriptRule = serde_json::from_str(json).unwrap();
+        assert_eq!(r.api_version, "v1");
+        let rule = Rule::Script(r);
+        // Rule 序列化：{"mode":"script","spec":{...}}
+        let s = serde_json::to_string(&rule).unwrap();
+        assert!(s.contains("\"mode\":\"script\""), "actual: {s}");
+        // 反序列化
+        let back: Rule = serde_json::from_str(&s).unwrap();
+        assert!(matches!(back, Rule::Script(_)));
+        assert_eq!(rule.mode_str(), "script");
+    }
+
+    #[test]
+    fn t_rule_script_default_api_version_is_v1() {
+        // 省略 api_version 应默认 "v1"
+        let json = r#"{"body":"return ctx.value"}"#;
+        let r: ScriptRule = serde_json::from_str(json).unwrap();
+        assert_eq!(r.api_version, "v1");
+    }
+
+    #[test]
+    fn t_validate_script_rule_rejects_empty_body() {
+        let r = ScriptRule {
+            body: "   \n\t  ".into(),
+            api_version: "v1".into(),
+        };
+        let err = validate_script_rule(&r).unwrap_err();
+        assert!(err.contains("script.body"));
+    }
+
+    #[test]
+    fn t_validate_script_rule_rejects_oversized_body() {
+        let r = ScriptRule {
+            body: "x".repeat(65_537),
+            api_version: "v1".into(),
+        };
+        let err = validate_script_rule(&r).unwrap_err();
+        assert!(err.contains("65537"));
+        assert!(err.contains("65536"));
+    }
+
+    #[test]
+    fn t_validate_script_rule_rejects_unknown_api_version() {
+        let r = ScriptRule {
+            body: "return ctx.value".into(),
+            api_version: "v2".into(),
+        };
+        let err = validate_script_rule(&r).unwrap_err();
+        assert!(err.contains("v1"));
+        assert!(err.contains("v2"));
+    }
+
+    #[test]
+    fn t_validate_script_rule_accepts_legal_body() {
+        let r = ScriptRule {
+            body: "return ctx.value.toUpperCase()".into(),
+            api_version: "v1".into(),
+        };
+        assert!(validate_script_rule(&r).is_ok());
+    }
+
+    #[test]
+    fn t_validate_rule_script_path() {
+        // 走 validate_rule 公共入口
+        let json = r#"{"body":"return ctx.value","api_version":"v1"}"#;
+        assert!(validate_rule(ExtractorMode::Script, json).is_ok());
+        let bad = r#"{"body":"   ","api_version":"v1"}"#;
+        assert!(validate_rule(ExtractorMode::Script, bad).is_err());
+    }
+
+    #[test]
+    fn t_validate_field_node_rejects_list_scope_with_script() {
+        let node = FieldNodeSpec {
+            id: None,
+            task_id: None,
+            parent_id: None,
+            scope: Scope::ListPage,
+            name: "title".into(),
+            display_name: "标题".into(),
+            field_type: FieldType::String,
+            source_layer: SourceLayer::Html,
+            extractor_mode: ExtractorMode::Script,
+            rule: Rule::Script(ScriptRule {
+                body: "return ctx.value".into(),
+                api_version: "v1".into(),
+            }),
+            post_processors: vec![],
+            script_index: None,
+            sort_order: 0,
+            is_active: true,
+            refresh_on_read: false,
+        };
+        let err = validate_field_node_spec(&node).unwrap_err();
+        assert!(err.contains("detail_page"));
+        assert!(err.contains("list_page"));
+    }
+
+    #[test]
+    fn t_validate_field_node_rejects_refresh_on_read_with_non_script() {
+        let node = FieldNodeSpec {
+            id: None,
+            task_id: None,
+            parent_id: None,
+            scope: Scope::DetailPage,
+            name: "title".into(),
+            display_name: "标题".into(),
+            field_type: FieldType::String,
+            source_layer: SourceLayer::Html,
+            extractor_mode: ExtractorMode::Css,
+            rule: Rule::Css(CssRule {
+                selector: ".t".into(),
+                attr: "text".into(),
+            }),
+            post_processors: vec![],
+            script_index: None,
+            sort_order: 0,
+            is_active: true,
+            refresh_on_read: true, // ← 仅 script 允许
+        };
+        let err = validate_field_node_spec(&node).unwrap_err();
+        assert!(err.contains("refresh_on_read"));
+        assert!(err.contains("css"));
+    }
+
+    #[test]
+    fn t_validate_field_node_accepts_detail_script_with_refresh() {
+        let node = FieldNodeSpec {
+            id: None,
+            task_id: None,
+            parent_id: None,
+            scope: Scope::DetailPage,
+            name: "title".into(),
+            display_name: "标题".into(),
+            field_type: FieldType::String,
+            source_layer: SourceLayer::Html,
+            extractor_mode: ExtractorMode::Script,
+            rule: Rule::Script(ScriptRule {
+                body: "return ctx.value".into(),
+                api_version: "v1".into(),
+            }),
+            post_processors: vec![],
+            script_index: None,
+            sort_order: 0,
+            is_active: true,
+            refresh_on_read: true,
+        };
+        assert!(validate_field_node_spec(&node).is_ok());
+    }
+
+    #[test]
+    fn t_serialize_deserialize_rule_script_round_trip() {
+        let rule = Rule::Script(ScriptRule {
+            body: "return ctx.value + '!'".into(),
+            api_version: "v1".into(),
+        });
+        let (mode, json) = serialize_rule(&rule);
+        assert_eq!(mode, "script");
+        // 反序列化回来
+        let back = deserialize_rule(ExtractorMode::Script, &json).unwrap();
+        assert!(matches!(back, Rule::Script(_)));
     }
 }

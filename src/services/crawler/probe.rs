@@ -28,6 +28,8 @@ use chrono::NaiveDateTime;
 
 use crate::services::crawler::extractor::{self, ExtractErrorKind, ExtractInput};
 use crate::services::crawler::field_schema::{Rule, SourceLayer};
+use crate::services::crawler::script_engine::ScriptFailureCategory;
+use crate::services::crawler::script_runner::{self, ScriptOpts};
 use crate::services::crawler::source_layer::{
     fetch_source_material, ProbeCategory, ProbeError, ProbeStage, SourceMaterial,
 };
@@ -201,7 +203,48 @@ pub async fn run_probe(req: ProbeRequest) -> Result<ProbeResponse, ProbeError> {
         });
     }
 
-    // 3c. 6 同步模式：直接对 req.rule 应用提取
+    // 3c. [feature 046] Script 模式：构造 ctx（value="" 探针场景）→ run_script → 单条样本
+    //
+    // **US2 限制（文档化）**：探针是单字段验证场景，`ctx.fields` 暂为空 HashMap。
+    // 如需"先探针 A、再探针 B 时引用 A"的级联验证，调用方应：
+    //   1. 先 run_probe(A) 取 sample.value；
+    //   2. 自行构造 `sibling_fields` HashMap（如 {"A": sample.value}）；
+    //   3. 暂未在 ProbeRequest 暴露 sibling_fields 入参（避免 API 复杂化）；
+    //   4. 改用 test_run 端到端验证跨字段逻辑（推荐路径）。
+    if let Rule::Script(script_rule) = &req.rule {
+        let opts = ScriptOpts::default();
+        // US3：探针脚本支持 ctx.fetch（构造任务级 client；失败仅降级，不阻断探针）
+        let client = crate::services::crawler::engine::build_reqwest_client(
+            req.user_agent.as_deref(),
+            req.proxy.as_deref(),
+        )
+        .ok();
+        let value = script_runner::run_script(
+            script_rule,
+            String::new(),
+            std::collections::HashMap::new(),
+            &req.url,
+            client.as_ref(),
+            &opts,
+        )
+        .await
+        .map_err(script_err_to_probe_error)?;
+
+        return Ok(ProbeResponse {
+            hit_count: 1,
+            samples: vec![ProbeSample {
+                value,
+                source_fragment: "script:body".into(),
+                location: None,
+            }],
+            per_parent: None,
+            fetched_url: material.final_url.clone(),
+            fetched_at: material.fetched_at,
+            duration_ms: material.duration_ms,
+        });
+    }
+
+    // 3d. 6 同步模式：直接对 req.rule 应用提取
     let input = ExtractInput::from_material(&material, req.script_index).with_layer(req.source_layer);
     let raw_hits = extractor::extract(&req.rule, &input).map_err(map_extract_error)?;
     let final_hits = extractor::apply_post_processors(raw_hits, &req.post_processors, &material.final_url);
@@ -391,6 +434,45 @@ fn follow_url_err_to_probe_error(
         )
         .with_hint("检查 extract 子规则与 target_layer 是否匹配二次响应的源码 tab"),
     }
+}
+
+/// [feature 046] 把 [`script_engine::ScriptError`] 映射到 [`ProbeError`]
+///
+/// 分类映射：
+/// - SyntaxError / SecurityViolation / TypeError → Parse / InvalidRule（脚本本身有问题）
+/// - RuntimeError → Match / InvalidRule（脚本跑起来抛错）
+/// - Timeout → Match / InvalidRule（脚本超时，归类为运行期问题）
+/// - NetworkError → Fetch / UrlUnreachable（US3 ctx.fetch 失败，US1 不会触发）
+fn script_err_to_probe_error(err: crate::services::crawler::script_engine::ScriptError) -> ProbeError {
+    let (stage, category, hint): (ProbeStage, ProbeCategory, Option<&str>) = match err.category {
+        ScriptFailureCategory::SyntaxError
+        | ScriptFailureCategory::SecurityViolation
+        | ScriptFailureCategory::TypeError => (
+            ProbeStage::Parse,
+            ProbeCategory::InvalidRule,
+            Some("脚本编译期失败：检查 script.body 语法 / 是否含被禁标识符"),
+        ),
+        ScriptFailureCategory::RuntimeError => (
+            ProbeStage::Match,
+            ProbeCategory::InvalidRule,
+            Some("脚本运行期抛错：检查 ctx.value / ctx.fields 访问路径"),
+        ),
+        ScriptFailureCategory::Timeout => (
+            ProbeStage::Match,
+            ProbeCategory::InvalidRule,
+            Some("脚本执行超时（默认 100ms）：简化逻辑或拆分多字段"),
+        ),
+        ScriptFailureCategory::NetworkError => (
+            ProbeStage::Fetch,
+            ProbeCategory::UrlUnreachable,
+            Some("ctx.fetch 网络错（含 SSRF 拒绝 / 响应超阈值）"),
+        ),
+    };
+    let mut pe = ProbeError::new(stage, category, format!("[{}] {}", err.category.as_str(), err.message));
+    if let Some(h) = hint {
+        pe = pe.with_hint(h);
+    }
+    pe
 }
 
 // ============================================================================
@@ -1022,5 +1104,140 @@ mod tests {
         let t = truncate_fragment(&long, 10);
         assert_eq!(t.chars().count(), 11); // 10 + 省略号
         assert!(t.ends_with('…'));
+    }
+
+    // ===== [feature 046] US1 Script 模式探针 =====
+
+    use crate::services::crawler::field_schema::{ExtractorMode, ScriptRule};
+
+    fn script_rule(body: &str) -> Rule {
+        Rule::Script(ScriptRule {
+            body: body.into(),
+            api_version: "v1".into(),
+        })
+    }
+
+    /// T015：probe 请求 rule=Script → 抓 URL 后跑脚本 → 单条样本
+    #[tokio::test]
+    async fn t_run_probe_script_mode_returns_value() {
+        let req = make_req(
+            "https://example.com/".to_string(),
+            script_rule("return 'transformed_' + ctx.url"),
+            SourceLayer::Html,
+        );
+        let resp = run_probe(req).await.expect("脚本应返回值");
+        assert_eq!(resp.hit_count, 1);
+        assert_eq!(resp.samples.len(), 1);
+        assert_eq!(resp.samples[0].source_fragment, "script:body");
+        assert!(
+            resp.samples[0].value.starts_with("transformed_"),
+            "脚本返回值实际 = {}",
+            resp.samples[0].value
+        );
+    }
+
+    /// T015：脚本 ctx.value 默认空字符串（探针场景 6 模式未跑）
+    #[tokio::test]
+    async fn t_run_probe_script_mode_injects_empty_value() {
+        let req = make_req(
+            "https://example.com/".to_string(),
+            script_rule("return ctx.value + '_default'"),
+            SourceLayer::Html,
+        );
+        let resp = run_probe(req).await.expect("脚本应返回值");
+        assert_eq!(resp.samples[0].value, "_default");
+    }
+
+    /// T015：脚本语法错 → ProbeError stage=Parse / category=InvalidRule
+    #[tokio::test]
+    async fn t_run_probe_script_mode_syntax_error_returns_structured_error() {
+        let req = make_req(
+            "https://example.com/".to_string(),
+            script_rule("return ."),
+            SourceLayer::Html,
+        );
+        let err = run_probe(req).await.expect_err("语法错");
+        assert_eq!(err.stage, ProbeStage::Parse);
+        assert_eq!(err.category, ProbeCategory::InvalidRule);
+        assert!(err.hint.is_some());
+    }
+
+    /// T015：脚本运行期抛错 → ProbeError stage=Match / category=InvalidRule
+    #[tokio::test]
+    async fn t_run_probe_script_mode_runtime_error_returns_structured_error() {
+        let req = make_req(
+            "https://example.com/".to_string(),
+            script_rule("throw new Error('boom')"),
+            SourceLayer::Html,
+        );
+        let err = run_probe(req).await.expect_err("运行期错");
+        assert_eq!(err.stage, ProbeStage::Match);
+        assert_eq!(err.category, ProbeCategory::InvalidRule);
+        assert!(err.message.contains("boom"));
+    }
+
+    /// T015：脚本沙箱逃逸 → ProbeError stage=Parse / category=InvalidRule
+    #[tokio::test]
+    async fn t_run_probe_script_mode_security_violation_returns_structured_error() {
+        let req = make_req(
+            "https://example.com/".to_string(),
+            script_rule("return Function('return this')()"),
+            SourceLayer::Html,
+        );
+        let err = run_probe(req).await.expect_err("沙箱逃逸");
+        assert_eq!(err.stage, ProbeStage::Parse);
+        assert_eq!(err.category, ProbeCategory::InvalidRule);
+    }
+
+    /// T015：脚本无 return → TypeError → Parse / InvalidRule
+    #[tokio::test]
+    async fn t_run_probe_script_mode_no_return_returns_structured_error() {
+        let req = make_req(
+            "https://example.com/".to_string(),
+            script_rule("/* no return */"),
+            SourceLayer::Html,
+        );
+        let err = run_probe(req).await.expect_err("无 return");
+        assert_eq!(err.stage, ProbeStage::Parse);
+        assert_eq!(err.category, ProbeCategory::InvalidRule);
+    }
+
+    /// ProbeRequest rule=Script 序列化 roundtrip（extractor_mode=script）
+    #[test]
+    fn probe_request_with_script_rule_serializes() {
+        let req = ProbeRequest {
+            url: "https://x.com/".to_string(),
+            user_agent: None,
+            proxy: None,
+            source_layer: SourceLayer::Html,
+            rule: script_rule("return ctx.value"),
+            post_processors: vec![],
+            script_index: None,
+            parent_hits: vec![],
+            require_parent: false,
+            parent_field: None,
+            per_parent_sample_limit: None,
+            parent_node_id: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"script\""), "rule mode 应序列化为 script");
+        let back: ProbeRequest = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back.rule, Rule::Script(_)));
+    }
+
+    /// Exhaustiveness: 7 种 ExtractorMode 全部存在（css/regex/prefix_suffix/json_path/meta_attr/header_field/script）
+    #[test]
+    fn extractor_mode_seven_kinds_exist() {
+        for s in [
+            "css",
+            "regex",
+            "prefix_suffix",
+            "json_path",
+            "meta_attr",
+            "header_field",
+            "script",
+        ] {
+            assert!(ExtractorMode::from_str(s).is_some(), "缺失 mode: {s}");
+        }
     }
 }

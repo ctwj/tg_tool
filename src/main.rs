@@ -862,6 +862,51 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::info!("SQLite migration 033 applied (crawler_tasks URL template pagination)");
                 }
             }
+            // Migration 034: crawler_field_library resource 类扩展（游戏/软件/教程 11 字段，幂等 INSERT OR IGNORE）
+            {
+                let m34 = include_str!("../migrations/034_crawler_field_library_resource_extend_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m34).execute(pool).await {
+                    tracing::warn!("SQLite migration 034 failed (ignored): {e}");
+                } else {
+                    tracing::info!("SQLite migration 034 applied (crawler_field_library resource extend +11)");
+                }
+            }
+            // Migration 035: crawler_field_library resource 类扩展（视频场景 6 字段，幂等 INSERT OR IGNORE）
+            {
+                let m35 = include_str!("../migrations/035_crawler_field_library_video_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m35).execute(pool).await {
+                    tracing::warn!("SQLite migration 035 failed (ignored): {e}");
+                } else {
+                    tracing::info!("SQLite migration 035 applied (crawler_field_library resource video +6)");
+                }
+            }
+            // Migration 036: crawler_field_library resource 类扩展（APP 图标，幂等 INSERT OR IGNORE）
+            {
+                let m36 = include_str!("../migrations/036_crawler_field_library_app_icon_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m36).execute(pool).await {
+                    tracing::warn!("SQLite migration 036 failed (ignored): {e}");
+                } else {
+                    tracing::info!("SQLite migration 036 applied (crawler_field_library resource app_icon +1)");
+                }
+            }
+            // Migration 037: crawler_task_field_nodes 加 refresh_on_read 列（feature 046-crawler-script-extractor）
+            {
+                let m37 = include_str!("../migrations/037_crawler_field_nodes_refresh_on_read_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m37).execute(pool).await {
+                    tracing::warn!("SQLite migration 037 failed (ignored): {e}");
+                } else {
+                    tracing::info!("SQLite migration 037 applied (crawler_task_field_nodes.refresh_on_read)");
+                }
+            }
+            // Migration 038: crawler_field_library 增量插入 id 字段（feature 046 后续：站点资源 ID）
+            {
+                let m38 = include_str!("../migrations/038_crawler_field_library_id_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m38).execute(pool).await {
+                    tracing::warn!("SQLite migration 038 failed (ignored): {e}");
+                } else {
+                    tracing::info!("SQLite migration 038 applied (crawler_field_library id metadata +1)");
+                }
+            }
             // 043：种子化 crawler_field_library（若表为空则用应用层 BUILTIN_PRESETS 补种）
             {
                 if let Err(e) = tgTool::services::crawler::preset_library::seed_if_empty_sqlite(pool).await {
@@ -1317,6 +1362,51 @@ async fn run_migrations(pool: &DbPool) {
                     }
                 } else {
                     tracing::info!("PostgreSQL migration 033 applied (crawler_tasks URL template pagination)");
+                }
+            }
+            // Migration 034: crawler_field_library resource 类扩展（游戏/软件/教程 11 字段，幂等 ON CONFLICT DO NOTHING）
+            {
+                let m34 = include_str!("../migrations/034_crawler_field_library_resource_extend_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m34).execute(pool).await {
+                    tracing::warn!("PostgreSQL migration 034 failed (ignored): {e}");
+                } else {
+                    tracing::info!("PostgreSQL migration 034 applied (crawler_field_library resource extend +11)");
+                }
+            }
+            // Migration 035: crawler_field_library resource 类扩展（视频场景 6 字段，幂等 ON CONFLICT DO NOTHING）
+            {
+                let m35 = include_str!("../migrations/035_crawler_field_library_video_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m35).execute(pool).await {
+                    tracing::warn!("PostgreSQL migration 035 failed (ignored): {e}");
+                } else {
+                    tracing::info!("PostgreSQL migration 035 applied (crawler_field_library resource video +6)");
+                }
+            }
+            // Migration 036: crawler_field_library resource 类扩展（APP 图标，幂等 ON CONFLICT DO NOTHING）
+            {
+                let m36 = include_str!("../migrations/036_crawler_field_library_app_icon_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m36).execute(pool).await {
+                    tracing::warn!("PostgreSQL migration 036 failed (ignored): {e}");
+                } else {
+                    tracing::info!("PostgreSQL migration 036 applied (crawler_field_library resource app_icon +1)");
+                }
+            }
+            // Migration 037: crawler_task_field_nodes 加 refresh_on_read 列（feature 046-crawler-script-extractor）
+            {
+                let m37 = include_str!("../migrations/037_crawler_field_nodes_refresh_on_read_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m37).execute(pool).await {
+                    tracing::warn!("PostgreSQL migration 037 failed (ignored): {e}");
+                } else {
+                    tracing::info!("PostgreSQL migration 037 applied (crawler_task_field_nodes.refresh_on_read)");
+                }
+            }
+            // Migration 038: crawler_field_library 增量插入 id 字段（feature 046 后续：站点资源 ID）
+            {
+                let m38 = include_str!("../migrations/038_crawler_field_library_id_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m38).execute(pool).await {
+                    tracing::warn!("PostgreSQL migration 038 failed (ignored): {e}");
+                } else {
+                    tracing::info!("PostgreSQL migration 038 applied (crawler_field_library id metadata +1)");
                 }
             }
             // 043：种子化 crawler_field_library

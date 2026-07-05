@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo, useCallback } from 'react'
 import {
   Table, Button, Form, Input, Select, Space, message, Tag, Popconfirm,
   Tooltip, Typography, Drawer, Image as AntImage, Descriptions, Empty, Spin, Badge,
-  Card,
+  Card, Row, Col,
 } from 'antd'
 import {
   ReloadOutlined, DeleteOutlined, EditOutlined, EyeOutlined, CopyOutlined,
@@ -10,6 +10,7 @@ import {
   RedoOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
+import { fmtUtc } from '../utils/time'
 import PageHeader from '../components/PageHeader'
 import { useTableScrollY } from '../hooks/useTableScroll'
 import apiClient from '../api/client'
@@ -78,6 +79,8 @@ const CrawlerResources: React.FC = () => {
   const [editForm] = Form.useForm()
   const [linkChecking, setLinkChecking] = useState(false)
   const [retryingId, setRetryingId] = useState<number | null>(null)
+  // [feature 046 US4] 字段刷新状态：正在刷新的 field_path 集合
+  const [refreshingPaths, setRefreshingPaths] = useState<Set<string>>(new Set())
 
   const { containerRef: tableContainerRef, scrollY: tableScrollY } = useTableScrollY()
 
@@ -245,6 +248,45 @@ const CrawlerResources: React.FC = () => {
     }
   }
 
+  // [feature 046 US4] 手动刷新脚本字段（force_refresh=true）
+  const refreshField = useCallback(async (fieldPath: string, fieldName: string) => {
+    if (!detail) return
+    setRefreshingPaths(prev => new Set(prev).add(fieldPath))
+    try {
+      const res = await crawlerApi.refreshArticleField(detail.id, fieldName)
+      const data = (res as any)?.data
+      const newV = data?.new_value
+      const oldV = data?.old_value
+      if (newV && newV !== oldV) {
+        message.success(`字段已刷新（耗时 ${data?.duration_ms ?? 0} ms）`)
+      } else {
+        message.info(`字段刷新完成但值未变化（耗时 ${data?.duration_ms ?? 0} ms）`)
+      }
+      // 重新打开详情拉新值
+      await openDetail(detail.id)
+    } catch (e: any) {
+      const msg: string = e?.response?.data?.error ?? e?.message ?? '刷新失败'
+      // 分类中文映射
+      const categorized = msg.replace(/.*\[(\w+)\].*/, (_, cat) => {
+        const map: Record<string, string> = {
+          syntax_error: '脚本语法错',
+          security_violation: '安全策略拦截',
+          runtime_error: '脚本运行错',
+          type_error: '类型错',
+          timeout: '执行超时',
+        }
+        return map[cat] ? `${map[cat]}` : cat
+      })
+      message.error('字段刷新失败: ' + categorized)
+    } finally {
+      setRefreshingPaths(prev => {
+        const next = new Set(prev)
+        next.delete(fieldPath)
+        return next
+      })
+    }
+  }, [detail])
+
   // 拼接图片可访问 URL
   const buildImageUrl = (fileId: string | null, msgId: number | null): string | null => {
     if (fileId) {
@@ -261,20 +303,6 @@ const CrawlerResources: React.FC = () => {
     tasks.forEach(t => m.set(t.id, t.name))
     return m
   }, [tasks])
-
-  // ─── extra_fields 字段取值辅助（爬虫字段树提取结果，后端已拍平注入到每条列表项） ─────────
-  // 列表的 title/thumbnail/网盘 列读的是空表（crawler_articles.title 等三张表无 INSERT），
-  // 真实字段值在 extra_fields（key=field_path 末段，值=string|string[]），用它兜底显示
-  const efStr = (r: CrawlerArticleListItem, key: string): string | null => {
-    const v = r.extra_fields?.[key]
-    if (Array.isArray(v)) return v[0] ?? null
-    return typeof v === 'string' && v ? v : null
-  }
-  const efCount = (r: CrawlerArticleListItem, key: string): number => {
-    const v = r.extra_fields?.[key]
-    if (Array.isArray(v)) return v.length
-    return v ? 1 : 0
-  }
 
   // ─── 列定义 ───────────────────────────────────────────────────────────────
   const columns = [
@@ -311,8 +339,10 @@ const CrawlerResources: React.FC = () => {
     {
       title: '标题', dataIndex: 'title', key: 'title', ellipsis: true,
       render: (t: string | null, r: CrawlerArticleListItem) => {
-        // title 列（crawler_articles.title）常为空（字段名非 title/name 或 UPDATE 不刷新），用 extra_fields 兜底
-        const title = t || efStr(r, 'title') || efStr(r, 'name')
+        // title 列（crawler_articles.title）常因 CSS 命中空元素被填空白字符；先 trim 判定，
+        // 空白/空 → 回退到 extra_fields.title / .name；都没有显示"(无标题)"
+        const tStr = t && t.trim() ? t : null
+        const title = tStr || efStr(r, 'title') || efStr(r, 'name')
         return (
           <Space size={4}>
             <Tooltip title={title ?? '(无标题)'}>
@@ -360,7 +390,7 @@ const CrawlerResources: React.FC = () => {
       title: '采集时间', dataIndex: 'crawled_at', width: 150, key: 'crawled_at',
       render: (t: string) => (
         <Text type="secondary" style={{ fontSize: 12 }}>
-          {dayjs(t).format('YYYY-MM-DD HH:mm')}
+          {fmtUtc(t, 'YYYY-MM-DD HH:mm')}
         </Text>
       ),
     },
@@ -496,11 +526,37 @@ const CrawlerResources: React.FC = () => {
             retryingId={retryingId}
             fieldValues={detail.field_values ?? []}
             fieldTree={detail.task_id != null ? fieldTreeMap[detail.task_id] ?? null : null}
+            onRefreshField={refreshField}
+            refreshingPaths={refreshingPaths}
           />
         )}
       </Drawer>
     </div>
   )
+}
+
+// ─── extra_fields 字段取值辅助（爬虫字段树提取结果，后端已拍平注入到每条列表项） ─────────
+// 列表/详情的 title/thumbnail/网盘 列读的是空表（crawler_articles.title 等三张表无 INSERT），
+// 真实字段值在 extra_fields（key=field_path 末段，值=string|string[]），用它兜底显示。
+// 模块级纯函数（无闭包依赖），列表组件与 DetailBody 子组件共用。
+//
+// 后端 build_extra_fields_json 把同字段多个命中聚合成数组；CSS 选择器（如 h1）可能
+// 匹配到多个元素（首个可能是空白装饰元素）。因此数组场景必须扫描全部元素取首个 trim 非空值，
+// 不能只看 [0]。
+const efStr = (r: { extra_fields?: Record<string, string | string[]> }, key: string): string | null => {
+  const v = r.extra_fields?.[key]
+  if (Array.isArray(v)) {
+    for (const item of v) {
+      if (typeof item === 'string' && item.trim()) return item
+    }
+    return null
+  }
+  return typeof v === 'string' && v.trim() ? v : null
+}
+const efCount = (r: { extra_fields?: Record<string, string | string[]> }, key: string): number => {
+  const v = r.extra_fields?.[key]
+  if (Array.isArray(v)) return v.length
+  return v ? 1 : 0
 }
 
 // ─── 详情 Drawer 内容（编辑/只读两态） ───────────────────────────────────────
@@ -514,11 +570,15 @@ interface DetailBodyProps {
   retryingId: number | null
   fieldValues: ArticleFieldValue[]
   fieldTree: FieldTree | null
+  /** [feature 046] 字段刷新回调 */
+  onRefreshField?: (fieldPath: string, fieldName: string) => Promise<void>
+  /** [feature 046] 正在刷新的字段集合 */
+  refreshingPaths?: Set<string>
 }
 
 const DetailBody: React.FC<DetailBodyProps> = ({
   detail, editing, form, buildImageUrl, copyText, retryImage, retryingId,
-  fieldValues, fieldTree,
+  fieldValues, fieldTree, onRefreshField, refreshingPaths,
 }) => {
   const panLinks = detail.links.filter(l => l.link_type === 'pan')
   const directLinks = detail.links.filter(l => l.link_type === 'direct')
@@ -535,6 +595,8 @@ const DetailBody: React.FC<DetailBodyProps> = ({
             values={fieldValues}
             fieldTree={fieldTree}
             emptyHint="无字段提取数据"
+            onRefresh={onRefreshField}
+            refreshingPaths={refreshingPaths}
           />
         </Card>
       )}
@@ -553,7 +615,10 @@ const DetailBody: React.FC<DetailBodyProps> = ({
         ) : (
           <Descriptions column={2} size="small">
             <Descriptions.Item label="标题" span={2}>
-              <Text strong>{detail.title || '(无标题)'}</Text>
+              <Text strong>{(detail.title && detail.title.trim() ? detail.title : null)
+                || efStr(detail as any, 'title')
+                || efStr(detail as any, 'name')
+                || '(无标题)'}</Text>
             </Descriptions.Item>
             <Descriptions.Item label="分类">
               {detail.category ? <Tag color="blue">{detail.category}</Tag> : '-'}
@@ -565,7 +630,7 @@ const DetailBody: React.FC<DetailBodyProps> = ({
               {detail.task_name ?? detail.task_id ?? '-'}
             </Descriptions.Item>
             <Descriptions.Item label="采集时间" span={2}>
-              {dayjs(detail.crawled_at).format('YYYY-MM-DD HH:mm:ss')}
+              {fmtUtc(detail.crawled_at)}
             </Descriptions.Item>
             <Descriptions.Item label="原始 URL" span={2}>
               <a href={detail.source_url} target="_blank" rel="noreferrer"
@@ -580,14 +645,32 @@ const DetailBody: React.FC<DetailBodyProps> = ({
         )}
       </Card>
 
-      {/* 正文预览（非编辑态） */}
+      {/* 正文：左采集内容（HTML 源码） / 右 HTML 预览（非编辑态） */}
       {!editing && detail.content && (
-        <Card title="正文预览" size="small">
-          <div
-            style={{ maxHeight: 240, overflow: 'auto', fontSize: 13, lineHeight: 1.7 }}
-            dangerouslySetInnerHTML={{ __html: detail.content }}
-          />
-        </Card>
+        <Row gutter={12}>
+          <Col span={12}>
+            <Card title="采集内容" size="small" styles={{ body: { padding: 0 } }}>
+              <pre style={{
+                margin: 0, padding: 12,
+                maxHeight: 360, overflow: 'auto',
+                fontSize: 12, lineHeight: 1.6,
+                fontFamily: 'ui-monospace, Menlo, Consolas, "Courier New", monospace',
+                whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                color: '#374151',
+              }}>
+                {detail.content}
+              </pre>
+            </Card>
+          </Col>
+          <Col span={12}>
+            <Card title="HTML 预览" size="small">
+              <div
+                style={{ maxHeight: 360, overflow: 'auto', fontSize: 13, lineHeight: 1.7 }}
+                dangerouslySetInnerHTML={{ __html: detail.content }}
+              />
+            </Card>
+          </Col>
+        </Row>
       )}
 
       {/* 网盘链接 */}
@@ -639,7 +722,7 @@ const DetailBody: React.FC<DetailBodyProps> = ({
                   )}
                   {l.last_checked_at && (
                     <Text type="secondary" style={{ fontSize: 11 }}>
-                      最近检测: {dayjs(l.last_checked_at).format('YYYY-MM-DD HH:mm')}
+                      最近检测: {fmtUtc(l.last_checked_at, 'YYYY-MM-DD HH:mm')}
                     </Text>
                   )}
                 </div>

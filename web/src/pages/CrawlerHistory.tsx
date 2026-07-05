@@ -8,6 +8,7 @@ import {
   WarningOutlined, StopOutlined, ClockCircleOutlined, LoadingOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
+import { fmtUtc } from '../utils/time'
 import { useNavigate } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import { useTableScrollY } from '../hooks/useTableScroll'
@@ -139,7 +140,7 @@ const CrawlerHistory: React.FC = () => {
       title: '开始时间', dataIndex: 'started_at', width: 150, key: 'started_at',
       render: (t: string) => (
         <Text type="secondary" style={{ fontSize: 12 }}>
-          {dayjs(t).format('MM-DD HH:mm:ss')}
+          {fmtUtc(t)}
         </Text>
       ),
     },

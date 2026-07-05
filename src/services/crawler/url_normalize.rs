@@ -63,12 +63,13 @@ pub fn normalize_url(input: &str) -> String {
     // authority 小写（host 部分；userinfo 暂时一并小写，足够去重用途）
     let authority_norm = authority.map(|a| a.to_ascii_lowercase());
 
-    // path 去末尾冗余斜杠（根 / 保留）
+    // path 规范化：先消除 `.` / `..` 段（RFC 3986 § 5.2.4），再去末尾冗余斜杠（根 / 保留）
     let path_norm = path.map(|p| {
-        if p.len() > 1 && p.ends_with('/') {
-            p[..p.len() - 1].to_string()
+        let cleaned = remove_dot_segments(p);
+        if cleaned.len() > 1 && cleaned.ends_with('/') {
+            cleaned[..cleaned.len() - 1].to_string()
         } else {
-            p.to_string()
+            cleaned
         }
     });
 
@@ -148,6 +149,48 @@ fn split_scheme(s: &str) -> Option<(&str, &str)> {
         i += 1;
     }
     None
+}
+
+/// RFC 3986 § 5.2.4 — 移除路径中的 `.` 与 `..` 段
+///
+/// 修复爬虫场景下相对路径解析后残留的 `..`：
+/// 如 `https://example.com/page-2.html/../xiazai/article.html`
+/// → `https://example.com/xiazai/article.html`
+///
+/// 规则：
+/// - `.` 段跳过（当前目录）
+/// - `..` 段弹出栈顶（父目录）；栈空时静默丢弃（root 之上的 `..` 无效）
+/// - 其余段压栈；前导 `/` 在结果中保留
+///
+/// 连续斜杠（`a//b`）会被合并为 `a/b`，符合爬虫去重语义。
+pub fn remove_dot_segments(path: &str) -> String {
+    if path.is_empty() {
+        return String::new();
+    }
+    let is_absolute = path.starts_with('/');
+    let mut out: Vec<&str> = Vec::new();
+    for seg in path.split('/') {
+        match seg {
+            "" | "." => {
+                // 空段（前导 /、连续斜杠）和当前目录 — 跳过
+            }
+            ".." => {
+                out.pop();
+            }
+            other => {
+                out.push(other);
+            }
+        }
+    }
+    if is_absolute {
+        if out.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{}", out.join("/"))
+        }
+    } else {
+        out.join("/")
+    }
 }
 
 fn is_tracking_param(key: &str) -> bool {
@@ -243,5 +286,72 @@ mod tests {
     fn param_without_value_kept() {
         let r = normalize_url("https://example.com/?flag&a=1");
         assert_eq!(r, "https://example.com/?a=1&flag");
+    }
+
+    // ===== remove_dot_segments（RFC 3986 § 5.2.4）=====
+    #[test]
+    fn dot_segments_basic_parent() {
+        assert_eq!(remove_dot_segments("/page-2.html/../xiazai/article.html"), "/xiazai/article.html");
+    }
+
+    #[test]
+    fn dot_segments_multi_level() {
+        assert_eq!(remove_dot_segments("/a/b/../../c"), "/c");
+    }
+
+    #[test]
+    fn dot_segments_above_root_drops_silently() {
+        assert_eq!(remove_dot_segments("/../foo"), "/foo");
+        assert_eq!(remove_dot_segments("/../../bar"), "/bar");
+    }
+
+    #[test]
+    fn dot_segments_single_dot_ignored() {
+        assert_eq!(remove_dot_segments("/a/./b"), "/a/b");
+    }
+
+    #[test]
+    fn dot_segments_preserves_leading_slash() {
+        assert_eq!(remove_dot_segments("/x"), "/x");
+    }
+
+    #[test]
+    fn dot_segments_relative_path() {
+        // 相对路径输入：无前导 /
+        assert_eq!(remove_dot_segments("a/b/../c"), "a/c");
+    }
+
+    #[test]
+    fn dot_segments_empty_input() {
+        assert_eq!(remove_dot_segments(""), "");
+    }
+
+    #[test]
+    fn dot_segments_root_only() {
+        // 全部段都被弹出后保留根 /
+        assert_eq!(remove_dot_segments("/a/.."), "/");
+    }
+
+    #[test]
+    fn dot_segments_collapses_consecutive_slashes() {
+        assert_eq!(remove_dot_segments("/a//b"), "/a/b");
+    }
+
+    #[test]
+    fn dot_segments_preserves_non_special_segments_named_like_dot() {
+        // `..foo` 不是 `..`，应保留
+        assert_eq!(remove_dot_segments("/..foo/a"), "/..foo/a");
+    }
+
+    #[test]
+    fn normalize_url_strips_dot_segments() {
+        let r = normalize_url("https://example.com/page-2.html/../xiazai/article-5000.html");
+        assert_eq!(r, "https://example.com/xiazai/article-5000.html");
+    }
+
+    #[test]
+    fn normalize_url_dot_segments_with_query() {
+        let r = normalize_url("https://example.com/a/../b?x=1");
+        assert_eq!(r, "https://example.com/b?x=1");
     }
 }

@@ -176,6 +176,23 @@ export async function checkArticleLinks(
   return res.data
 }
 
+// [feature 046 US4] 手动刷新文章字段（仅 script 字段，admin 权限）
+export async function refreshArticleField(
+  articleId: number,
+  fieldName: string,
+): Promise<
+  ApiResponse<{
+    old_value: string
+    new_value: string
+    duration_ms: number
+  }>
+> {
+  const res = await apiClient.post(
+    `/crawler/articles/${articleId}/fields/${encodeURIComponent(fieldName)}/refresh`,
+  )
+  return res.data
+}
+
 // ─── 历史与统计（US3） ───────────────────────────────────────────────────
 export interface HistoryListParams {
   page?: number

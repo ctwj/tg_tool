@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   Alert,
+  AutoComplete,
   Button,
   Card,
   Col,
@@ -16,7 +17,7 @@ import {
   Tag,
   Typography,
 } from 'antd'
-import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
+import { MinusCircleOutlined, PlusOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
 import * as crawlerApi from '../../api/crawler'
 import FollowUrlRuleEditor from './FollowUrlRuleEditor'
 import type {
@@ -32,6 +33,7 @@ import type {
   PostProcessorOp,
   ProbeResponse,
   QuickFieldPreset,
+  ScriptRule,
   SourceLayer,
   SubRule,
 } from '../../types'
@@ -62,6 +64,7 @@ const EXTRACTOR_MODES: ExtractorMode[] = [
   'meta_attr',
   'header_field',
   'follow_url',
+  'script',
 ]
 
 /** 字段类型中文标签（与 FIELD_TYPES 对齐） */
@@ -108,12 +111,15 @@ export const EXTRACTOR_MODE_LABELS: Record<ExtractorMode, string> = {
   meta_attr: 'Meta 属性',
   header_field: '响应头字段',
   follow_url: '跟随 URL 二次提取',
+  script: 'JS 脚本（沙箱）',
 }
 
 /** 匹配模式说明（用于在 UI 上给用户提示该模式的适用场景） */
 export const EXTRACTOR_MODE_HINTS: Partial<Record<ExtractorMode, string>> = {
   follow_url:
     '两阶段：先用 transit 子规则抓中转 URL → 请求该 URL → 用 extract 子规则在响应上抓最终值。适用于下载地址藏在中转页的场景',
+  script:
+    'JS 沙箱（rquickjs）求值：(function(ctx){ ... })，注入 ctx.value/fields/url/fetch。仅 detail_page 作用域；超时 100ms；禁用 Function/eval/process/setTimeout。常用于 6 模式无法覆盖的复杂解析（如 jQuery $.get 注入 URL、JSON.parse 嵌套字段）',
 }
 
 const POST_PROCESSOR_OPS: PostProcessorOp[] = [
@@ -135,12 +141,17 @@ const POST_PROCESSOR_OP_LABELS: Record<PostProcessorOp, string> = {
   dedupe: '去重',
 }
 
-/** CSS 模式 attr 常用值（提取内容） */
+/** CSS 模式 attr 常用值（提取内容）。
+ *  AutoComplete 允许输入任意属性名（如懒加载图片常用的 data-src / data-original），
+ *  这里只列出常见项作为快捷建议，不在列表中的值也可手动输入后回车保存。 */
 const ATTR_OPTIONS = [
   { value: 'text', label: 'text — 纯文本（去掉 HTML 标签）' },
   { value: 'html', label: 'html — 含标签的 HTML 片段' },
   { value: 'href', label: 'href — 链接 URL（<a> 标签）' },
   { value: 'src', label: 'src — 图片/资源 URL（<img>/<script>）' },
+  { value: 'data-src', label: 'data-src — 懒加载图片 URL（常见于 lazyload）' },
+  { value: 'data-original', label: 'data-original — jQuery.lazyload 原图 URL' },
+  { value: 'data-lazy-src', label: 'data-lazy-src — WP Rocket / a3 lazy load' },
   { value: 'title', label: 'title — title 属性' },
   { value: 'content', label: 'content — content 属性' },
 ]
@@ -161,6 +172,8 @@ export interface FieldNodeEditorProps {
   initial?: FieldNodeSpec | null
   /** 新建模式下的预填配置（来自 SourceViewer「创建为字段」快捷按钮） */
   creationPreset?: Omit<QuickFieldPreset, 'scope'> | null
+  /** [US2] 当前作用域已存在的兄弟字段名（供 ScriptRuleEditor 提示 ctx.fields.<name>） */
+  siblingFieldNames?: string[]
   onSaved: () => void
   onCancel: () => void
 }
@@ -192,6 +205,15 @@ function defaultRule(mode: ExtractorMode): FieldRule {
           extract: { mode: 'css', spec: { selector: '', attr: 'href' } },
         },
       }
+    case 'script':
+      // [feature 046] JS 沙箱默认模板：直接返回原值（提示用户改造）
+      return {
+        mode: 'script',
+        spec: {
+          body: '// ctx.value: 6 模式提取的原始值（未匹配时为空串）\n// ctx.fields: 同作用域兄弟字段（US2）\n// ctx.url: 当前详情页 URL\nreturn ctx.value\n',
+          api_version: 'v1',
+        },
+      }
   }
 }
 
@@ -206,6 +228,7 @@ export default function FieldNodeEditor({
   proxy,
   initial,
   creationPreset,
+  siblingFieldNames,
   onSaved,
   onCancel,
 }: FieldNodeEditorProps) {
@@ -218,6 +241,7 @@ export default function FieldNodeEditor({
   const [postProcessors, setPostProcessors] = useState<PostProcessor[]>([])
   const [scriptIndex, setScriptIndex] = useState<number | null>(null)
   const [isActive, setIsActive] = useState(true)
+  const [refreshOnRead, setRefreshOnRead] = useState(false)
   const [probeUrl, setProbeUrl] = useState(initialUrl)
   const [probing, setProbing] = useState(false)
   const [probeResult, setProbeResult] = useState<ProbeResponse | null>(null)
@@ -332,6 +356,7 @@ export default function FieldNodeEditor({
       setPostProcessors(initial.post_processors ?? [])
       setScriptIndex(initial.script_index ?? null)
       setIsActive(initial.is_active ?? true)
+      setRefreshOnRead(initial.refresh_on_read ?? false)
     } else if (creationPreset) {
       // 新建模式 + 行内快捷创建：应用预填配置（让用户看到「为什么这么填」）
       setName(creationPreset.suggested_name ?? '')
@@ -342,6 +367,7 @@ export default function FieldNodeEditor({
       setPostProcessors([])
       setScriptIndex(creationPreset.script_index ?? null)
       setIsActive(true)
+      setRefreshOnRead(false)
     } else {
       setName('')
       setFieldType('string')
@@ -351,6 +377,7 @@ export default function FieldNodeEditor({
       setPostProcessors([])
       setScriptIndex(null)
       setIsActive(true)
+      setRefreshOnRead(false)
     }
     setProbeUrl(initialUrl)
     setProbeResult(null)
@@ -373,6 +400,8 @@ export default function FieldNodeEditor({
       header_field: 'header',
       // follow_url 的 source_layer 仅影响 UI 显示，真正起作用的是 rule.transit_layer
       follow_url: null,
+      // [feature 046] script 模式不依赖 source_layer（沙箱求值），保持 null
+      script: null,
     }
     const target = impliedLayer[extractorMode]
     if (target && sourceLayer !== target) {
@@ -441,6 +470,8 @@ export default function FieldNodeEditor({
       post_processors: postProcessors,
       script_index: scriptIndex,
       is_active: isActive,
+      // [feature 046] 仅 script 模式发送 refresh_on_read（其他模式后端会拒绝 true）
+      refresh_on_read: extractorMode === 'script' ? refreshOnRead : false,
     }
     try {
       if (isEdit && initial?.id) {
@@ -678,12 +709,33 @@ export default function FieldNodeEditor({
               </Form.Item>
             )}
 
-            <RuleEditor rule={rule} onChange={setRule} />
+            <RuleEditor
+              rule={rule}
+              onChange={setRule}
+              siblingFieldNames={(siblingFieldNames ?? []).filter((n) => n !== name)}
+            />
 
             <PostProcessorsEditor value={postProcessors} onChange={setPostProcessors} />
 
             <Form.Item label="启用">
               <Switch checked={isActive} onChange={(v) => setIsActive(v)} />
+            </Form.Item>
+
+            {/* [feature 046] refresh_on_read 仅在 script 模式下启用 */}
+            <Form.Item
+              label="按需刷新"
+              tooltip="仅 script 模式可用。开启后：消费性读取（推送/资源提取）命中此字段时按需重跑脚本；管理性读取（列表/详情/字段命中率面板）始终直接读库。适用于时效性数据（如签名 URL、倒计时）"
+            >
+              <Switch
+                checked={refreshOnRead}
+                onChange={setRefreshOnRead}
+                disabled={extractorMode !== 'script'}
+              />
+              {extractorMode !== 'script' && (
+                <Text type="secondary" style={{ marginLeft: 8, fontSize: 11 }}>
+                  （仅 script 模式可开启）
+                </Text>
+              )}
             </Form.Item>
           </Col>
         </Row>
@@ -694,7 +746,15 @@ export default function FieldNodeEditor({
 
 // ===================== Rule Editor =====================
 
-function RuleEditor({ rule, onChange }: { rule: FieldRule; onChange: (r: FieldRule) => void }) {
+function RuleEditor({
+  rule,
+  onChange,
+  siblingFieldNames,
+}: {
+  rule: FieldRule
+  onChange: (r: FieldRule) => void
+  siblingFieldNames?: string[]
+}) {
   switch (rule.mode) {
     case 'css':
       return (
@@ -713,19 +773,21 @@ function RuleEditor({ rule, onChange }: { rule: FieldRule; onChange: (r: FieldRu
           </Form.Item>
           <Form.Item
             label="提取内容（attr）"
-            tooltip="从每个命中的元素里取什么：text=纯文本｜html=含标签｜href=链接URL｜src=图片URL｜或任意 HTML 属性名"
-            help="取链接填 href，取文字填 text，取图片填 src；下拉可搜索，选中后重新点开仍显示全部选项"
+            tooltip="从每个命中的元素里取什么：text=纯文本｜html=含标签｜href=链接URL｜src=图片URL｜或任意 HTML 属性名（如懒加载图片常用的 data-src）"
+            help="取链接填 href，取文字填 text，取图片填 src；下拉可搜索或直接输入任意属性名（data-src 等）后回车保存"
           >
-            <Select
-              showSearch
+            <AutoComplete
               value={rule.spec.attr}
               onChange={(val) =>
                 onChange({ ...rule, spec: { ...rule.spec, attr: val } })
               }
               options={ATTR_OPTIONS}
-              optionFilterProp="label"
-              placeholder="如 href（取链接）/ text（取文字）/ src（取图片）"
+              filterOption={(input, option) =>
+                (option?.value ?? '').toLowerCase().includes(input.toLowerCase())
+              }
+              placeholder="如 href（取链接）/ text（取文字）/ src 或 data-src（取图片）"
               style={{ width: '100%' }}
+              allowClear
             />
           </Form.Item>
         </>
@@ -862,6 +924,14 @@ function RuleEditor({ rule, onChange }: { rule: FieldRule; onChange: (r: FieldRu
       )
     case 'follow_url':
       return <FollowUrlRuleEditor value={rule} onChange={onChange} />
+    case 'script':
+      return (
+        <ScriptRuleEditor
+          value={rule}
+          onChange={onChange}
+          siblingFieldNames={siblingFieldNames ?? []}
+        />
+      )
   }
 }
 
@@ -900,7 +970,170 @@ function isRuleValid(rule: FieldRule): boolean {
       return rule.spec.header_name.trim().length > 0
     case 'follow_url':
       return isSubRuleValid(rule.spec.transit) && isSubRuleValid(rule.spec.extract)
+    case 'script':
+      // [feature 046] body 非空 + 长度 ≤ 64KB（与后端 max_body_size 对齐）
+      return rule.spec.body.trim().length > 0 && rule.spec.body.length <= 65536
   }
+}
+
+// ===================== Script Rule Editor (feature 046) =====================
+
+/** [feature 046] JS 沙箱脚本编辑器：textarea + 入参签名提示 */
+function ScriptRuleEditor({
+  value,
+  onChange,
+  siblingFieldNames = [],
+}: {
+  value: ScriptRule
+  onChange: (r: ScriptRule) => void
+  /** [US2] 当前作用域已存在的兄弟字段名（点击插入到 body 末尾） */
+  siblingFieldNames?: string[]
+}) {
+  const body = value.spec.body
+  const oversized = body.length > 65536
+  // [T057 FR-004] dry-run 语法检查结果
+  const [dryRun, setDryRun] = useState<
+    | { status: 'ok' | 'error'; message: string; line?: number; column?: number }
+    | null
+  >(null)
+  const [dryRunLoading, setDryRunLoading] = useState(false)
+
+  const appendSnippet = (snippet: string) => {
+    onChange({ ...value, spec: { ...value.spec, body: body + snippet } })
+  }
+
+  // [T057] 前端语法 dry-run：用浏览器 `new Function('ctx', body)` 构造一次
+  // 不真正执行，只验证语法可解析（与后端 rquickjs ES2020 子集语义不完全一致，
+  // 但能捕获大部分 SyntaxError，作为保存前的早期反馈）
+  const runDryRun = () => {
+    if (!body.trim()) {
+      setDryRun({ status: 'error', message: 'body 不能为空' })
+      return
+    }
+    setDryRunLoading(true)
+    // setTimeout 0 让按钮 loading 状态先渲染
+    setTimeout(() => {
+      try {
+        // eslint-disable-next-line no-new-func
+        new Function('ctx', body)
+        setDryRun({ status: 'ok', message: '语法检查通过（注意：实际语义以后端 rquickjs 求值为准）' })
+      } catch (e: any) {
+        // SyntaxError 通常含行号/列号信息（V8 格式：<msg> (<function>:<line>:<col>)）
+        const msg = e?.message ?? String(e)
+        const stack = e?.stack ?? ''
+        const m = stack.match(/<anonymous>:(\d+):(\d+)/)
+        setDryRun({
+          status: 'error',
+          message: msg,
+          line: m ? Number(m[1]) : undefined,
+          column: m ? Number(m[2]) : undefined,
+        })
+      } finally {
+        setDryRunLoading(false)
+      }
+    }, 0)
+  }
+
+  return (
+    <>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message="JS 沙箱（rquickjs）求值"
+        description={
+          <div style={{ fontSize: 12 }}>
+            <div>
+              脚本被包裹为 <Text code>(function(ctx)&#123; ... &#125;)</Text> 求值。必须{' '}
+              <Text code>return</Text> 字符串/数字/布尔，否则视为 TypeError。
+            </div>
+            <div style={{ marginTop: 4 }}>
+              <Text code>ctx.value</Text> 6 模式提取的原始值（未匹配时为空串） ·{' '}
+              <Text code>ctx.fields.{'<name>'}</Text> 同作用域兄弟字段 ·{' '}
+              <Text code>ctx.url</Text> 当前详情页 URL
+            </div>
+            <div style={{ marginTop: 4 }}>
+              限制：≤64KB · 100ms 超时 · 内存 16MB · 禁用 Function/eval/process/setTimeout ·
+              NetworkError 在 ctx.fetch（US3）场景下触发
+            </div>
+            {siblingFieldNames.length > 0 && (
+              <div style={{ marginTop: 6 }}>
+                <Text type="secondary">当前作用域可用的兄弟字段（点击插入）：</Text>{' '}
+                <Space size={4} wrap>
+                  {siblingFieldNames.map((n) => (
+                    <Tag
+                      key={n}
+                      color="blue"
+                      style={{ cursor: 'pointer', marginInlineEnd: 0 }}
+                      onClick={() => appendSnippet(`ctx.fields.${n}`)}
+                    >
+                      ctx.fields.{n}
+                    </Tag>
+                  ))}
+                </Space>
+                <div style={{ marginTop: 4 }}>
+                  <Text type="warning" style={{ fontSize: 11 }}>
+                    注意：「验证规则」按钮只跑当前字段，ctx.fields 在验证时为空对象 —
+                    若脚本依赖兄弟字段（如 return ctx.fields.X），验证会返回 type_error；
+                    请改用任务「test_run」端到端验证，或加 `|| ctx.value` 兜底。
+                  </Text>
+                </div>
+              </div>
+            )}
+          </div>
+        }
+      />
+      <Form.Item
+        label="脚本函数体（body）"
+        validateStatus={oversized ? 'error' : undefined}
+        help={oversized ? `body 长度 ${body.length} 超过 64KB 上限` : `${body.length} / 65536 字节`}
+      >
+        <Input.TextArea
+          value={body}
+          onChange={(e) => {
+            onChange({ ...value, spec: { ...value.spec, body: e.target.value } })
+            if (dryRun) setDryRun(null) // 编辑后清空 dry-run 结果
+          }}
+          autoSize={{ minRows: 8, maxRows: 24 }}
+          style={{ fontFamily: 'monospace', fontSize: 12 }}
+          placeholder="// 例：return ctx.value.toUpperCase()&#10;// 或解析兄弟字段：return ctx.fields.pan_type === 'quark' ? ctx.value + '#quark' : ctx.value"
+        />
+      </Form.Item>
+      <Space direction="vertical" size={4} style={{ width: '100%', marginBottom: 12 }}>
+        <Space>
+          <Button
+            size="small"
+            icon={<SafetyCertificateOutlined />}
+            loading={dryRunLoading}
+            onClick={runDryRun}
+            disabled={oversized}
+          >
+            语法 dry-run（前端）
+          </Button>
+          <Text type="secondary" style={{ fontSize: 11 }}>
+            保存前用浏览器 V8 引擎快速验证语法（与后端 rquickjs ES2020 子集略有差异）
+          </Text>
+        </Space>
+        {dryRun && (
+          <Alert
+            type={dryRun.status === 'ok' ? 'success' : 'error'}
+            showIcon
+            style={{ padding: '4px 12px', fontSize: 12 }}
+            message={
+              <span>
+                {dryRun.line != null && dryRun.column != null && (
+                  <Text type="secondary" style={{ fontSize: 11 }}>
+                    行 {dryRun.line - 1}（body 内）:{dryRun.column} —{' '}
+                  </Text>
+                )}
+                {dryRun.message}
+              </span>
+            }
+          />
+        )}
+      </Space>
+    </>
+  )
 }
 
 // ===================== PostProcessors Editor =====================

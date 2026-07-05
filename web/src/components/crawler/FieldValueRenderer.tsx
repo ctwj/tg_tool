@@ -5,11 +5,15 @@
  * 选择合适的渲染策略：string/url/image/number/datetime/link_card/custom。
  *
  * 未命中字段显示"未命中"灰标（FR-027 / SC-004 字段保真）。
+ *
+ * [feature 046 US4] 若某字段在 fieldTree 中 extractor_mode='script' + refresh_on_read=true，
+ * 显示「刷新」按钮（仅当传入 onRefresh 回调时）。
  */
 
 import { useMemo } from 'react'
-import { Tag, Typography, Image, Space, Empty } from 'antd'
+import { Tag, Typography, Image, Space, Empty, Button, Tooltip } from 'antd'
 import LinkIcon from '@ant-design/icons/LinkOutlined'
+import ReloadIcon from '@ant-design/icons/ReloadOutlined'
 import {
   FieldNode,
   FieldTree,
@@ -28,6 +32,12 @@ interface FieldValueRendererProps {
   onlyPaths?: string[]
   /** 空数据时显示 */
   emptyHint?: string
+  /** [feature 046] 字段刷新回调（仅 script + refresh_on_read=true 字段显示按钮） */
+  onRefresh?: (fieldPath: string, fieldName: string) => Promise<void>
+  /** [feature 046] 正在刷新的 field_path 集合（用于显示 loading） */
+  refreshingPaths?: Set<string>
+  /** [feature 046] 文章 ID（用于刷新按钮 tooltip） */
+  articleId?: number
 }
 
 /** 命中类型 */
@@ -41,6 +51,24 @@ function lookupFieldType(fieldTree: FieldTree | null | undefined, path: string):
   // 第 0 段是 scope
   const roots = segments[0] === 'detail_page' ? fieldTree.detail_page : fieldTree.list_page
   return walk(roots, segments.slice(1))
+}
+
+/** [feature 046] 按 field_path 查找完整 spec（含 extractor_mode/refresh_on_read） */
+function lookupFieldSpec(fieldTree: FieldTree | null | undefined, path: string): FieldNode['spec'] | undefined {
+  if (!fieldTree) return undefined
+  const segments = path.split('/').filter(Boolean)
+  if (segments.length === 0) return undefined
+  const roots = segments[0] === 'detail_page' ? fieldTree.detail_page : fieldTree.list_page
+  return walkSpec(roots, segments.slice(1))
+}
+
+function walkSpec(nodes: FieldNode[], segments: string[]): FieldNode['spec'] | undefined {
+  if (segments.length === 0) return undefined
+  const head = segments[0]
+  const found = nodes.find((n) => n.spec?.name === head)
+  if (!found) return undefined
+  if (segments.length === 1) return found.spec
+  return walkSpec(found.children, segments.slice(1))
 }
 
 function walk(nodes: FieldNode[], segments: string[]): FieldType | undefined {
@@ -134,10 +162,20 @@ function renderFieldGroup(
   hits: ArticleFieldValue[],
   missed: number,
   fieldTree: FieldTree | null | undefined,
+  onRefresh?: (fieldPath: string, fieldName: string) => Promise<void>,
+  refreshingPaths?: Set<string>,
 ): React.ReactNode {
   const fieldType = lookupFieldType(fieldTree, path)
   // 用 display_name 或 path 最后一段作为标题
   const label = path.split('/').filter(Boolean).slice(-1)[0] ?? path
+
+  // [feature 046 US4] script + refresh_on_read=true 字段才显示刷新按钮
+  const spec = lookupFieldSpec(fieldTree, path)
+  const isRefreshable =
+    !!onRefresh &&
+    spec?.extractor_mode === 'script' &&
+    (spec as any)?.refresh_on_read === true
+  const isRefreshing = refreshingPaths?.has(path) ?? false
 
   return (
     <div
@@ -150,7 +188,7 @@ function renderFieldGroup(
         background: '#fafafa',
       }}
     >
-      <div style={{ marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div style={{ marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <Text strong style={{ fontSize: 13 }}>
           {label}
         </Text>
@@ -162,6 +200,11 @@ function renderFieldGroup(
             {fieldType}
           </Tag>
         )}
+        {spec?.extractor_mode === 'script' && (
+          <Tag color="volcano" style={{ fontSize: 11 }}>
+            script
+          </Tag>
+        )}
         <Tag color={hits.length > 0 ? 'green' : 'default'} style={{ fontSize: 11 }}>
           命中 {hits.length}
         </Tag>
@@ -169,6 +212,19 @@ function renderFieldGroup(
           <Tag color="default" style={{ fontSize: 11 }}>
             未命中 {missed}
           </Tag>
+        )}
+        {isRefreshable && (
+          <Tooltip title="重跑脚本（force_refresh）— 失败时保留旧值">
+            <Button
+              size="small"
+              type="text"
+              icon={<ReloadIcon spin={isRefreshing} />}
+              loading={isRefreshing}
+              onClick={() => onRefresh!(path, label)}
+            >
+              刷新
+            </Button>
+          </Tooltip>
         )}
       </div>
       {hits.length === 0 ? (
@@ -198,6 +254,8 @@ export default function FieldValueRenderer({
   fieldTree,
   onlyPaths,
   emptyHint = '暂无字段数据',
+  onRefresh,
+  refreshingPaths,
 }: FieldValueRendererProps) {
   const groups = useMemo(() => {
     // 按 field_path 分组（保持插入顺序）
@@ -226,7 +284,7 @@ export default function FieldValueRenderer({
   return (
     <div>
       {groups.map(([path, { hits, missed }]) =>
-        renderFieldGroup(path, hits, missed, fieldTree ?? null),
+        renderFieldGroup(path, hits, missed, fieldTree ?? null, onRefresh, refreshingPaths),
       )}
     </div>
   )

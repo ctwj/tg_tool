@@ -69,9 +69,20 @@ export default function CrawlerFieldConfigurator() {
         if (res.success && res.data) {
           setTask(res.data)
           if (!initialUrl) {
-            // 任务 list_urls 第一个作为默认 URL
+            // 与后端 engine.rs pure_template 逻辑对齐：
+            // 优先 list_urls[0]（含混合模式）；纯模板模式（list_urls 空 + page_url_template 含 {page}）
+            // 用模板第一页（page_start 替换 {page}），与引擎种子保持一致
             const firstUrl = parseListUrls(res.data.list_urls)[0]
-            if (firstUrl) setUrlInput(firstUrl)
+            if (firstUrl) {
+              setUrlInput(firstUrl)
+            } else {
+              const tpl = res.data.page_url_template?.trim() ?? ''
+              // 占位符恰好 1 个才生效（与后端 build_template_url 校验一致）
+              if (tpl && tpl.split('{page}').length - 1 === 1) {
+                const start = Math.max(1, res.data.page_start ?? 1)
+                setUrlInput(tpl.replace('{page}', String(start)))
+              }
+            }
           }
         } else {
           setTaskError(res.message ?? '任务加载失败')

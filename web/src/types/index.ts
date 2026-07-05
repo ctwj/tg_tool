@@ -605,7 +605,7 @@ export type FieldScope = 'list_page' | 'detail_page'
 /** 源码 tab 一致的来源层 */
 export type SourceLayer = 'html' | 'header' | 'script' | 'meta' | 'url'
 
-/** 匹配模式：7 种（6 同步 + follow_url 异步两阶段） */
+/** 匹配模式：8 种（6 同步 + follow_url 异步两阶段 + script JS 沙箱 [feature 046]） */
 export type ExtractorMode =
   | 'css'
   | 'regex'
@@ -614,6 +614,7 @@ export type ExtractorMode =
   | 'meta_attr'
   | 'header_field'
   | 'follow_url'
+  | 'script'
 
 /** 字段类型 */
 export type FieldType =
@@ -669,6 +670,17 @@ export interface HeaderFieldRule {
   spec: { header_name: string }
 }
 
+/** [feature 046] JS 沙箱脚本提取器：在 rquickjs 中求值，注入 ctx.value/fields/url/fetch */
+export interface ScriptRule {
+  mode: 'script'
+  spec: {
+    /** JS 函数体（被包裹为 `(function(ctx) { ${body} })` 求值），≤64KB */
+    body: string
+    /** API 版本，目前固定 'v1' */
+    api_version?: string
+  }
+}
+
 /** 字段规则（避免与 042 转发 Rule 冲突，重命名为 FieldRule） */
 export type FieldRule =
   | CssRule
@@ -678,6 +690,7 @@ export type FieldRule =
   | MetaAttrRule
   | HeaderFieldRule
   | FollowUrlRule
+  | ScriptRule
 
 /**
  * 6 种同步模式的子规则 —— 用于 FollowUrlRule.transit/extract 子规则。
@@ -739,6 +752,8 @@ export interface FieldNodeSpec {
   script_index?: number | null
   sort_order?: number
   is_active?: boolean
+  /** [feature 046] 仅 extractor_mode='script' 时允许 true：消费性读取时按需重跑脚本（FR-019） */
+  refresh_on_read?: boolean
 }
 
 /**
@@ -921,6 +936,8 @@ export interface CreateFieldNodeBody {
   sort_order?: number
   is_active?: boolean
   field_type?: FieldType
+  /** [feature 046] 仅 extractor_mode='script' 时允许 true */
+  refresh_on_read?: boolean
 }
 
 export interface ReorderFieldNodesBody {
