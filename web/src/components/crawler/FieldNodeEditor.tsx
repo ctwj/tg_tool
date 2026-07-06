@@ -620,13 +620,16 @@ export default function FieldNodeEditor({
                     )
                   }
                 >
-                  <Select
-                    showSearch
-                    value={name || undefined}
-                    onChange={(val: string) => handleNamePick(val)}
+                  <AutoComplete
+                    value={name}
                     options={nameOptions}
-                    optionFilterProp="label"
-                    placeholder="搜索字段中文名或英文 key"
+                    onChange={(val: string) => handleNamePick(val)}
+                    filterOption={(input, option) =>
+                      String(option?.label ?? '')
+                        .toLowerCase()
+                        .includes(input.toLowerCase())
+                    }
+                    placeholder="搜索字段中文名或英文 key，可自定义"
                     allowClear
                     style={{ width: '100%' }}
                   />

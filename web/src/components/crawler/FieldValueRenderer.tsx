@@ -169,12 +169,9 @@ function renderFieldGroup(
   // 用 display_name 或 path 最后一段作为标题
   const label = path.split('/').filter(Boolean).slice(-1)[0] ?? path
 
-  // [feature 046 US4] script + refresh_on_read=true 字段才显示刷新按钮
+  // [feature 046 US4] 所有 script 字段都可手动刷新（与 refresh_on_read 自动刷新解耦）
   const spec = lookupFieldSpec(fieldTree, path)
-  const isRefreshable =
-    !!onRefresh &&
-    spec?.extractor_mode === 'script' &&
-    (spec as any)?.refresh_on_read === true
+  const isRefreshable = !!onRefresh && spec?.extractor_mode === 'script'
   const isRefreshing = refreshingPaths?.has(path) ?? false
 
   return (

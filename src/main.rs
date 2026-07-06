@@ -907,6 +907,15 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::info!("SQLite migration 038 applied (crawler_field_library id metadata +1)");
                 }
             }
+            // Migration 039: crawler_field_library 增量插入 pkg_name/md5/image 字段（feature 046 后续：安装包元信息）
+            {
+                let m39 = include_str!("../migrations/039_crawler_field_library_pkg_md5_image_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m39).execute(pool).await {
+                    tracing::warn!("SQLite migration 039 failed (ignored): {e}");
+                } else {
+                    tracing::info!("SQLite migration 039 applied (crawler_field_library pkg_name/md5/image +3)");
+                }
+            }
             // 043：种子化 crawler_field_library（若表为空则用应用层 BUILTIN_PRESETS 补种）
             {
                 if let Err(e) = tgTool::services::crawler::preset_library::seed_if_empty_sqlite(pool).await {
@@ -1407,6 +1416,15 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::warn!("PostgreSQL migration 038 failed (ignored): {e}");
                 } else {
                     tracing::info!("PostgreSQL migration 038 applied (crawler_field_library id metadata +1)");
+                }
+            }
+            // Migration 039: crawler_field_library 增量插入 pkg_name/md5/image 字段（feature 046 后续：安装包元信息）
+            {
+                let m39 = include_str!("../migrations/039_crawler_field_library_pkg_md5_image_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m39).execute(pool).await {
+                    tracing::warn!("PostgreSQL migration 039 failed (ignored): {e}");
+                } else {
+                    tracing::info!("PostgreSQL migration 039 applied (crawler_field_library pkg_name/md5/image +3)");
                 }
             }
             // 043：种子化 crawler_field_library

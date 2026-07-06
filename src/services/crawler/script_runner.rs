@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use rquickjs::{Ctx, Function, Object};
+use rquickjs::prelude::Opt;
 
 use crate::services::crawler::field_schema::ScriptRule;
 use crate::services::crawler::script_engine::{
@@ -32,10 +33,10 @@ use crate::services::crawler::script_engine::{
 };
 use crate::services::crawler::script_fetch::{self, FetchError, FetchOpts};
 
-/// 脚本求值选项（由调用方根据 AppState.option_cache 构造）
+/// 脚本求值选项（当前使用 Default 默认值；如需按场景定制，调用方可自行构造）
 #[derive(Debug, Clone)]
 pub struct ScriptOpts {
-    /// 单脚本求值墙钟超时（ms），默认 100
+    /// 单脚本求值墙钟超时（ms），默认 30000（30 秒，覆盖 ctx.fetch 外网请求场景）
     pub timeout_ms: u64,
     /// ctx.fetch 单次响应大小上限（字节），默认 1 MB
     pub max_response_bytes: usize,
@@ -46,7 +47,7 @@ pub struct ScriptOpts {
 impl Default for ScriptOpts {
     fn default() -> Self {
         Self {
-            timeout_ms: 100,
+            timeout_ms: 30_000,
             max_response_bytes: 1_048_576, // 1 MB
             max_body_size: 65_536,         // 64 KB
         }
@@ -99,11 +100,13 @@ struct CtxInjectorData {
     fetch_context: Option<Arc<FetchContext>>,
 }
 
-/// [US3] ctx.fetch 注入所需上下文（tokio handle + reqwest client + 大小上限）
+/// [US3] ctx.fetch 注入所需上下文（tokio handle + reqwest client + 大小上限 + Referer）
 struct FetchContext {
     handle: tokio::runtime::Handle,
     client: reqwest::Client,
     max_response_bytes: usize,
+    /// 自动注入的 Referer 头（取自当前详情页 ctx.url），None 时不带
+    referer: Option<String>,
 }
 
 impl CtxInjectorData {
@@ -151,10 +154,33 @@ impl CtxInjectorData {
         // [US3] 注入 ctx.fetch（同步阻塞语义：成功返回 body_text，失败返回空串 + 日志）
         // rquickjs Function 闭包不支持 Result Err 抛 JS Exception（Error: From<FetchError> 不实现），
         // 失败时返回空串并通过 tracing::warn 记录；脚本侧可检查空串并 fallback。
+        //
+        // ctx.fetch(url)                  —— 默认 Referer = ctx.url
+        // ctx.fetch(url, { headers:{...}, method, body, timeout_ms })  —— 脚本可覆盖/追加请求头
         if let Some(fc) = &self.fetch_context {
             let fc = fc.clone();
-            let fetch_fn = Function::new(ctx.clone(), move |url: String| -> String {
-                fetch_sync(&fc, &url)
+            let fetch_fn = Function::new(ctx.clone(), move |url: String, call_opts: Opt<Object>| -> String {
+                let mut opts = FetchOpts::default();
+                if let Some(obj) = call_opts.0 {
+                    // headers: { key: value } plain object
+                    if let Ok(headers_obj) = obj.get::<_, Object>("headers") {
+                        for (k, v) in headers_obj.props::<String, String>().filter_map(Result::ok) {
+                            opts.headers.push((k, v));
+                        }
+                    }
+                    if let Ok(m) = obj.get::<_, String>("method")
+                        && !m.is_empty()
+                    {
+                        opts.method = Some(m);
+                    }
+                    if let Ok(b) = obj.get::<_, String>("body") {
+                        opts.body = Some(b);
+                    }
+                    if let Ok(t) = obj.get::<_, u64>("timeout_ms") {
+                        opts.timeout_ms = Some(t);
+                    }
+                }
+                fetch_sync(&fc, &url, opts)
             })
             .map_err(|e| {
                 ScriptError::new(
@@ -177,17 +203,37 @@ impl CtxInjectorData {
 /// [US3] 同步阻塞调用 fetch_impl：在 spawn_blocking 线程内通过 handle.block_on 等待 async 完成。
 ///
 /// 成功返回 body_text 字符串；失败返回空串 + tracing::warn 日志（含 category）。
-fn fetch_sync(fc: &FetchContext, url: &str) -> String {
+///
+/// 默认行为：脚本未在 `opts.headers` 显式提供 Referer 时，自动注入 `fc.referer`（ctx.url）。
+fn fetch_sync(fc: &FetchContext, url: &str, mut opts: FetchOpts) -> String {
+    let has_referer = opts
+        .headers
+        .iter()
+        .any(|(k, _)| k.eq_ignore_ascii_case("referer"));
+    if !has_referer
+        && let Some(r) = &fc.referer
+    {
+        opts.headers.push(("Referer".to_string(), r.clone()));
+    }
     let handle = fc.handle.clone();
     let client = fc.client.clone();
     let max_bytes = fc.max_response_bytes;
     let url_s = url.to_string();
     let result = handle.block_on(async move {
-        let opts = FetchOpts::default();
         script_fetch::fetch_impl(&url_s, &opts, &client, max_bytes).await
     });
     match result {
-        Ok(r) => r.body_text,
+        Ok(r) => {
+            if r.body_text.is_empty() {
+                tracing::warn!(
+                    target: "crawler",
+                    "ctx.fetch 返回空 body: status={} url={}",
+                    r.status,
+                    url
+                );
+            }
+            r.body_text
+        }
         Err(e) => {
             let category = match &e {
                 FetchError::InvalidScheme(_) | FetchError::InvalidUrl(_) => "invalid_url",
@@ -240,6 +286,8 @@ pub async fn run_script(
                 handle,
                 client: client.clone(),
                 max_response_bytes: opts.max_response_bytes,
+                // 自动把当前页 URL 作为 Referer 注入到 ctx.fetch（部分站点反爬依赖此头）
+                referer: Some(url.to_string()),
             }))
         }
         None => None,
@@ -315,7 +363,7 @@ mod tests {
     #[test]
     fn t_script_opts_defaults_match_data_model() {
         let opts = ScriptOpts::default();
-        assert_eq!(opts.timeout_ms, 100);
+        assert_eq!(opts.timeout_ms, 30_000);
         assert_eq!(opts.max_response_bytes, 1_048_576);
         assert_eq!(opts.max_body_size, 65_536);
     }

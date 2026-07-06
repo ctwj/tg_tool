@@ -21,18 +21,19 @@ pub struct PresetField {
     pub sort_order: i32,
 }
 
-/// 45 条预置字段（data-model.md E2 + 资源下载场景扩展 + 游戏/软件/教程场景扩展 + 视频场景扩展 + 站点 ID）
+/// 48 条预置字段（data-model.md E2 + 资源下载场景扩展 + 游戏/软件/教程场景扩展 + 视频场景扩展 + 站点 ID + 安装包元信息）
 ///
-/// 顺序：basic(6) → metadata(7) → classification(5) → interaction(4) → resource(23)
+/// 顺序：basic(6) → metadata(7) → classification(5) → interaction(4) → resource(26)
 /// metadata 7 条 = 原 6 条（author/published_at/updated_at/source_site/canonical_url/copyright）
 ///                + 站点 ID 1 条（id：站点资源 ID，跨页去重用）
-/// resource 23 条 = 原 5 条（download_url/resource_name/file_size/duration/version）
+/// resource 26 条 = 原 5 条（download_url/resource_name/file_size/duration/version）
 ///                 + 游戏/软件/教程扩展 11 条（platform/developer/publisher/release_date/
 ///                   system_requirements/format/license/instructor/lesson_count/
 ///                   course_duration/course_level）
 ///                 + 视频扩展 6 条（video_url/video_cover/video_duration/video_resolution/
 ///                   video_codec/subtitles）
 ///                 + APP 场景 1 条（app_icon）
+///                 + 安装包元信息 3 条（pkg_name 包名 / md5 校验码 / image 图片）
 pub static BUILTIN_PRESETS: &[PresetField] = &[
     // 基础字段
     PresetField {
@@ -447,6 +448,34 @@ pub static BUILTIN_PRESETS: &[PresetField] = &[
         suggested_extractor: "css",
         sort_order: 23,
     },
+    // 资源属性 — 安装包元信息扩展（sort_order 24~26）
+    PresetField {
+        key: "pkg_name",
+        display_name: "包名",
+        field_type: "string",
+        category: "resource",
+        description: "应用包名（Android applicationId / iOS Bundle Identifier，如 com.example.app），用于跨站去重和版本比对",
+        suggested_extractor: "regex",
+        sort_order: 24,
+    },
+    PresetField {
+        key: "md5",
+        display_name: "MD5 校验码",
+        field_type: "string",
+        category: "resource",
+        description: "安装包/资源文件 MD5 校验值（32 位十六进制），用于完整性校验和去重",
+        suggested_extractor: "regex",
+        sort_order: 25,
+    },
+    PresetField {
+        key: "image",
+        display_name: "图片",
+        field_type: "image",
+        category: "resource",
+        description: "通用图片字段 URL（详情页截图、宣传图、二维码等，区别于 cover/app_icon 等专用图片字段）",
+        suggested_extractor: "css",
+        sort_order: 26,
+    },
 ];
 
 /// SQLite 兜底种子化：若 `crawler_field_library` 为空则批量 INSERT OR IGNORE
@@ -522,14 +551,15 @@ mod tests {
     }
 
     #[test]
-    fn t_builtin_presets_count_exactly_45() {
+    fn t_builtin_presets_count_exactly_48() {
         // data-model.md E2 原始 24 条 + 资源场景扩展 2 条（download_url / resource_name）
         // + 游戏/软件/教程场景扩展 11 条（platform/developer/publisher/release_date/
         //   system_requirements/format/license/instructor/lesson_count/course_duration/course_level）
         // + 视频场景扩展 6 条（video_url/video_cover/video_duration/video_resolution/video_codec/subtitles）
         // + APP 场景扩展 1 条（app_icon）
         // + metadata 扩展 1 条（id：站点资源 ID）
-        assert_eq!(BUILTIN_PRESETS.len(), 45);
+        // + 安装包元信息扩展 3 条（pkg_name/md5/image）
+        assert_eq!(BUILTIN_PRESETS.len(), 48);
     }
 
     #[test]
@@ -570,7 +600,7 @@ mod tests {
         let mut resource: Vec<&PresetField> =
             BUILTIN_PRESETS.iter().filter(|p| p.category == "resource").collect();
         resource.sort_by_key(|p| p.sort_order);
-        assert_eq!(resource.len(), 23, "resource 类应有 23 条（原 5 + 游戏/软件/教程 11 + 视频 6 + APP 1）");
+        assert_eq!(resource.len(), 26, "resource 类应有 26 条（原 5 + 游戏/软件/教程 11 + 视频 6 + APP 1 + 安装包元信息 3）");
         assert_eq!(resource[0].key, "download_url");
         assert_eq!(resource[1].key, "resource_name");
         assert_eq!(resource[0].field_type, "url");
@@ -600,6 +630,13 @@ mod tests {
         assert_eq!(resource[21].key, "subtitles");
         // APP 扩展 1 条
         assert_eq!(resource[22].key, "app_icon");
+        // 安装包元信息扩展 3 条
+        assert_eq!(resource[23].key, "pkg_name");
+        assert_eq!(resource[23].field_type, "string");
+        assert_eq!(resource[24].key, "md5");
+        assert_eq!(resource[24].field_type, "string");
+        assert_eq!(resource[25].key, "image");
+        assert_eq!(resource[25].field_type, "image");
     }
 
     #[test]
