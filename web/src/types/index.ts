@@ -871,6 +871,27 @@ export interface ProbeResponse {
   duration_ms: number
 }
 
+// ─── 脚本沙盒试跑（feature 046 增强） ────────────────────────────────────
+export interface ScriptSandboxRequest {
+  article_id: number
+  script_body: string
+  /** 当前编辑的字段名（可选）：用于从兄弟字段中排除自身；新建字段时可省略 */
+  field_name?: string
+}
+
+export interface ScriptSandboxResponse {
+  /** 求值得到的新值（失败时为 null） */
+  value: string | null
+  /** 失败信息（category + message） */
+  error: { category: string; message: string } | null
+  /** DB 内该字段已有值（用于对比；未保存字段或无值时为 null） */
+  current_db_value: string | null
+  /** ctx 快照（debug 用） */
+  ctx: { url: string; fields: Record<string, string> }
+  /** 求值耗时（毫秒） */
+  duration_ms: number
+}
+
 export type ProbeStage = 'fetch' | 'parse' | 'match'
 
 export type ProbeCategory =

@@ -354,6 +354,11 @@ pub fn build_router(state: AppState) -> Router {
             "/crawler/articles/{article_id}/fields/{field_name}/refresh",
             post(handlers::crawler::refresh_article_field),
         )
+        // [feature 046 增强] 脚本字段沙盒试跑（不写库，admin 权限）
+        .route(
+            "/crawler/articles/script-sandbox",
+            post(handlers::crawler::script_sandbox),
+        )
         // Crawler — 历史与统计端点（US3）
         .route("/crawler/histories/stats", get(handlers::crawler::get_history_stats))
         .route(

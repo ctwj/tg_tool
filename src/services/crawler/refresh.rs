@@ -225,7 +225,7 @@ async fn load_article_url_and_task_proxy(
 ) -> Result<(String, Option<String>, Option<String>), RefreshError> {
     let row: Option<(String, Option<String>, Option<String>)> = match db {
         DbPool::Sqlite(pool) => sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
-            "SELECT a.url, t.user_agent, t.proxy \
+            "SELECT a.source_url, t.user_agent, t.proxy \
              FROM crawler_articles a JOIN crawler_tasks t ON a.task_id = t.id \
              WHERE a.id = ?",
         )
@@ -234,7 +234,7 @@ async fn load_article_url_and_task_proxy(
         .await
         .map_err(|e| RefreshError::Database(e.to_string()))?,
         DbPool::Postgres(pool) => sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
-            "SELECT a.url, t.user_agent, t.proxy \
+            "SELECT a.source_url, t.user_agent, t.proxy \
              FROM crawler_articles a JOIN crawler_tasks t ON a.task_id = t.id \
              WHERE a.id = $1",
         )
@@ -404,6 +404,205 @@ pub async fn get_article_field_for_use(
     Ok(RefreshedValue {
         old_value,
         new_value,
+        duration_ms,
+    })
+}
+
+// ============================================================================
+// 沙盒试跑（不写库） — feature 046 增强
+// ============================================================================
+
+/// 沙盒试跑结果（不写库）
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SandboxResult {
+    /// 求值得到的新值（失败时为 None）
+    pub value: Option<String>,
+    /// 失败信息（category + message）
+    pub error: Option<SandboxErrorInfo>,
+    /// 当前 DB 内该字段已有值（按 field_name 在 article_field_values 中查 detail_page 作用域）
+    pub current_db_value: Option<String>,
+    /// ctx 快照（debug 用，让用户看到注入的兄弟字段是否符合预期）
+    pub ctx: SandboxCtx,
+    /// 求值耗时（毫秒）
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SandboxErrorInfo {
+    pub category: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SandboxCtx {
+    pub url: String,
+    /// 兄弟字段（已排除 field_name 自身；script 字段之间不互相暴露，沿用 build_sibling_ctx_fields 语义）
+    pub fields: HashMap<String, String>,
+}
+
+/// 按 (article_id, field_name) 查 detail_page 作用域字段节点 id
+///
+/// 用于沙盒场景从兄弟字段中排除"自身"。未保存字段（行不存在）返回 Ok(None)。
+async fn load_field_node_id_by_name(
+    db: &DbPool,
+    article_id: i64,
+    field_name: &str,
+) -> Result<Option<i64>, RefreshError> {
+    // article → task_id（用现成 helper，省一次 JOIN）
+    let task_id = load_article_task_id(db, article_id).await?;
+    let row: Option<(i64,)> = match db {
+        DbPool::Sqlite(pool) => sqlx::query_as::<_, (i64,)>(
+            "SELECT id FROM crawler_task_field_nodes \
+             WHERE task_id = ? AND name = ? AND scope = 'detail_page'",
+        )
+        .bind(task_id)
+        .bind(field_name)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| RefreshError::Database(e.to_string()))?,
+        DbPool::Postgres(pool) => sqlx::query_as::<_, (i64,)>(
+            "SELECT id FROM crawler_task_field_nodes \
+             WHERE task_id = $1 AND name = $2 AND scope = 'detail_page'",
+        )
+        .bind(task_id)
+        .bind(field_name)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| RefreshError::Database(e.to_string()))?,
+    };
+    Ok(row.map(|(id,)| id))
+}
+
+/// 按 (article_id, field_name) 查当前已存的字段值
+///
+/// 用于沙盒响应里展示新旧对比。失败静默（返回 Ok(None)），不影响主流程。
+async fn load_current_value_by_name(
+    db: &DbPool,
+    article_id: i64,
+    field_name: &str,
+) -> Result<Option<String>, RefreshError> {
+    let value: Option<(Option<String>,)> = match db {
+        DbPool::Sqlite(pool) => sqlx::query_as::<_, (Option<String>,)>(
+            "SELECT v.value_text FROM crawler_article_field_values v \
+             JOIN crawler_task_field_nodes n ON v.field_node_id = n.id \
+             WHERE v.article_id = ? AND n.name = ? AND n.scope = 'detail_page' \
+             AND v.is_hit = 1 ORDER BY v.value_index ASC LIMIT 1",
+        )
+        .bind(article_id)
+        .bind(field_name)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| RefreshError::Database(e.to_string()))?,
+        DbPool::Postgres(pool) => sqlx::query_as::<_, (Option<String>,)>(
+            "SELECT v.value_text FROM crawler_article_field_values v \
+             JOIN crawler_task_field_nodes n ON v.field_node_id = n.id \
+             WHERE v.article_id = $1 AND n.name = $2 AND n.scope = 'detail_page' \
+             AND v.is_hit = true ORDER BY v.value_index ASC LIMIT 1",
+        )
+        .bind(article_id)
+        .bind(field_name)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| RefreshError::Database(e.to_string()))?,
+    };
+    Ok(value.and_then(|(v,)| v))
+}
+
+/// 沙盒试跑入口：用任意脚本 body 在已采集文章上求值，**不写库**。
+///
+/// 与 [`get_article_field_for_use`] 的区别：
+/// - 不读 `crawler_task_field_nodes` 中的 `script body`（用调用方传入的 `script_body`）
+/// - 不调用 `should_refresh` 决策（沙盒永远跑）
+/// - 不 DELETE/INSERT `crawler_article_field_values`（不污染数据）
+/// - 失败也返回 `Ok(SandboxResult)`，错误在 `error` 字段中（业务可观察）
+///
+/// 步骤：
+/// 1. `load_article_task_id` 校验 article 存在
+/// 2. （可选）按 `field_name` 查 `field_node_id`，用于从兄弟字段中排除自身
+/// 3. `load_sibling_values` → ctx_fields
+/// 4. `load_article_url_and_task_proxy` → url + UA + proxy
+/// 5. `engine::build_reqwest_client` 构造 reqwest client（best-effort）
+/// 6. `script_runner::run_script` 求值
+/// 7. （可选）查 DB 当前值用于对比
+pub async fn run_script_sandbox(
+    article_id: i64,
+    field_name: Option<&str>,
+    script_body: &str,
+    db: &DbPool,
+) -> Result<SandboxResult, RefreshError> {
+    let started = std::time::Instant::now();
+
+    // 1. article 存在校验
+    let _task_id = load_article_task_id(db, article_id).await?;
+
+    // 2. 排除自身的 field_node_id（查不到则 -1，表示不排除）
+    let exclude_node_id: i64 = if let Some(name) = field_name {
+        load_field_node_id_by_name(db, article_id, name)
+            .await?
+            .unwrap_or(-1)
+    } else {
+        -1
+    };
+
+    // 3. 兄弟字段
+    let fields = load_sibling_values(db, article_id, exclude_node_id).await?;
+
+    // 4. URL + UA + proxy
+    let (url, ua, proxy) = load_article_url_and_task_proxy(db, article_id).await?;
+
+    // 5. reqwest client（best-effort，失败仅降级 ctx.fetch）
+    let client =
+        crate::services::crawler::engine::build_reqwest_client(ua.as_deref(), proxy.as_deref())
+            .ok();
+
+    // 6. 求值
+    let rule = ScriptRule {
+        body: script_body.to_string(),
+        api_version: "v1".into(),
+    };
+    let opts = ScriptOpts::default();
+    let (value, error) =
+        match script_runner::run_script(&rule, String::new(), fields.clone(), &url, client.as_ref(), &opts)
+            .await
+        {
+            Ok(v) => (Some(v), None),
+            Err(ScriptError {
+                category, message, ..
+            }) => (
+                None,
+                Some(SandboxErrorInfo {
+                    category: category.as_str().to_string(),
+                    message,
+                }),
+            ),
+        };
+
+    // 7. DB 当前值（可选，用于前端展示新旧对比）
+    let current_db_value = if let Some(name) = field_name {
+        load_current_value_by_name(db, article_id, name)
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+
+    let duration_ms = started.elapsed().as_millis() as u64;
+
+    tracing::trace!(
+        target: "crawler",
+        article_id = article_id,
+        field_name = ?field_name,
+        duration_ms = duration_ms,
+        ok = value.is_some(),
+        "script sandbox executed (no DB write)"
+    );
+
+    Ok(SandboxResult {
+        value,
+        error,
+        current_db_value,
+        ctx: SandboxCtx { url, fields },
         duration_ms,
     })
 }

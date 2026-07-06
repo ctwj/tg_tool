@@ -19,6 +19,8 @@ import type {
   ProbeRequest,
   ProbeResponse,
   ReorderFieldNodesBody,
+  ScriptSandboxRequest,
+  ScriptSandboxResponse,
   SourceMaterial,
 } from '../types'
 
@@ -280,6 +282,14 @@ export async function fetchDetailSample(
 /** `POST /api/crawler/tasks/field-probe` — 字段验证探针 */
 export async function runFieldProbe(req: ProbeRequest): Promise<ApiResponse<ProbeResponse>> {
   const res = await apiClient.post('/crawler/tasks/field-probe', req)
+  return res.data
+}
+
+/** `POST /api/crawler/articles/script-sandbox` — 脚本字段沙盒试跑（不写库） */
+export async function runScriptSandbox(
+  req: ScriptSandboxRequest,
+): Promise<ApiResponse<ScriptSandboxResponse>> {
+  const res = await apiClient.post('/crawler/articles/script-sandbox', req)
   return res.data
 }
 

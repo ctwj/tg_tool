@@ -5,6 +5,8 @@ import {
   Button,
   Card,
   Col,
+  Collapse,
+  Descriptions,
   Form,
   Input,
   InputNumber,
@@ -14,14 +16,16 @@ import {
   Select,
   Space,
   Switch,
+  Table,
   Tag,
   Typography,
 } from 'antd'
-import { MinusCircleOutlined, PlusOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
+import { ExperimentOutlined, MinusCircleOutlined, PlusOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
 import * as crawlerApi from '../../api/crawler'
 import FollowUrlRuleEditor from './FollowUrlRuleEditor'
 import type {
   CreateFieldNodeBody,
+  CrawlerArticleListItem,
   ExtractorMode,
   FieldLibraryCategory,
   FieldRule,
@@ -34,6 +38,7 @@ import type {
   ProbeResponse,
   QuickFieldPreset,
   ScriptRule,
+  ScriptSandboxResponse,
   SourceLayer,
   SubRule,
 } from '../../types'
@@ -713,6 +718,8 @@ export default function FieldNodeEditor({
               rule={rule}
               onChange={setRule}
               siblingFieldNames={(siblingFieldNames ?? []).filter((n) => n !== name)}
+              taskId={taskId}
+              currentFieldName={name}
             />
 
             <PostProcessorsEditor value={postProcessors} onChange={setPostProcessors} />
@@ -750,10 +757,14 @@ function RuleEditor({
   rule,
   onChange,
   siblingFieldNames,
+  taskId,
+  currentFieldName,
 }: {
   rule: FieldRule
   onChange: (r: FieldRule) => void
   siblingFieldNames?: string[]
+  taskId: number
+  currentFieldName: string
 }) {
   switch (rule.mode) {
     case 'css':
@@ -930,6 +941,8 @@ function RuleEditor({
           value={rule}
           onChange={onChange}
           siblingFieldNames={siblingFieldNames ?? []}
+          taskId={taskId}
+          currentFieldName={currentFieldName}
         />
       )
   }
@@ -983,11 +996,17 @@ function ScriptRuleEditor({
   value,
   onChange,
   siblingFieldNames = [],
+  taskId,
+  currentFieldName = '',
 }: {
   value: ScriptRule
   onChange: (r: ScriptRule) => void
   /** [US2] 当前作用域已存在的兄弟字段名（点击插入到 body 末尾） */
   siblingFieldNames?: string[]
+  /** 任务 ID（沙盒试跑拉文章用） */
+  taskId: number
+  /** 当前编辑的字段名（编辑现有字段时填；新建时可为空） */
+  currentFieldName?: string
 }) {
   const body = value.spec.body
   const oversized = body.length > 65536
@@ -997,6 +1016,63 @@ function ScriptRuleEditor({
     | null
   >(null)
   const [dryRunLoading, setDryRunLoading] = useState(false)
+
+  // [feature 046 增强] 沙盒试跑状态
+  const [sandboxOpen, setSandboxOpen] = useState(false)
+  const [articleLoading, setArticleLoading] = useState(false)
+  const [articleList, setArticleList] = useState<CrawlerArticleListItem[]>([])
+  const [selectedArticleId, setSelectedArticleId] = useState<number | null>(null)
+  const [sandboxLoading, setSandboxLoading] = useState(false)
+  const [sandboxResult, setSandboxResult] = useState<ScriptSandboxResponse | null>(null)
+
+  const runSandbox = async (articleId: number) => {
+    setSandboxLoading(true)
+    try {
+      const res = await crawlerApi.runScriptSandbox({
+        article_id: articleId,
+        script_body: body,
+        field_name: currentFieldName || undefined,
+      })
+      if (res.success && res.data) {
+        setSandboxResult(res.data)
+      } else {
+        setSandboxResult({
+          value: null,
+          error: { category: 'api_error', message: res.message || '请求失败' },
+          current_db_value: null,
+          ctx: { url: '', fields: {} },
+          duration_ms: 0,
+        })
+      }
+    } catch (e: any) {
+      setSandboxResult({
+        value: null,
+        error: { category: 'network', message: e?.message ?? String(e) },
+        current_db_value: null,
+        ctx: { url: '', fields: {} },
+        duration_ms: 0,
+      })
+    } finally {
+      setSandboxLoading(false)
+    }
+  }
+
+  const openSandbox = async () => {
+    setSandboxOpen(true)
+    setSandboxResult(null)
+    setSelectedArticleId(null)
+    if (articleList.length === 0) {
+      setArticleLoading(true)
+      try {
+        const res = await crawlerApi.listArticles({ task_id: taskId, page: 1, page_size: 20 })
+        if (res.success && res.data) {
+          setArticleList(res.data.list)
+        }
+      } finally {
+        setArticleLoading(false)
+      }
+    }
+  }
 
   const appendSnippet = (snippet: string) => {
     onChange({ ...value, spec: { ...value.spec, body: body + snippet } })
@@ -1074,8 +1150,8 @@ function ScriptRuleEditor({
                 <div style={{ marginTop: 4 }}>
                   <Text type="warning" style={{ fontSize: 11 }}>
                     注意：「验证规则」按钮只跑当前字段，ctx.fields 在验证时为空对象 —
-                    若脚本依赖兄弟字段（如 return ctx.fields.X），验证会返回 type_error；
-                    请改用任务「test_run」端到端验证，或加 `|| ctx.value` 兜底。
+                    若脚本依赖兄弟字段（如 return ctx.fields.X），验证会返回 type_error。
+                    复杂脚本请用「沙盒试跑」在已采集文章上端到端验证。
                   </Text>
                 </div>
               </div>
@@ -1110,8 +1186,18 @@ function ScriptRuleEditor({
           >
             语法 dry-run（前端）
           </Button>
+          <Button
+            size="small"
+            type="primary"
+            ghost
+            icon={<ExperimentOutlined />}
+            onClick={openSandbox}
+            disabled={oversized || !body.trim()}
+          >
+            沙盒试跑（在已采集文章上跑）
+          </Button>
           <Text type="secondary" style={{ fontSize: 11 }}>
-            保存前用浏览器 V8 引擎快速验证语法（与后端 rquickjs ES2020 子集略有差异）
+            前者只验证语法；后者在真实 ctx.fields 下求值，不写库
           </Text>
         </Space>
         {dryRun && (
@@ -1132,6 +1218,163 @@ function ScriptRuleEditor({
           />
         )}
       </Space>
+
+      {/* 沙盒试跑 Modal */}
+      <Modal
+        open={sandboxOpen}
+        title="沙盒试跑（在已采集文章上跑，不写库）"
+        width={1100}
+        onCancel={() => setSandboxOpen(false)}
+        footer={[
+          <Button key="close" onClick={() => setSandboxOpen(false)}>
+            关闭
+          </Button>,
+        ]}
+        destroyOnClose
+      >
+        <Row gutter={16}>
+          <Col span={12}>
+            <Card
+              size="small"
+              title={`选择文章（任务 #${taskId} 已采集，最近 20 条）`}
+              styles={{ body: { padding: 0 } }}
+            >
+              <Table<CrawlerArticleListItem>
+                size="small"
+                rowKey="id"
+                loading={articleLoading}
+                dataSource={articleList}
+                pagination={false}
+                scroll={{ y: 400 }}
+                rowSelection={{
+                  type: 'radio',
+                  selectedRowKeys: selectedArticleId == null ? [] : [selectedArticleId],
+                  onChange: (keys) => {
+                    const id = Number(keys[0])
+                    setSelectedArticleId(id)
+                    runSandbox(id)
+                  },
+                }}
+                onRow={(record) => ({
+                  onClick: () => {
+                    setSelectedArticleId(record.id)
+                    runSandbox(record.id)
+                  },
+                })}
+                columns={[
+                  {
+                    title: '标题',
+                    dataIndex: 'title',
+                    ellipsis: true,
+                    render: (v: string | null, r) => (
+                      <Space direction="vertical" size={0}>
+                        <Text strong style={{ fontSize: 12 }}>
+                          {v || '(无标题)'}
+                        </Text>
+                        <Text type="secondary" style={{ fontSize: 11 }}>
+                          #{r.id} · {r.crawled_at?.slice(0, 19).replace('T', ' ')}
+                        </Text>
+                      </Space>
+                    ),
+                  },
+                ]}
+              />
+            </Card>
+          </Col>
+          <Col span={12}>
+            <Card size="small" title="求值结果">
+              {sandboxLoading ? (
+                <Text type="secondary">求值中...</Text>
+              ) : sandboxResult == null ? (
+                <Text type="secondary">← 选一篇文章以触发求值</Text>
+              ) : (
+                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                  {sandboxResult.error ? (
+                    <Alert
+                      type="error"
+                      showIcon
+                      style={{ padding: '4px 12px' }}
+                      message={
+                        <Text style={{ fontSize: 12 }}>
+                          <Text code>{sandboxResult.error.category}</Text>{' '}
+                          {sandboxResult.error.message}
+                        </Text>
+                      }
+                    />
+                  ) : (
+                    <Alert
+                      type="success"
+                      showIcon
+                      style={{ padding: '4px 12px' }}
+                      message={
+                        <Text style={{ fontSize: 12, wordBreak: 'break-all' }}>
+                          {sandboxResult.value}
+                        </Text>
+                      }
+                    />
+                  )}
+                  <Descriptions
+                    size="small"
+                    column={1}
+                    bordered
+                    labelStyle={{ width: 110, fontSize: 12 }}
+                    contentStyle={{ fontSize: 12, wordBreak: 'break-all' }}
+                    items={[
+                      {
+                        key: 'd',
+                        label: '耗时',
+                        children: `${sandboxResult.duration_ms} ms`,
+                      },
+                      {
+                        key: 'old',
+                        label: 'DB 当前值',
+                        children: sandboxResult.current_db_value ?? '(无)',
+                      },
+                      {
+                        key: 'ctx-url',
+                        label: 'ctx.url',
+                        children: sandboxResult.ctx.url || '(空)',
+                      },
+                    ]}
+                  />
+                  <Collapse
+                    size="small"
+                    items={[
+                      {
+                        key: 'fields',
+                        label: `ctx.fields（${Object.keys(sandboxResult.ctx.fields).length} 个兄弟字段，点击展开）`,
+                        children:
+                          Object.keys(sandboxResult.ctx.fields).length === 0 ? (
+                            <Text type="warning" style={{ fontSize: 12 }}>
+                              空（该文章无已采集的 detail_page 兄弟字段，或字段未跑过任务）
+                            </Text>
+                          ) : (
+                            <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                              {Object.entries(sandboxResult.ctx.fields).map(([k, v]) => (
+                                <Text key={k} style={{ fontSize: 11, wordBreak: 'break-all' }}>
+                                  <Text code>{k}</Text>: {v}
+                                </Text>
+                              ))}
+                            </Space>
+                          ),
+                      },
+                    ]}
+                  />
+                  {selectedArticleId != null && (
+                    <Button
+                      size="small"
+                      loading={sandboxLoading}
+                      onClick={() => runSandbox(selectedArticleId)}
+                    >
+                      重新求值
+                    </Button>
+                  )}
+                </Space>
+              )}
+            </Card>
+          </Col>
+        </Row>
+      </Modal>
     </>
   )
 }

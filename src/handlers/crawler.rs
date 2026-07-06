@@ -3598,6 +3598,49 @@ pub async fn refresh_article_field(
     })))
 }
 
+// ============================================================================
+// [feature 046 增强] 脚本字段沙盒试跑（不写库）
+// ============================================================================
+
+#[derive(Debug, serde::Deserialize)]
+pub struct ScriptSandboxRequest {
+    pub article_id: i64,
+    pub script_body: String,
+    /// 当前编辑的字段名（可选）：用于从兄弟字段中排除自身；新建未保存字段时可省略
+    pub field_name: Option<String>,
+}
+
+/// POST `/api/crawler/articles/script-sandbox`
+///
+/// 用任意脚本 body 在已采集文章上求值，**不写库**。返回值 / ctx 快照 / DB 当前值（如有）。
+/// 鉴权：admin_guard 已保证 role >= 10（与 refresh_article_field 同一 protected 路由组）。
+pub async fn script_sandbox(
+    State(state): State<AppState>,
+    Json(req): Json<ScriptSandboxRequest>,
+) -> Result<Json<Value>, AppError> {
+    use crate::services::crawler::refresh;
+
+    if req.script_body.trim().is_empty() {
+        return Err(AppError::BadRequest("script_body 不能为空".into()));
+    }
+
+    let result = refresh::run_script_sandbox(
+        req.article_id,
+        req.field_name.as_deref(),
+        &req.script_body,
+        &state.db,
+    )
+    .await
+    .map_err(|e| match e {
+        refresh::RefreshError::ArticleNotFound { article_id } => {
+            AppError::NotFound(format!("文章 {article_id} 不存在"))
+        }
+        other => AppError::Internal(other.to_string()),
+    })?;
+
+    Ok(Json(json!({ "success": true, "data": result })))
+}
+
 #[cfg(test)]
 mod field_stats_tests {
     use super::*;
