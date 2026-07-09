@@ -54,7 +54,9 @@ scraper = "0.22"
 serde_json_path = "0.7"
 
 # JS sandbox for crawler script extractor (feature 046 — rquickjs: QuickJS Rust binding)
-rquickjs = { version = "0.7", features = ["bindgen", "loader", "allocator"] }
+# 不启用 `bindgen` feature：它会在构建时用 libclang 实时生成绑定（需安装 LLVM + LIBCLANG_PATH）。
+# 默认走 rquickjs 预生成绑定（prebuilt bindings），功能等价，零外部依赖。
+rquickjs = { version = "0.7", features = ["loader", "allocator"] }
 
 # Captcha
 captcha-rs = "0.5"
