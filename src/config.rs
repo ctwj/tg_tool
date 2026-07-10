@@ -48,6 +48,14 @@ pub struct Config {
     /// 速率限制窗口（秒）
     #[arg(long, default_value = "60", env = "RATE_LIMIT_WINDOW")]
     pub rate_limit_window_secs: u64,
+
+    /// 网盘凭据加密主密钥（base64 编码的 32 字节随机；AES-256-GCM 加解密网盘 Cookie/Token，feature 047）
+    #[arg(long, default_value = "", env = "PAN_CRED_KEY")]
+    pub pan_cred_key: String,
+
+    /// 直链上传本地中转目录（feature 047）
+    #[arg(long, default_value = "./.tmp/pan-staging", env = "PAN_STAGING_DIR")]
+    pub pan_staging_dir: PathBuf,
 }
 
 impl Config {
@@ -108,6 +116,8 @@ mod tests {
             session_secret: "test-secret-0123456789abcdef0123456789".to_string(),
             rate_limit_max: 100,
             rate_limit_window_secs: 60,
+            pan_cred_key: String::new(),
+            pan_staging_dir: PathBuf::from("./.tmp/pan-staging"),
         }
     }
 

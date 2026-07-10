@@ -1,4 +1,7 @@
+pub mod api_keys;
+pub mod api_transfer;
 pub mod auth;
+pub mod pan_config;
 pub mod client;
 pub mod collector;
 pub mod file;
@@ -6,6 +9,8 @@ pub mod image;
 pub mod image_forward;
 pub mod misc;
 pub mod option;
+pub mod pan_account;
+pub mod pan_transfer;
 pub mod push;
 pub mod resource;
 pub mod response;
