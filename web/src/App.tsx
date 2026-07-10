@@ -22,6 +22,8 @@ import CrawlerTasks from './pages/CrawlerTasks'
 import CrawlerResources from './pages/CrawlerResources'
 import CrawlerHistory from './pages/CrawlerHistory'
 import CrawlerFieldConfigurator from './pages/CrawlerFieldConfigurator'
+import PanAccounts from './pages/PanAccounts'
+import TransferTasksPage from './pages/TransferTasksPage'
 import './index.css'
 
 function App() {
@@ -73,6 +75,8 @@ function App() {
             <Route path="crawler/configurator" element={<CrawlerFieldConfigurator />} />
             <Route path="crawler/resources" element={<CrawlerResources />} />
             <Route path="crawler/history" element={<CrawlerHistory />} />
+            <Route path="pan-accounts" element={<PanAccounts />} />
+            <Route path="transfer-tasks" element={<TransferTasksPage />} />
             <Route path="resources" element={<Resources />} />
             <Route path="users" element={<Users />} />
             <Route path="files" element={<Files />} />

@@ -1,5 +1,6 @@
 pub mod client;
 pub mod collector;
+pub mod api_key;
 pub mod collector_history;
 pub mod crawler_article;
 pub mod crawler_article_image;
@@ -16,8 +17,11 @@ pub mod forward_task;
 pub mod link_check_result;
 pub mod message;
 pub mod option;
+pub mod pan_account;
 pub mod push_config;
 pub mod push_history;
 pub mod push_skip_record;
 pub mod rule;
+pub mod share_record;
+pub mod transfer_task;
 pub mod user;
