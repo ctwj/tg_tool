@@ -1,5 +1,6 @@
 use crate::state::AppState;
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use chrono::TimeZone;
 use serde_json::json;
 
 pub async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
@@ -236,6 +237,75 @@ pub async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
         }
     };
 
+    // ── Crawler 子系统状态（feature 042，T047） ─────────────────────────
+    let crawler_sched = state.crawler_scheduler.read().await;
+    let crawler_scheduler_running = crawler_sched.running;
+    let crawler_scan_interval = crawler_sched.scan_interval_secs;
+    drop(crawler_sched);
+
+    let (crawler_active, crawler_auto_blocked, crawler_next_run_at, crawler_pending_uploads): (
+        i64,
+        i64,
+        Option<chrono::NaiveDateTime>,
+        i64,
+    ) = match &state.db {
+        crate::state::DbPool::Sqlite(pool) => {
+            let active: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM crawler_tasks WHERE enabled=1 AND status='active'",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+            let blocked: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM crawler_tasks WHERE status='auto_blocked'",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+            let next_run: Option<chrono::NaiveDateTime> =
+                sqlx::query_scalar("SELECT MIN(next_run_at) FROM crawler_tasks WHERE enabled=1 AND status='active' AND next_run_at IS NOT NULL")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(None);
+            let pending: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM crawler_article_images WHERE status IN ('pending','failed') AND retry_count < 3",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+            (active, blocked, next_run, pending)
+        }
+        crate::state::DbPool::Postgres(pool) => {
+            let active: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM crawler_tasks WHERE enabled=TRUE AND status='active'",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+            let blocked: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM crawler_tasks WHERE status='auto_blocked'",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+            let next_run: Option<chrono::NaiveDateTime> =
+                sqlx::query_scalar("SELECT MIN(next_run_at) FROM crawler_tasks WHERE enabled=TRUE AND status='active' AND next_run_at IS NOT NULL")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(None);
+            let pending: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM crawler_article_images WHERE status IN ('pending','failed') AND retry_count < 3",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+            (active, blocked, next_run, pending)
+        }
+    };
+
+    let crawler_next_run_str = crawler_next_run_at
+        .map(|t| chrono::Local.from_utc_datetime(&t).format("%Y-%m-%d %H:%M:%S").to_string());
+
     let body = Json(json!({
         "success": db_ok,
         "data": {
@@ -270,6 +340,14 @@ pub async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
                 "pending": fwd_pending,
                 "forwarded": fwd_forwarded,
                 "failed": fwd_failed,
+            },
+            "crawler": {
+                "scheduler_running": crawler_scheduler_running,
+                "active_tasks": crawler_active,
+                "auto_blocked_tasks": crawler_auto_blocked,
+                "next_run_at": crawler_next_run_str,
+                "scan_interval_secs": crawler_scan_interval,
+                "pending_uploads": crawler_pending_uploads,
             }
         }
     }));

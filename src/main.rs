@@ -280,6 +280,11 @@ async fn main() {
         }
     }
 
+    // Crawler 子系统启动（feature 042）— 调度器 + 图片上传 worker + 恢复 active 任务排程
+    tgTool::services::crawler::scheduler::recover_active_tasks_schedule(&state).await;
+    tgTool::services::crawler::scheduler::start_scheduler(state.clone()).await;
+    tgTool::services::crawler::image_uploader::start_uploader(state.clone()).await;
+
     // Build router
     let app = tgTool::routes::build_router(state.clone())
         .layer(tgTool::middleware::cors::cors_layer())
@@ -680,6 +685,243 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::debug!("SQLite migration 019 applied (no-op)");
                 }
             }
+            // Migration 020: crawler_tasks（feature 042-web-crawler-collector）
+            {
+                let m20 = include_str!("../migrations/020_crawler_tasks_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m20).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run SQLite migration 020: {e}");
+                    }
+                    tracing::debug!("SQLite migration 020 skipped (already applied)");
+                } else {
+                    tracing::info!("SQLite migration 020 applied (crawler_tasks)");
+                }
+            }
+            // Migration 021: crawler_articles
+            {
+                let m21 = include_str!("../migrations/021_crawler_articles_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m21).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run SQLite migration 021: {e}");
+                    }
+                    tracing::debug!("SQLite migration 021 skipped (already applied)");
+                } else {
+                    tracing::info!("SQLite migration 021 applied (crawler_articles)");
+                }
+            }
+            // Migration 022: crawler_article_links
+            {
+                let m22 = include_str!("../migrations/022_crawler_article_links_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m22).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run SQLite migration 022: {e}");
+                    }
+                    tracing::debug!("SQLite migration 022 skipped (already applied)");
+                } else {
+                    tracing::info!("SQLite migration 022 applied (crawler_article_links)");
+                }
+            }
+            // Migration 023: crawler_article_images
+            {
+                let m23 = include_str!("../migrations/023_crawler_article_images_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m23).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run SQLite migration 023: {e}");
+                    }
+                    tracing::debug!("SQLite migration 023 skipped (already applied)");
+                } else {
+                    tracing::info!("SQLite migration 023 applied (crawler_article_images)");
+                }
+            }
+            // Migration 024: crawler_run_histories
+            {
+                let m24 = include_str!("../migrations/024_crawler_run_histories_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m24).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run SQLite migration 024: {e}");
+                    }
+                    tracing::debug!("SQLite migration 024 skipped (already applied)");
+                } else {
+                    tracing::info!("SQLite migration 024 applied (crawler_run_histories)");
+                }
+            }
+            // Migration 025: crawler_tasks 自动翻页字段
+            {
+                let m25 = include_str!("../migrations/025_crawler_tasks_pagination_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m25).execute(pool).await {
+                    // ALTER TABLE ADD COLUMN 失败时，错误信息含 "duplicate column name"
+                    if !e.to_string().contains("duplicate column name") {
+                        panic!("Failed to run SQLite migration 025: {e}");
+                    }
+                    tracing::debug!("SQLite migration 025 skipped (already applied)");
+                } else {
+                    tracing::info!("SQLite migration 025 applied (crawler_tasks pagination)");
+                }
+            }
+            // Migration 026: 删除 crawler_tasks.selectors 列（043 取代 042 抓取路径）
+            {
+                let m26 = include_str!("../migrations/026_crawler_drop_selectors_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m26).execute(pool).await {
+                    // SQLite DROP COLUMN：列不存在时错误信息含 "no such column"
+                    let msg = e.to_string();
+                    if msg.contains("no such column") || msg.contains("already") {
+                        tracing::debug!("SQLite migration 026 skipped (selectors column already dropped)");
+                    } else {
+                        panic!("Failed to run SQLite migration 026: {e}");
+                    }
+                } else {
+                    tracing::info!("SQLite migration 026 applied (crawler_tasks.selectors dropped)");
+                }
+            }
+            // Migration 027: 预置字段库表 + 种子数据（043）
+            {
+                let m27 = include_str!("../migrations/027_crawler_field_library_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m27).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run SQLite migration 027: {e}");
+                    }
+                    tracing::debug!("SQLite migration 027 skipped (already applied)");
+                } else {
+                    tracing::info!("SQLite migration 027 applied (crawler_field_library)");
+                }
+            }
+            // Migration 028: 任务字段树节点表（043）
+            {
+                let m28 = include_str!("../migrations/028_crawler_task_field_nodes_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m28).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run SQLite migration 028: {e}");
+                    }
+                    tracing::debug!("SQLite migration 028 skipped (already applied)");
+                } else {
+                    tracing::info!("SQLite migration 028 applied (crawler_task_field_nodes)");
+                }
+            }
+            // Migration 029: 文章扩展字段值表 + extra_fields_json（043）
+            {
+                let m29 = include_str!("../migrations/029_crawler_article_extras_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m29).execute(pool).await {
+                    let msg = e.to_string();
+                    if msg.contains("already exists") || msg.contains("duplicate column") {
+                        tracing::debug!("SQLite migration 029 skipped (already applied)");
+                    } else {
+                        panic!("Failed to run SQLite migration 029: {e}");
+                    }
+                } else {
+                    tracing::info!("SQLite migration 029 applied (crawler_article_field_values + extra_fields_json)");
+                }
+            }
+            // Migration 030: crawler_tasks.max_pagination_depth（043 US5 分页）
+            {
+                let m30 = include_str!("../migrations/030_crawler_tasks_pagination_depth_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m30).execute(pool).await {
+                    let msg = e.to_string();
+                    if msg.contains("duplicate column") || msg.contains("already exists") {
+                        tracing::debug!("SQLite migration 030 skipped (already applied)");
+                    } else {
+                        panic!("Failed to run SQLite migration 030: {e}");
+                    }
+                } else {
+                    tracing::info!("SQLite migration 030 applied (crawler_tasks.max_pagination_depth)");
+                }
+            }
+            // Migration 031: crawler_field_library resource 类补 download_url/resource_name + sort_order 重排
+            {
+                let m31 = include_str!("../migrations/031_crawler_field_library_resource_sort_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m31).execute(pool).await {
+                    tracing::warn!("SQLite migration 031 (field_library resource sort) failed: {e}");
+                } else {
+                    tracing::info!("SQLite migration 031 applied (crawler_field_library resource sort)");
+                }
+            }
+            // Migration 032: crawler_tasks.force_full_collect（044 全量采集开关 + 早停）
+            {
+                let m32 = include_str!("../migrations/032_crawler_tasks_force_full_collect_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m32).execute(pool).await {
+                    let msg = e.to_string();
+                    if msg.contains("duplicate column") || msg.contains("already exists") {
+                        tracing::debug!("SQLite migration 032 skipped (already applied)");
+                    } else {
+                        panic!("Failed to run SQLite migration 032: {e}");
+                    }
+                } else {
+                    tracing::info!("SQLite migration 032 applied (crawler_tasks.force_full_collect)");
+                }
+            }
+            // Migration 033: crawler_tasks URL 模板分页配置（045：page_url_template/page_start/page_end）
+            {
+                let m33 = include_str!("../migrations/033_crawler_tasks_url_template_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m33).execute(pool).await {
+                    let msg = e.to_string();
+                    if msg.contains("duplicate column") || msg.contains("already exists") {
+                        tracing::debug!("SQLite migration 033 skipped (already applied)");
+                    } else {
+                        panic!("Failed to run SQLite migration 033: {e}");
+                    }
+                } else {
+                    tracing::info!("SQLite migration 033 applied (crawler_tasks URL template pagination)");
+                }
+            }
+            // Migration 034: crawler_field_library resource 类扩展（游戏/软件/教程 11 字段，幂等 INSERT OR IGNORE）
+            {
+                let m34 = include_str!("../migrations/034_crawler_field_library_resource_extend_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m34).execute(pool).await {
+                    tracing::warn!("SQLite migration 034 failed (ignored): {e}");
+                } else {
+                    tracing::info!("SQLite migration 034 applied (crawler_field_library resource extend +11)");
+                }
+            }
+            // Migration 035: crawler_field_library resource 类扩展（视频场景 6 字段，幂等 INSERT OR IGNORE）
+            {
+                let m35 = include_str!("../migrations/035_crawler_field_library_video_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m35).execute(pool).await {
+                    tracing::warn!("SQLite migration 035 failed (ignored): {e}");
+                } else {
+                    tracing::info!("SQLite migration 035 applied (crawler_field_library resource video +6)");
+                }
+            }
+            // Migration 036: crawler_field_library resource 类扩展（APP 图标，幂等 INSERT OR IGNORE）
+            {
+                let m36 = include_str!("../migrations/036_crawler_field_library_app_icon_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m36).execute(pool).await {
+                    tracing::warn!("SQLite migration 036 failed (ignored): {e}");
+                } else {
+                    tracing::info!("SQLite migration 036 applied (crawler_field_library resource app_icon +1)");
+                }
+            }
+            // Migration 037: crawler_task_field_nodes 加 refresh_on_read 列（feature 046-crawler-script-extractor）
+            {
+                let m37 = include_str!("../migrations/037_crawler_field_nodes_refresh_on_read_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m37).execute(pool).await {
+                    tracing::warn!("SQLite migration 037 failed (ignored): {e}");
+                } else {
+                    tracing::info!("SQLite migration 037 applied (crawler_task_field_nodes.refresh_on_read)");
+                }
+            }
+            // Migration 038: crawler_field_library 增量插入 id 字段（feature 046 后续：站点资源 ID）
+            {
+                let m38 = include_str!("../migrations/038_crawler_field_library_id_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m38).execute(pool).await {
+                    tracing::warn!("SQLite migration 038 failed (ignored): {e}");
+                } else {
+                    tracing::info!("SQLite migration 038 applied (crawler_field_library id metadata +1)");
+                }
+            }
+            // Migration 039: crawler_field_library 增量插入 pkg_name/md5/image 字段（feature 046 后续：安装包元信息）
+            {
+                let m39 = include_str!("../migrations/039_crawler_field_library_pkg_md5_image_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m39).execute(pool).await {
+                    tracing::warn!("SQLite migration 039 failed (ignored): {e}");
+                } else {
+                    tracing::info!("SQLite migration 039 applied (crawler_field_library pkg_name/md5/image +3)");
+                }
+            }
+            // 043：种子化 crawler_field_library（若表为空则用应用层 BUILTIN_PRESETS 补种）
+            {
+                if let Err(e) = tgTool::services::crawler::preset_library::seed_if_empty_sqlite(pool).await {
+                    tracing::warn!("SQLite crawler_field_library seed failed: {e}");
+                }
+            }
         }
         DbPool::Postgres(pool) => {
             let migration_sql = include_str!("../migrations/001_init_postgres.sql");
@@ -950,6 +1192,245 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::warn!("PostgreSQL migration 019 skipped: {e}");
                 } else {
                     tracing::info!("PostgreSQL migration 019 applied (data_count -> BIGINT)");
+                }
+            }
+            // Migration 020: crawler_tasks（feature 042-web-crawler-collector）
+            {
+                let m20 = include_str!("../migrations/020_crawler_tasks_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m20).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run PostgreSQL migration 020: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 020 skipped (already applied)");
+                } else {
+                    tracing::info!("PostgreSQL migration 020 applied (crawler_tasks)");
+                }
+            }
+            // Migration 021: crawler_articles
+            {
+                let m21 = include_str!("../migrations/021_crawler_articles_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m21).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run PostgreSQL migration 021: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 021 skipped (already applied)");
+                } else {
+                    tracing::info!("PostgreSQL migration 021 applied (crawler_articles)");
+                }
+            }
+            // Migration 022: crawler_article_links
+            {
+                let m22 = include_str!("../migrations/022_crawler_article_links_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m22).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run PostgreSQL migration 022: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 022 skipped (already applied)");
+                } else {
+                    tracing::info!("PostgreSQL migration 022 applied (crawler_article_links)");
+                }
+            }
+            // Migration 023: crawler_article_images
+            {
+                let m23 = include_str!("../migrations/023_crawler_article_images_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m23).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run PostgreSQL migration 023: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 023 skipped (already applied)");
+                } else {
+                    tracing::info!("PostgreSQL migration 023 applied (crawler_article_images)");
+                }
+            }
+            // Migration 024: crawler_run_histories
+            {
+                let m24 = include_str!("../migrations/024_crawler_run_histories_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m24).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run PostgreSQL migration 024: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 024 skipped (already applied)");
+                } else {
+                    tracing::info!("PostgreSQL migration 024 applied (crawler_run_histories)");
+                }
+            }
+            // Migration 025: crawler_tasks 自动翻页字段
+            {
+                let m25 = include_str!("../migrations/025_crawler_tasks_pagination_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m25).execute(pool).await {
+                    // ADD COLUMN IF NOT EXISTS 在 PG 里通常不会失败；若失败按已应用处理
+                    if !e.to_string().contains("already exists") && !e.to_string().contains("already applied") {
+                        tracing::warn!("PostgreSQL migration 025 skipped: {e}");
+                    } else {
+                        tracing::debug!("PostgreSQL migration 025 skipped (already applied)");
+                    }
+                } else {
+                    tracing::info!("PostgreSQL migration 025 applied (crawler_tasks pagination)");
+                }
+            }
+            // Migration 026: 删除 crawler_tasks.selectors 列（043 取代 042 抓取路径）
+            {
+                let m26 = include_str!("../migrations/026_crawler_drop_selectors_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m26).execute(pool).await {
+                    let msg = e.to_string();
+                    // PG: DROP COLUMN IF NOT EXISTS 会报 "column does not exist"（实际 IF EXISTS 不报错；
+                    // 此兜底防 odd schema drift）
+                    if msg.contains("does not exist") || msg.contains("already") {
+                        tracing::debug!("PostgreSQL migration 026 skipped (selectors already dropped)");
+                    } else {
+                        panic!("Failed to run PostgreSQL migration 026: {e}");
+                    }
+                } else {
+                    tracing::info!("PostgreSQL migration 026 applied (crawler_tasks.selectors dropped)");
+                }
+            }
+            // Migration 027: 预置字段库表 + 种子数据（043）
+            {
+                let m27 = include_str!("../migrations/027_crawler_field_library_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m27).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run PostgreSQL migration 027: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 027 skipped (already applied)");
+                } else {
+                    tracing::info!("PostgreSQL migration 027 applied (crawler_field_library)");
+                }
+            }
+            // Migration 028: 任务字段树节点表（043）
+            {
+                let m28 = include_str!("../migrations/028_crawler_task_field_nodes_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m28).execute(pool).await {
+                    if !e.to_string().contains("already exists") {
+                        panic!("Failed to run PostgreSQL migration 028: {e}");
+                    }
+                    tracing::debug!("PostgreSQL migration 028 skipped (already applied)");
+                } else {
+                    tracing::info!("PostgreSQL migration 028 applied (crawler_task_field_nodes)");
+                }
+            }
+            // Migration 029: 文章扩展字段值表 + extra_fields_json（043）
+            {
+                let m29 = include_str!("../migrations/029_crawler_article_extras_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m29).execute(pool).await {
+                    let msg = e.to_string();
+                    if msg.contains("already exists") || msg.contains("already") {
+                        tracing::debug!("PostgreSQL migration 029 skipped (already applied)");
+                    } else {
+                        panic!("Failed to run PostgreSQL migration 029: {e}");
+                    }
+                } else {
+                    tracing::info!("PostgreSQL migration 029 applied (crawler_article_field_values + extra_fields_json)");
+                }
+            }
+            // Migration 030: crawler_tasks.max_pagination_depth（043 US5 分页）
+            {
+                let m30 = include_str!("../migrations/030_crawler_tasks_pagination_depth_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m30).execute(pool).await {
+                    let msg = e.to_string();
+                    if msg.contains("already exists") || msg.contains("already") {
+                        tracing::debug!("PostgreSQL migration 030 skipped (already applied)");
+                    } else {
+                        panic!("Failed to run PostgreSQL migration 030: {e}");
+                    }
+                } else {
+                    tracing::info!("PostgreSQL migration 030 applied (crawler_tasks.max_pagination_depth)");
+                }
+            }
+            // Migration 031: crawler_field_library resource 类补 download_url/resource_name + sort_order 重排
+            {
+                let m31 = include_str!("../migrations/031_crawler_field_library_resource_sort_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m31).execute(pool).await {
+                    tracing::warn!("PostgreSQL migration 031 (field_library resource sort) failed: {e}");
+                } else {
+                    tracing::info!("PostgreSQL migration 031 applied (crawler_field_library resource sort)");
+                }
+            }
+            // Migration 032: crawler_tasks.force_full_collect（044 全量采集开关 + 早停）
+            {
+                let m32 = include_str!("../migrations/032_crawler_tasks_force_full_collect_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m32).execute(pool).await {
+                    let msg = e.to_string();
+                    if msg.contains("already exists") || msg.contains("already") {
+                        tracing::debug!("PostgreSQL migration 032 skipped (already applied)");
+                    } else {
+                        panic!("Failed to run PostgreSQL migration 032: {e}");
+                    }
+                } else {
+                    tracing::info!("PostgreSQL migration 032 applied (crawler_tasks.force_full_collect)");
+                }
+            }
+            // Migration 033: crawler_tasks URL 模板分页配置（045：page_url_template/page_start/page_end）
+            {
+                let m33 = include_str!("../migrations/033_crawler_tasks_url_template_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m33).execute(pool).await {
+                    let msg = e.to_string();
+                    if msg.contains("already exists") || msg.contains("already") {
+                        tracing::debug!("PostgreSQL migration 033 skipped (already applied)");
+                    } else {
+                        panic!("Failed to run PostgreSQL migration 033: {e}");
+                    }
+                } else {
+                    tracing::info!("PostgreSQL migration 033 applied (crawler_tasks URL template pagination)");
+                }
+            }
+            // Migration 034: crawler_field_library resource 类扩展（游戏/软件/教程 11 字段，幂等 ON CONFLICT DO NOTHING）
+            {
+                let m34 = include_str!("../migrations/034_crawler_field_library_resource_extend_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m34).execute(pool).await {
+                    tracing::warn!("PostgreSQL migration 034 failed (ignored): {e}");
+                } else {
+                    tracing::info!("PostgreSQL migration 034 applied (crawler_field_library resource extend +11)");
+                }
+            }
+            // Migration 035: crawler_field_library resource 类扩展（视频场景 6 字段，幂等 ON CONFLICT DO NOTHING）
+            {
+                let m35 = include_str!("../migrations/035_crawler_field_library_video_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m35).execute(pool).await {
+                    tracing::warn!("PostgreSQL migration 035 failed (ignored): {e}");
+                } else {
+                    tracing::info!("PostgreSQL migration 035 applied (crawler_field_library resource video +6)");
+                }
+            }
+            // Migration 036: crawler_field_library resource 类扩展（APP 图标，幂等 ON CONFLICT DO NOTHING）
+            {
+                let m36 = include_str!("../migrations/036_crawler_field_library_app_icon_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m36).execute(pool).await {
+                    tracing::warn!("PostgreSQL migration 036 failed (ignored): {e}");
+                } else {
+                    tracing::info!("PostgreSQL migration 036 applied (crawler_field_library resource app_icon +1)");
+                }
+            }
+            // Migration 037: crawler_task_field_nodes 加 refresh_on_read 列（feature 046-crawler-script-extractor）
+            {
+                let m37 = include_str!("../migrations/037_crawler_field_nodes_refresh_on_read_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m37).execute(pool).await {
+                    tracing::warn!("PostgreSQL migration 037 failed (ignored): {e}");
+                } else {
+                    tracing::info!("PostgreSQL migration 037 applied (crawler_task_field_nodes.refresh_on_read)");
+                }
+            }
+            // Migration 038: crawler_field_library 增量插入 id 字段（feature 046 后续：站点资源 ID）
+            {
+                let m38 = include_str!("../migrations/038_crawler_field_library_id_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m38).execute(pool).await {
+                    tracing::warn!("PostgreSQL migration 038 failed (ignored): {e}");
+                } else {
+                    tracing::info!("PostgreSQL migration 038 applied (crawler_field_library id metadata +1)");
+                }
+            }
+            // Migration 039: crawler_field_library 增量插入 pkg_name/md5/image 字段（feature 046 后续：安装包元信息）
+            {
+                let m39 = include_str!("../migrations/039_crawler_field_library_pkg_md5_image_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m39).execute(pool).await {
+                    tracing::warn!("PostgreSQL migration 039 failed (ignored): {e}");
+                } else {
+                    tracing::info!("PostgreSQL migration 039 applied (crawler_field_library pkg_name/md5/image +3)");
+                }
+            }
+            // 043：种子化 crawler_field_library
+            {
+                if let Err(e) = tgTool::services::crawler::preset_library::seed_if_empty_postgres(pool).await {
+                    tracing::warn!("PostgreSQL crawler_field_library seed failed: {e}");
                 }
             }
         }

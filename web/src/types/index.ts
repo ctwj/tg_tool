@@ -393,3 +393,619 @@ export interface QueueStatusResponse {
   tasks: ForwardTask[]
   failed_tasks: ForwardTask[]
 }
+
+// ===== Crawler (feature 043) =====
+// 043：旧 FieldSelector / FieldSelectors 类型已删除（直接取代 042 抓取路径），
+// 字段配置由独立的字段树 API（crawler_task_field_nodes 表）承载。
+// US1 T027 将补齐完整的字段树/字段库/Probe TypeScript 类型。
+
+export interface CrawlerTaskInput {
+  name: string
+  enabled: boolean
+  list_urls: string[]
+  /** 历史字段：单阶段模式已下线，后端忽略，恒为 true（保留兼容老数据导入） */
+  two_stage?: boolean
+  interval_minutes: number
+  task_concurrency: number
+  user_agent?: string | null
+  request_delay_ms: number
+  proxy?: string | null
+  auto_link_check: boolean
+  block_detection_config?: string | null
+  max_consecutive_failures: number
+  template_source?: string | null
+  /** 自动翻页：CSS 选择器，一次性匹配页面所有分页链接（含数字页/上一页/下一页/末页）。
+   *  空/null = 未启用。引擎把所有命中的 href 去重后批量抓取 */
+  pagination_selector?: string | null
+  /** 最大抓取页数（含 list_urls 种子页），0=不限 */
+  max_pages?: number
+  /** 043 US5：字段树 pagination 字段驱动的最大翻页深度，默认 10；0=不限 */
+  max_pagination_depth?: number
+  /** 044：全量采集开关。true=每次全量（跑满翻页深度/翻完，失败重跑也全量）；
+   *  false=连续 3 页无新增时自动停止深入（增量维护） */
+  force_full_collect?: boolean
+  /** 045：URL 模板分页。含 {page} 占位符（如 https://x.com/page-{page}.html）。
+   *  留空=未启用（走字段配置器的 pagination 字段翻页）；填写后独占翻页，适配 JS 跳转无分页链接的站点 */
+  page_url_template?: string
+  /** 045：模板生成页码起始值（默认 1） */
+  page_start?: number
+  /** 045：模板生成页码上限（0=不限，受翻页深度上限与连续空页早停约束） */
+  page_end?: number
+  /** 导出/导入携带的字段树（嵌套 spec + children）。仅导入时写入字段节点；
+   *  create/update 忽略。缺省 = 无字段树（向后兼容旧导出文件） */
+  field_tree?: FieldTree
+}
+
+export interface CrawlerTask extends CrawlerTaskInput {
+  id: number
+  status: string  // 'active' | 'paused' | 'auto_blocked' | 'deleted'
+  consecutive_failures: number
+  last_run_at: string | null
+  next_run_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CrawlerTemplate {
+  key: string
+  name: string
+  site_type: string
+  description: string
+  config: CrawlerTaskInput
+}
+
+// 测试运行预览（不落库）
+export interface CrawlerTestPreview {
+  list_count: number
+  preview_count: number
+  articles: Array<{
+    source_url: string
+    title: string | null
+    content_snippet: string | null
+    pan_links: Array<{ platform: string; url: string; extract_code: string | null }>
+    direct_links: string[]
+    images: string[]
+    field_warnings: string[]
+  }>
+  selector_validation: {
+    list_item_ok: boolean
+    detail_link_ok: boolean
+    missing_fields: string[]
+  }
+}
+
+// ─── 文章相关（US2） ─────────────────────────────────────────────────────
+export interface CrawlerArticleListItem {
+  id: number
+  task_id: number | null
+  source_type: string
+  title: string | null
+  category: string | null
+  thumbnail: string | null
+  pan_link_count: number
+  direct_link_count: number
+  image_count: number
+  is_edited: boolean
+  crawled_at: string
+  /** 后端注入：字段树提取结果拍平（key=field_path 末段，值=string|string[]），列表展示用它兜底 */
+  extra_fields?: Record<string, any>
+  extra_fields_json?: string | null
+}
+
+export interface CrawlerArticleLink {
+  id: number
+  article_id: number
+  link_type: 'pan' | 'direct'
+  platform: string | null
+  url: string
+  url_canonical: string
+  extract_code: string | null
+  validity_status: 'valid' | 'invalid' | 'pending' | 'unknown'
+  validity_reason: string | null
+  last_checked_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CrawlerArticleImage {
+  id: number
+  article_id: number
+  original_url: string
+  url_canonical: string
+  local_path: string | null
+  image_message_id: number | null
+  file_id: string | null
+  status: 'pending' | 'downloaded' | 'uploading' | 'uploaded' | 'failed'
+  retry_count: number
+  last_error: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CrawlerArticleDetail {
+  id: number
+  task_id: number | null
+  source_type: string
+  source_url: string
+  source_url_canonical: string
+  title: string | null
+  content: string | null
+  category: string | null
+  tags: string | null
+  is_edited: boolean
+  crawled_at: string
+  created_at: string
+  updated_at: string
+  // 展平字段
+  links: CrawlerArticleLink[]
+  images: CrawlerArticleImage[]
+  task_name: string | null
+  // 字段树提取结果（GET /articles/:id 顶层并列返回；前端 setDetail 时合并进来）
+  extra_fields?: Record<string, unknown>
+  field_values?: ArticleFieldValue[]
+  field_stats?: FieldHitStats[]
+}
+
+// ─── 历史与统计（US3） ──────────────────────────────────────────────────
+export interface CrawlerRunHistory {
+  id: number
+  task_id: number
+  task_name: string
+  started_at: string
+  finished_at: string | null
+  duration_ms: number | null
+  status: 'running' | 'success' | 'partial' | 'failed' | 'blocked'
+  block_type: string | null
+  crawled_count: number
+  new_count: number
+  skipped_count: number
+  failed_count: number
+  error_message: string | null
+  created_at: string
+}
+
+export interface CrawlerRunHistoryDetail {
+  // 展平 CrawlerRunHistory 字段
+  id: number
+  task_id: number
+  task_name: string
+  started_at: string
+  finished_at: string | null
+  duration_ms: number | null
+  status: 'running' | 'success' | 'partial' | 'failed' | 'blocked'
+  block_type: string | null
+  crawled_count: number
+  new_count: number
+  skipped_count: number
+  failed_count: number
+  error_message: string | null
+  created_at: string
+  // 详情扩展
+  blocked_response_excerpt: string | null
+}
+
+export interface CrawlerHistoryStats {
+  total_runs: number
+  success: number
+  partial: number
+  failed: number
+  blocked: number
+  block_breakdown: Record<string, number>
+  last_run_at: string | null
+  auto_blocked_tasks: number
+}
+
+// ============================================================================
+// Feature 043 — Visual Field Configurator (US1 T027)
+// ============================================================================
+
+/** 字段作用域：列表页 / 详情页 */
+export type FieldScope = 'list_page' | 'detail_page'
+
+/** 源码 tab 一致的来源层 */
+export type SourceLayer = 'html' | 'header' | 'script' | 'meta' | 'url'
+
+/** 匹配模式：8 种（6 同步 + follow_url 异步两阶段 + script JS 沙箱 [feature 046]） */
+export type ExtractorMode =
+  | 'css'
+  | 'regex'
+  | 'prefix_suffix'
+  | 'json_path'
+  | 'meta_attr'
+  | 'header_field'
+  | 'follow_url'
+  | 'script'
+
+/** 字段类型 */
+export type FieldType =
+  | 'string'
+  | 'text'
+  | 'url'
+  | 'image'
+  | 'number'
+  | 'datetime'
+  | 'link_card'
+  | 'pagination'
+  | 'custom'
+
+/** 6 种匹配模式对应的规则参数（discriminated union） */
+export interface CssRule {
+  mode: 'css'
+  spec: {
+    selector: string
+    attr: string  // text | html | <attr-name>
+  }
+}
+export interface RegexRule {
+  mode: 'regex'
+  spec: {
+    pattern: string
+    group: number
+    flags?: string
+  }
+}
+export interface PrefixSuffixRule {
+  mode: 'prefix_suffix'
+  spec: {
+    prefix: string
+    suffix: string
+    include_boundary?: boolean
+    case_sensitive?: boolean
+  }
+}
+export interface JsonPathRule {
+  mode: 'json_path'
+  spec: { path: string }
+}
+export interface MetaAttrRule {
+  mode: 'meta_attr'
+  spec: {
+    attr_name: string
+    attr_value: string
+    content_key?: string
+  }
+}
+export interface HeaderFieldRule {
+  mode: 'header_field'
+  spec: { header_name: string }
+}
+
+/** [feature 046] JS 沙箱脚本提取器：在 rquickjs 中求值，注入 ctx.value/fields/url/fetch */
+export interface ScriptRule {
+  mode: 'script'
+  spec: {
+    /** JS 函数体（被包裹为 `(function(ctx) { ${body} })` 求值），≤64KB */
+    body: string
+    /** API 版本，目前固定 'v1' */
+    api_version?: string
+  }
+}
+
+/** 字段规则（避免与 042 转发 Rule 冲突，重命名为 FieldRule） */
+export type FieldRule =
+  | CssRule
+  | RegexRule
+  | PrefixSuffixRule
+  | JsonPathRule
+  | MetaAttrRule
+  | HeaderFieldRule
+  | FollowUrlRule
+  | ScriptRule
+
+/**
+ * 6 种同步模式的子规则 —— 用于 FollowUrlRule.transit/extract 子规则。
+ * 故意不含 FollowUrlRule 变体（编译期杜绝无限嵌套）。
+ */
+export type SubRule =
+  | CssRule
+  | RegexRule
+  | PrefixSuffixRule
+  | JsonPathRule
+  | MetaAttrRule
+  | HeaderFieldRule
+
+/** follow_url 两阶段提取规则：先抓中转 URL → fetch → 在响应上抓最终值 */
+export interface FollowUrlRule {
+  mode: 'follow_url'
+  spec: {
+    /** 在当前 material 上提取中转 URL 的子规则（必填） */
+    transit: SubRule
+    /** transit 子规则作用的 source_layer，默认 'html' */
+    transit_layer?: SourceLayer
+    /** source_layer='script' 时指定 script_index */
+    transit_script_index?: number | null
+    /** 二次请求后 extract 子规则作用的 source_layer，默认 'html' */
+    target_layer?: SourceLayer
+    /** source_layer='script' 时指定 script_index */
+    target_script_index?: number | null
+    /** 在二次请求 material 上提取最终值的子规则（必填） */
+    extract: SubRule
+  }
+}
+
+/** 后处理操作 */
+export type PostProcessorOp =
+  | 'trim'
+  | 'html_entity_decode'
+  | 'absolutize_url'
+  | 'first'
+  | 'all'
+  | 'dedupe'
+
+export interface PostProcessor {
+  op: PostProcessorOp
+}
+
+/** 字段节点 spec（应用层视图，已解析 rule/post_processors） */
+export interface FieldNodeSpec {
+  id?: number
+  task_id?: number
+  parent_id?: number | null
+  scope: FieldScope
+  name: string
+  display_name: string
+  field_type: FieldType
+  source_layer: SourceLayer
+  extractor_mode: ExtractorMode
+  rule: FieldRule
+  post_processors?: PostProcessor[]
+  script_index?: number | null
+  sort_order?: number
+  is_active?: boolean
+  /** [feature 046] 仅 extractor_mode='script' 时允许 true：消费性读取时按需重跑脚本（FR-019） */
+  refresh_on_read?: boolean
+}
+
+/**
+ * 快捷创建字段的预填配置（在 SourceViewer 的 meta/header/script tab 行内
+ * 点「创建为字段」时生成，由 FieldNodeEditor 消费以预填表单）。
+ *
+ * scope 由父组件（CrawlerFieldConfigurator）按当前素材 tab 注入。
+ */
+export interface QuickFieldPreset {
+  scope: FieldScope
+  /** 推荐字段名（小写英文，符合 NAME_REGEX） */
+  suggested_name?: string
+  /** 推荐显示名（中文） */
+  suggested_display_name?: string
+  /** 推荐字段类型 */
+  field_type?: FieldType
+  source_layer: SourceLayer
+  extractor_mode: ExtractorMode
+  rule: FieldRule
+  script_index?: number | null
+}
+
+/** 字段节点（树形：spec + children） */
+export interface FieldNode {
+  spec: FieldNodeSpec | null
+  /** DB 行（spec 解析失败时回退显示用） */
+  row?: unknown
+  /** 解析错误（spec=null 时存在） */
+  error?: string
+  children: FieldNode[]
+}
+
+/** 字段树：list_page + detail_page 双根 */
+export interface FieldTree {
+  list_page: FieldNode[]
+  detail_page: FieldNode[]
+}
+
+/** 预置字段库条目 */
+export interface FieldLibraryEntry {
+  id: number
+  key: string
+  display_name: string
+  field_type: FieldType
+  category: string
+  description?: string | null
+  suggested_extractor?: ExtractorMode | null
+  sort_order: number
+  created_at?: string
+  updated_at?: string
+}
+
+/** 预置字段库分类视图 */
+export interface FieldLibraryCategory {
+  category: string
+  label: string
+  entries: FieldLibraryEntry[]
+}
+
+// ---- ProbeRequest / ProbeResponse / ProbeError ----
+
+export interface ProbeRequest {
+  url: string
+  user_agent?: string
+  proxy?: string
+  source_layer: SourceLayer
+  rule: FieldRule
+  post_processors?: PostProcessor[]
+  script_index?: number | null
+  parent_hits?: string[]
+  require_parent?: boolean
+  /** US2: 父字段定义（与 parent_hits 互斥；优先使用） */
+  parent_field?: ParentFieldDef | null
+  /** US2: 每条父命中下返回的子样本数上限（默认 3） */
+  per_parent_sample_limit?: number | null
+  /** US2: 父字段节点 ID（handler 解析为 parent_field） */
+  parent_node_id?: number | null
+}
+
+/** US2: 父字段定义（handler 通过 parent_node_id 查表填充） */
+export interface ParentFieldDef {
+  source_layer: SourceLayer
+  rule: FieldRule
+  post_processors?: PostProcessor[]
+  script_index?: number | null
+}
+
+export interface ProbeSample {
+  value: string
+  source_fragment: string
+  location?: string | null
+}
+
+/** US2: 按父命中分组的子字段结果 */
+export interface PerParentSample {
+  /** 父命中序号（0-based） */
+  parent_index: number
+  /** 父命中片段摘要 */
+  parent_fragment: string
+  /** 子字段在该父作用域下的首个命中值（None=未命中） */
+  child_value?: string | null
+  /** 子字段在该父作用域下是否命中 */
+  child_hit: boolean
+  /** 子字段在该父作用域下的全部命中样本（受 per_parent_sample_limit 截断） */
+  child_samples?: ProbeSample[] | null
+}
+
+export interface ProbeResponse {
+  hit_count: number
+  samples: ProbeSample[]
+  /** US2: 父子嵌套验证时填充（按父命中序号排列） */
+  per_parent?: PerParentSample[] | null
+  fetched_url: string
+  fetched_at: string
+  duration_ms: number
+}
+
+// ─── 脚本沙盒试跑（feature 046 增强） ────────────────────────────────────
+export interface ScriptSandboxRequest {
+  article_id: number
+  script_body: string
+  /** 当前编辑的字段名（可选）：用于从兄弟字段中排除自身；新建字段时可省略 */
+  field_name?: string
+}
+
+export interface ScriptSandboxResponse {
+  /** 求值得到的新值（失败时为 null） */
+  value: string | null
+  /** 失败信息（category + message） */
+  error: { category: string; message: string } | null
+  /** DB 内该字段已有值（用于对比；未保存字段或无值时为 null） */
+  current_db_value: string | null
+  /** ctx 快照（debug 用） */
+  ctx: { url: string; fields: Record<string, string> }
+  /** 求值耗时（毫秒） */
+  duration_ms: number
+}
+
+export type ProbeStage = 'fetch' | 'parse' | 'match'
+
+export type ProbeCategory =
+  | 'url_unreachable'
+  | 'http_4xx_5xx'
+  | 'blocked'
+  | 'invalid_rule'
+  | 'zero_hits'
+  | 'parent_empty'
+
+export interface ProbeError {
+  stage: ProbeStage
+  category: ProbeCategory
+  message: string
+  hint?: string | null
+}
+
+// ---- SourceMaterial (fetch-source) ----
+
+export interface ScriptBlock {
+  index: number
+  src?: string | null
+  content?: string | null
+}
+
+export type MetaKeyKind = 'name' | 'property' | 'http_equiv' | 'other'
+
+export interface MetaTag {
+  key_kind: MetaKeyKind
+  key: string
+  content: string
+}
+
+export interface SourceMaterial {
+  final_url: string
+  status: number
+  headers: Record<string, string>
+  html: string
+  scripts: ScriptBlock[]
+  metas: MetaTag[]
+  fetched_at: string
+  duration_ms: number
+}
+
+export interface FetchSourceRequest {
+  url: string
+  user_agent?: string
+  proxy?: string
+}
+
+// ---- 字段节点 CRUD 请求体 ----
+
+export interface CreateFieldNodeBody {
+  parent_id?: number | null
+  scope: FieldScope
+  name: string
+  display_name: string
+  source_layer: SourceLayer
+  extractor_mode: ExtractorMode
+  rule: FieldRule
+  post_processors?: PostProcessor[]
+  script_index?: number | null
+  sort_order?: number
+  is_active?: boolean
+  field_type?: FieldType
+  /** [feature 046] 仅 extractor_mode='script' 时允许 true */
+  refresh_on_read?: boolean
+}
+
+export interface ReorderFieldNodesBody {
+  parent_id: number | null
+  scope: FieldScope
+  ordered_ids: number[]
+}
+
+/** 文章字段值长表行（crawler_article_field_values） */
+export interface ArticleFieldValue {
+  id: number
+  article_id: number
+  field_node_id?: number | null
+  field_path: string
+  scope: FieldScope
+  value_index: number
+  value_text?: string | null
+  value_number?: number | null
+  is_hit: boolean
+  created_at: string
+}
+
+/** 字段命中统计（按 field_path 聚合） */
+export interface FieldHitStats {
+  field_path: string
+  total: number
+  hit: number
+  missed: number
+}
+
+/** 单字段任务级命中率（contracts C7 / FR-027） */
+export interface FieldStat {
+  field_node_id: number | null
+  field_path: string
+  field_name: string | null
+  field_display_name: string | null
+  total_articles: number
+  hit_articles: number
+  /** 0~1，保留 2 位小数 */
+  hit_rate: number
+  /** healthy(≥0.80) | degraded(0.10~0.80) | stale_warning(<0.10) */
+  status: 'healthy' | 'degraded' | 'stale_warning'
+}
+
+/** `GET /api/crawler/tasks/{id}/field-stats` 响应 data */
+export interface FieldStatsResponse {
+  window_days: number
+  stats: FieldStat[]
+}
+

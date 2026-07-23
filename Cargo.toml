@@ -47,6 +47,17 @@ tracing-appender = "0.2"
 rust-embed = { version = "8", optional = true }
 mime_guess = "2"
 
+# HTML parsing (crawler feature 042)
+scraper = "0.22"
+
+# JSON Path 提取（crawler feature 043 — 字段配置器 <script> 内嵌 JSON 提取）
+serde_json_path = "0.7"
+
+# JS sandbox for crawler script extractor (feature 046 — rquickjs: QuickJS Rust binding)
+# 不启用 `bindgen` feature：它会在构建时用 libclang 实时生成绑定（需安装 LLVM + LIBCLANG_PATH）。
+# 默认走 rquickjs 预生成绑定（prebuilt bindings），功能等价，零外部依赖。
+rquickjs = { version = "0.7", features = ["loader", "allocator"] }
+
 # Captcha
 captcha-rs = "0.5"
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -68,6 +79,7 @@ embed-frontend = ["rust-embed"]
 axum-test = "17"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+wiremock = "0.6"
 
 # 覆盖率工具通过 cargo install cargo-llvm-cov 安装（不在 Cargo.toml 中声明）
 # 运行: cargo llvm-cov --html

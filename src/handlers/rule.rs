@@ -337,16 +337,30 @@ pub async fn delete_rule(
 ) -> Result<Json<Value>, AppError> {
     match &state.db {
         crate::state::DbPool::Sqlite(pool) => {
-            sqlx::query("DELETE FROM rules WHERE id = ?")
+            sqlx::query("DELETE FROM messages WHERE rule_id = ?")
                 .bind(id)
                 .execute(pool)
                 .await?;
+            let result = sqlx::query("DELETE FROM rules WHERE id = ?")
+                .bind(id)
+                .execute(pool)
+                .await?;
+            if result.rows_affected() == 0 {
+                return Err(AppError::NotFound("规则不存在".into()));
+            }
         }
         crate::state::DbPool::Postgres(pool) => {
-            sqlx::query("DELETE FROM rules WHERE id = $1")
+            sqlx::query("DELETE FROM messages WHERE rule_id = $1")
                 .bind(id)
                 .execute(pool)
                 .await?;
+            let result = sqlx::query("DELETE FROM rules WHERE id = $1")
+                .bind(id)
+                .execute(pool)
+                .await?;
+            if result.rows_affected() == 0 {
+                return Err(AppError::NotFound("规则不存在".into()));
+            }
         }
     }
     Ok(Json(json!({ "success": true, "message": "规则已删除" })))

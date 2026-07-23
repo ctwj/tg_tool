@@ -1,6 +1,14 @@
 pub mod client;
 pub mod collector;
 pub mod collector_history;
+pub mod crawler_article;
+pub mod crawler_article_image;
+pub mod crawler_article_link;
+pub mod crawler_field_library;
+pub mod crawler_field_node;
+pub mod crawler_field_value;
+pub mod crawler_run_history;
+pub mod crawler_task;
 pub mod extract_history;
 pub mod extracted_resource;
 pub mod file;
