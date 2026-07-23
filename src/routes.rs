@@ -279,56 +279,6 @@ pub fn build_router(state: AppState) -> Router {
             "/image-forward/retry-all",
             post(handlers::image_forward::retry_all),
         )
-        // Pan accounts (feature 047) — 网盘账号管理
-        .route(
-            "/pan/accounts",
-            get(handlers::pan_account::list).post(handlers::pan_account::create),
-        )
-        .route(
-            "/pan/accounts/{id}",
-            get(handlers::pan_account::get_one)
-                .put(handlers::pan_account::update)
-                .delete(handlers::pan_account::delete),
-        )
-        .route(
-            "/pan/accounts/{id}/check",
-            post(handlers::pan_account::check),
-        )
-        // Pan transfers (feature 047 US2/US5) — 转存/上传任务 + 历史列表/重试/清理
-        .route(
-            "/pan/transfers",
-            get(handlers::pan_transfer::list).post(handlers::pan_transfer::create),
-        )
-        .route(
-            "/pan/transfers/cleanup",
-            post(handlers::pan_transfer::cleanup),
-        )
-        .route(
-            "/pan/transfers/{id}",
-            get(handlers::pan_transfer::get_one),
-        )
-        .route(
-            "/pan/transfers/{id}/retry",
-            post(handlers::pan_transfer::retry),
-        )
-        // Pan API Keys (feature 047 US4) — 开放 API 凭据管理
-        .route(
-            "/pan/api-keys",
-            get(handlers::api_keys::list).post(handlers::api_keys::create),
-        )
-        .route(
-            "/pan/api-keys/{id}/revoke",
-            post(handlers::api_keys::revoke),
-        )
-        .route(
-            "/pan/api-keys/{id}/rotate",
-            post(handlers::api_keys::rotate),
-        )
-        // Pan config (feature 047 Polish) — 功能配置在线调整
-        .route(
-            "/pan/config",
-            get(handlers::pan_config::get).put(handlers::pan_config::update),
-        )
         .layer(middleware::from_fn(admin_guard))
         .layer(middleware::from_fn(auth_guard))
         .layer(axum::Extension(state.clone()));
@@ -350,30 +300,13 @@ pub fn build_router(state: AppState) -> Router {
         .layer(middleware::from_fn(auth_guard))
         .layer(axum::Extension(state.clone()));
 
-    // 公开转存 API（feature 047 US4）— /api/v1/*，X-API-Key 鉴权（非 session）
-    let api_v1_routes = Router::new()
-        .route(
-            "/v1/transfer/tasks",
-            post(handlers::api_transfer::create_task),
-        )
-        .route(
-            "/v1/transfer/tasks/{id}",
-            get(handlers::api_transfer::get_task),
-        )
-        .route("/v1/accounts", get(handlers::api_transfer::list_accounts))
-        .layer(middleware::from_fn(
-            crate::middleware::api_key::api_key_middleware,
-        ))
-        .layer(axum::Extension(state.clone()));
-
     Router::new()
         .nest(
             "/api",
             public_routes
                 .merge(user_routes)
                 .merge(admin_routes)
-                .merge(root_routes)
-                .merge(api_v1_routes),
+                .merge(root_routes),
         )
         .fallback(crate::embed::static_handler)
         .with_state(state)
