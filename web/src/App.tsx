@@ -18,6 +18,8 @@ import Settings from './pages/Settings'
 import ApiStatus from './pages/ApiStatus'
 import Scheduler from './pages/Scheduler'
 import ForwardQueue from './pages/ForwardQueue'
+import PanAccounts from './pages/PanAccounts'
+import TransferTasksPage from './pages/TransferTasksPage'
 import './index.css'
 
 function App() {
@@ -65,6 +67,8 @@ function App() {
             <Route path="push" element={<Push />} />
             <Route path="scheduler" element={<Scheduler />} />
             <Route path="forward-queue" element={<ForwardQueue />} />
+            <Route path="pan-accounts" element={<PanAccounts />} />
+            <Route path="transfer-tasks" element={<TransferTasksPage />} />
             <Route path="resources" element={<Resources />} />
             <Route path="users" element={<Users />} />
             <Route path="files" element={<Files />} />

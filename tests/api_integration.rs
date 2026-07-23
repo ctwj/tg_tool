@@ -1,6 +1,7 @@
 //! API 集成测试 — 使用 SQLite 内存数据库测试完整路由
 
 use axum::body::Body;
+use base64::Engine;
 use http_body_util::BodyExt;
 use sqlx::sqlite::SqlitePoolOptions;
 use tgTool::config::Config;
@@ -84,6 +85,10 @@ async fn setup_test_db() -> DbPool {
     let m17 = include_str!("../migrations/017_client_name_username_sqlite.sql");
     let _ = sqlx::raw_sql(m17).execute(&pool).await;
 
+    // Migration 020: 网盘账号管理表（feature 047）
+    let m20 = include_str!("../migrations/020_pan_management_sqlite.sql");
+    let _ = sqlx::raw_sql(m20).execute(&pool).await;
+
     // 插入 root 用户（使用当前 bcrypt 版本生成 hash）
     let hash = crypto::hash_password("123456").expect("Failed to hash root password");
     sqlx::query("INSERT INTO users (username, password, role, status) VALUES ('root', ?, 100, 1)")
@@ -109,6 +114,8 @@ fn make_test_state(db: DbPool) -> (AppState, tgTool::state::TgClientMap) {
         session_secret: "test-secret-for-integration".to_string(),
         rate_limit_max: 10000,
         rate_limit_window_secs: 60,
+        pan_cred_key: base64::engine::general_purpose::STANDARD.encode([0x42u8; 32]),
+        pan_staging_dir: PathBuf::from("./.tmp/pan-staging-test"),
     };
     let tg_clients =
         std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
@@ -173,6 +180,25 @@ fn build_auth_request(
         .unwrap()
 }
 
+/// 构建带 X-API-Key 的 HTTP request（开放 API，feature 047 US4）
+fn build_apikey_request(
+    method: &str,
+    uri: &str,
+    key: &str,
+    body: Option<String>,
+) -> axum::http::Request<Body> {
+    let mut builder = axum::http::Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("X-API-Key", key);
+    if body.is_some() {
+        builder = builder.header("content-type", "application/json");
+    }
+    builder
+        .body(body.map_or_else(Body::empty, Body::from))
+        .unwrap()
+}
+
 /// 以 root 用户登录，返回 auth token
 async fn get_root_token(app: &mut axum::Router) -> String {
     let req = build_request(
@@ -194,6 +220,359 @@ fn assert_success(body: &serde_json::Value) {
 // ============================================================
 // 测试用例
 // ============================================================
+
+// ------------------------------------------------------------
+// 网盘账号管理（feature 047 US1 — T014）
+// ------------------------------------------------------------
+
+#[tokio::test]
+async fn test_pan_accounts_crud_as_admin() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 创建（uc 平台：disabled，不触发网络）
+    let create_body = serde_json::json!({
+        "platform": "uc", "display_name": "UC测试", "credential": "cookie123", "target_dir": "/tg/uc"
+    })
+    .to_string();
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/pan/accounts",
+            &token,
+            Some(create_body),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    let id = body["data"]["id"].as_i64().unwrap();
+    assert_eq!(body["data"]["status"], "disabled");
+    // FR-002 脱敏：响应不含明文凭据与密文
+    let body_str = body.to_string();
+    assert!(!body_str.contains("cookie123"));
+    assert!(!body_str.contains("credential_cipher"));
+
+    // 列表
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request("GET", "/api/pan/accounts", &token, None))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    assert_eq!(body["data"].as_array().unwrap().len(), 1);
+
+    // 详情
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "GET",
+            &format!("/api/pan/accounts/{id}"),
+            &token,
+            None,
+        ))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    assert_eq!(body["data"]["display_name"], "UC测试");
+
+    // 删除
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "DELETE",
+            &format!("/api/pan/accounts/{id}"),
+            &token,
+            None,
+        ))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+}
+
+#[tokio::test]
+async fn test_pan_accounts_requires_admin_auth() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let app = build_test_app(state);
+
+    // 无 token 访问 admin 路由 → 401
+    let resp = app
+        .oneshot(build_request("GET", "/api/pan/accounts", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+}
+
+#[tokio::test]
+async fn test_pan_accounts_rejects_unsupported_platform() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    let create_body = serde_json::json!({
+        "platform": "onedrive", "display_name": "x", "credential": "c", "target_dir": "/d"
+    })
+    .to_string();
+    let resp = app
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/pan/accounts",
+            &token,
+            Some(create_body),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn test_pan_transfer_create_idempotent_and_get() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 建目标账号（uc：不触发夸克网络）
+    let acc_body = serde_json::json!({"platform":"uc","display_name":"UC","credential":"c","target_dir":"0"}).to_string();
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request("POST", "/api/pan/accounts", &token, Some(acc_body)))
+        .await
+        .unwrap();
+    let acc_id = parse_body(resp.into_body()).await["data"]["id"].as_i64().unwrap();
+
+    // 提交转存任务
+    let body = serde_json::json!({"source_url":"https://pan.quark.cn/s/shareid?pwd=pp","target_account_id":acc_id}).to_string();
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request("POST", "/api/pan/transfers", &token, Some(body)))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+    let task_id = body["data"]["id"].as_i64().unwrap();
+    assert_eq!(body["data"]["source_type"], "pan_share");
+
+    // 幂等：同源同目标返回同一任务
+    let body2 = serde_json::json!({"source_url":"https://pan.quark.cn/s/shareid?pwd=pp","target_account_id":acc_id}).to_string();
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request("POST", "/api/pan/transfers", &token, Some(body2)))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_eq!(body["data"]["id"], task_id);
+
+    // 查询
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request("GET", &format!("/api/pan/transfers/{task_id}"), &token, None))
+        .await
+        .unwrap();
+    let body = parse_body(resp.into_body()).await;
+    assert_success(&body);
+}
+
+// ------------------------------------------------------------
+// 开放转存 API + API Key（feature 047 US4 — T036）
+// ------------------------------------------------------------
+
+#[tokio::test]
+async fn test_open_api_no_key_unauthorized() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let app = build_test_app(state);
+    // 无 X-API-Key → 401
+    let resp = app
+        .oneshot(build_request("GET", "/api/v1/accounts", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+}
+
+#[tokio::test]
+async fn test_open_api_key_auth_and_quota() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 创建 API Key（quota_limit=2）
+    let body = serde_json::json!({"system_name":"ext-sys","quota_limit":2}).to_string();
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request("POST", "/api/pan/api-keys", &token, Some(body)))
+        .await
+        .unwrap();
+    let b = parse_body(resp.into_body()).await;
+    let plaintext = b["data"]["plaintext"].as_str().unwrap().to_string();
+    // 视图脱敏：响应不含 key_hash
+    assert!(!b.to_string().contains("key_hash"));
+
+    // 用 key 访问 → 200（quota 1）
+    let resp = app
+        .clone()
+        .oneshot(build_apikey_request("GET", "/api/v1/accounts", &plaintext, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    // 再访问 → 200（quota 2）
+    let resp = app
+        .clone()
+        .oneshot(build_apikey_request("GET", "/api/v1/accounts", &plaintext, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    // 第三次 → 429 配额耗尽
+    let resp = app
+        .clone()
+        .oneshot(build_apikey_request("GET", "/api/v1/accounts", &plaintext, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 429);
+}
+
+#[tokio::test]
+async fn test_open_api_revoked_key_unauthorized() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    let body = serde_json::json!({"system_name":"ext","quota_limit":0}).to_string();
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request("POST", "/api/pan/api-keys", &token, Some(body)))
+        .await
+        .unwrap();
+    let b = parse_body(resp.into_body()).await;
+    let plaintext = b["data"]["plaintext"].as_str().unwrap().to_string();
+    let kid = b["data"]["api_key"]["id"].as_i64().unwrap();
+
+    // 吊销
+    let _ = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            &format!("/api/pan/api-keys/{kid}/revoke"),
+            &token,
+            None,
+        ))
+        .await
+        .unwrap();
+
+    // 吊销后 → 401
+    let resp = app
+        .oneshot(build_apikey_request("GET", "/api/v1/accounts", &plaintext, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+}
+
+#[tokio::test]
+async fn test_pan_transfer_list_filter_and_retry() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 建账号 + 提交任务（uc 目标 → run_task 后 failed）
+    let acc_body = serde_json::json!({"platform":"uc","display_name":"UC","credential":"c","target_dir":"0"}).to_string();
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request("POST", "/api/pan/accounts", &token, Some(acc_body)))
+        .await
+        .unwrap();
+    let acc_id = parse_body(resp.into_body()).await["data"]["id"].as_i64().unwrap();
+
+    let body = serde_json::json!({"source_url":"https://pan.quark.cn/s/listtest","target_account_id":acc_id}).to_string();
+    let _ = app
+        .clone()
+        .oneshot(build_auth_request("POST", "/api/pan/transfers", &token, Some(body)))
+        .await
+        .unwrap();
+    // 等 spawn 的 run_task 完成（uc 立即 failed）
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // list 筛选 failed
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request("GET", "/api/pan/transfers?status=failed", &token, None))
+        .await
+        .unwrap();
+    let b = parse_body(resp.into_body()).await;
+    assert_success(&b);
+    assert_eq!(b["data"]["total"], 1);
+
+    // 取 task id 并重试 → pending
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request("GET", "/api/pan/transfers", &token, None))
+        .await
+        .unwrap();
+    let task_id = parse_body(resp.into_body()).await["data"]["items"][0]["id"].as_i64().unwrap();
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            &format!("/api/pan/transfers/{task_id}/retry"),
+            &token,
+            None,
+        ))
+        .await
+        .unwrap();
+    let b = parse_body(resp.into_body()).await;
+    assert_success(&b);
+    assert_eq!(b["data"]["status"], "pending");
+    assert_eq!(b["data"]["retry_count"], 1);
+}
+
+#[tokio::test]
+async fn test_pan_transfer_direct_link_dispatch() {
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    let acc_body = serde_json::json!({"platform":"uc","display_name":"UC","credential":"c","target_dir":"0"}).to_string();
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request("POST", "/api/pan/accounts", &token, Some(acc_body)))
+        .await
+        .unwrap();
+    let acc_id = parse_body(resp.into_body()).await["data"]["id"].as_i64().unwrap();
+
+    // 直链任务：自动识别为 direct_link
+    let body = serde_json::json!({"source_url":"https://example.com/file.mp4","target_account_id":acc_id}).to_string();
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request("POST", "/api/pan/transfers", &token, Some(body)))
+        .await
+        .unwrap();
+    let b = parse_body(resp.into_body()).await;
+    assert_success(&b);
+    assert_eq!(b["data"]["source_type"], "direct_link");
+
+    // uc 无 direct_link 驱动 → run_task failed
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request("GET", "/api/pan/transfers?status=failed", &token, None))
+        .await
+        .unwrap();
+    let b = parse_body(resp.into_body()).await;
+    assert_eq!(b["data"]["total"], 1);
+}
 
 #[tokio::test]
 async fn test_status_endpoint() {

@@ -77,6 +77,8 @@ fn make_test_state(db: DbPool) -> (AppState, tgTool::state::TgClientMap) {
         session_secret: "test-secret-for-integration".to_string(),
         rate_limit_max: 10000,
         rate_limit_window_secs: 60,
+        pan_cred_key: String::new(),
+        pan_staging_dir: PathBuf::from("./.tmp/pan-staging"),
     };
     let tg_clients =
         std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
