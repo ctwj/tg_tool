@@ -916,6 +916,15 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::info!("SQLite migration 039 applied (crawler_field_library pkg_name/md5/image +3)");
                 }
             }
+            // Migration 040: 网盘账号管理表（feature 047）
+            {
+                let m40 = include_str!("../migrations/040_pan_management_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m40).execute(pool).await {
+                    tracing::warn!("SQLite migration 040 failed (ignored): {e}");
+                } else {
+                    tracing::info!("SQLite migration 040 applied (pan management tables)");
+                }
+            }
             // 043：种子化 crawler_field_library（若表为空则用应用层 BUILTIN_PRESETS 补种）
             {
                 if let Err(e) = tgTool::services::crawler::preset_library::seed_if_empty_sqlite(pool).await {
@@ -1425,6 +1434,15 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::warn!("PostgreSQL migration 039 failed (ignored): {e}");
                 } else {
                     tracing::info!("PostgreSQL migration 039 applied (crawler_field_library pkg_name/md5/image +3)");
+                }
+            }
+            // Migration 040: 网盘账号管理表（feature 047）
+            {
+                let m40 = include_str!("../migrations/040_pan_management_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m40).execute(pool).await {
+                    tracing::warn!("PostgreSQL migration 040 failed (ignored): {e}");
+                } else {
+                    tracing::info!("PostgreSQL migration 040 applied (pan management tables)");
                 }
             }
             // 043：种子化 crawler_field_library

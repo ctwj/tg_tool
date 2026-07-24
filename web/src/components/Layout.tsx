@@ -16,6 +16,7 @@ import {
   FieldTimeOutlined,
   PictureOutlined,
   GlobalOutlined,
+  CloudOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useLocation, Outlet } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
@@ -69,6 +70,8 @@ const menuItems = [
     label: '系统管理',
     children: [
       { key: '/files', icon: <FileOutlined />, label: '文件管理' },
+      { key: '/pan-accounts', icon: <CloudOutlined />, label: '网盘账号' },
+      { key: '/transfer-tasks', icon: <CloudOutlined />, label: '转存任务' },
       { key: '/users', icon: <UserOutlined />, label: '用户管理' },
       { key: '/settings', icon: <SettingOutlined />, label: '系统设置' },
       { key: '/api-status', icon: <ApiOutlined />, label: 'API 状态' },
@@ -89,6 +92,8 @@ const PATH_TO_GROUP: Record<string, string> = {
   '/crawler/resources': 'group-crawler',
   '/crawler/history': 'group-crawler',
   '/files': 'group-system',
+  '/pan-accounts': 'group-system',
+  '/transfer-tasks': 'group-system',
   '/users': 'group-system',
   '/settings': 'group-system',
   '/api-status': 'group-system',
@@ -105,6 +110,8 @@ const pageTitles: Record<string, string> = {
   '/resources': '资源管理',
   '/users': '用户管理',
   '/files': '文件管理',
+  '/pan-accounts': '网盘账号管理',
+  '/transfer-tasks': '转存任务历史',
   '/settings': '系统设置',
   '/api-status': 'API 状态',
   '/crawler/tasks': '爬虫任务',
