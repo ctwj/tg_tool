@@ -42,6 +42,9 @@ pub async fn get_task(
 /// GET /api/v1/accounts — 列出可用目标账号（供调用方选 target_account_id）
 pub async fn list_accounts(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     let accounts = pan_account::list_accounts(&state.db).await?;
-    let active: Vec<_> = accounts.into_iter().filter(|a| a.status == "active").collect();
+    let active: Vec<_> = accounts
+        .into_iter()
+        .filter(|a| a.status == "active")
+        .collect();
     Ok(Json(json!({ "success": true, "data": active })))
 }

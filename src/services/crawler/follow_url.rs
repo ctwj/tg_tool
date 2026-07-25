@@ -13,9 +13,11 @@
 //! 做差异化错误展示。
 
 use crate::services::crawler::engine::resolve_url;
-use crate::services::crawler::extractor::{self, sub_rule_to_rule, ExtractError, ExtractInput, Hit};
+use crate::services::crawler::extractor::{
+    self, ExtractError, ExtractInput, Hit, sub_rule_to_rule,
+};
 use crate::services::crawler::field_schema::{FollowUrlRule, SourceLayer};
-use crate::services::crawler::source_layer::{fetch_source_material, ProbeError, SourceMaterial};
+use crate::services::crawler::source_layer::{ProbeError, SourceMaterial, fetch_source_material};
 
 /// 两阶段提取错误
 #[derive(Debug, Clone)]

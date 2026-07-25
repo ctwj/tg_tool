@@ -33,4 +33,4 @@ pub mod templates;
 pub mod url_normalize;
 
 // 便捷重导出：handler/state 直接 `use crate::services::crawler::CrawlerSchedulerHandle`
-pub use scheduler::{create_scheduler, CrawlerSchedulerHandle, CrawlerSchedulerState};
+pub use scheduler::{CrawlerSchedulerHandle, CrawlerSchedulerState, create_scheduler};

@@ -37,14 +37,18 @@ pub async fn get_decrypted_credential(
 
 async fn get_account_full(db: &DbPool, id: i64) -> Result<PanAccount, AppError> {
     match db {
-        DbPool::Sqlite(p) => sqlx::query_as::<_, PanAccount>("SELECT * FROM pan_accounts WHERE id = ?")
-            .bind(id)
-            .fetch_optional(p)
-            .await?,
-        DbPool::Postgres(p) => sqlx::query_as::<_, PanAccount>("SELECT * FROM pan_accounts WHERE id = $1")
-            .bind(id)
-            .fetch_optional(p)
-            .await?,
+        DbPool::Sqlite(p) => {
+            sqlx::query_as::<_, PanAccount>("SELECT * FROM pan_accounts WHERE id = ?")
+                .bind(id)
+                .fetch_optional(p)
+                .await?
+        }
+        DbPool::Postgres(p) => {
+            sqlx::query_as::<_, PanAccount>("SELECT * FROM pan_accounts WHERE id = $1")
+                .bind(id)
+                .fetch_optional(p)
+                .await?
+        }
     }
     .ok_or_else(|| AppError::NotFound(format!("网盘账号 {id} 不存在")))
 }
@@ -100,7 +104,10 @@ pub async fn create_account(
     };
 
     if !driver_ready {
-        tracing::info!("网盘账号 {id}({}) 创建成功，但该平台驱动暂未实现，标记 disabled", req.platform);
+        tracing::info!(
+            "网盘账号 {id}({}) 创建成功，但该平台驱动暂未实现，标记 disabled",
+            req.platform
+        );
     } else if let Err(e) = refresh_health(db, pan_key, id).await {
         // 创建即健康校验失败（网络/解析）：不阻断创建，记录告警，保持 active 待后续校验
         tracing::warn!("网盘账号 {id} 创建后健康校验失败（不阻断创建）: {e}");
@@ -159,10 +166,12 @@ pub async fn update_account(
     };
 
     // 若更新了凭据且平台驱动就绪，重新健康校验
-    if has_new_credential && DRIVER_READY_PLATFORMS.contains(&acc.platform.as_str())
-        && let Err(e) = refresh_health(db, pan_key, id).await {
-            tracing::warn!("网盘账号 {id} 更新凭据后健康校验失败: {e}");
-        }
+    if has_new_credential
+        && DRIVER_READY_PLATFORMS.contains(&acc.platform.as_str())
+        && let Err(e) = refresh_health(db, pan_key, id).await
+    {
+        tracing::warn!("网盘账号 {id} 更新凭据后健康校验失败: {e}");
+    }
     get_account_view(db, id).await
 }
 
@@ -187,7 +196,11 @@ pub async fn delete_account(db: &DbPool, id: i64) -> Result<(), AppError> {
 
 /// 健康校验：解密凭据 → 调驱动校验 → 回写 status/capacity/last_checked_at。
 /// 凭据失效是正常业务结果（status=expired），返回 view；网络/解析错误才报 AppError。
-pub async fn check_account(db: &DbPool, pan_key: &str, id: i64) -> Result<PanAccountView, AppError> {
+pub async fn check_account(
+    db: &DbPool,
+    pan_key: &str,
+    id: i64,
+) -> Result<PanAccountView, AppError> {
     let acc = get_account_full(db, id).await?;
     if !DRIVER_READY_PLATFORMS.contains(&acc.platform.as_str()) {
         return Err(AppError::BadRequest(format!(
@@ -205,11 +218,7 @@ async fn refresh_health(db: &DbPool, pan_key: &str, id: i64) -> Result<(), AppEr
         credential::decrypt_credential(&acc.credential_cipher, &acc.credential_nonce, pan_key)?;
     let health = match acc.platform.as_str() {
         "quark" => crate::services::pan::quark::health_check(&plain).await?,
-        other => {
-            return Err(AppError::Internal(format!(
-                "平台 {other} 驱动未实现"
-            )))
-        }
+        other => return Err(AppError::Internal(format!("平台 {other} 驱动未实现"))),
     };
     let new_status = if health.valid { "active" } else { "expired" };
     let now = Utc::now().naive_utc();

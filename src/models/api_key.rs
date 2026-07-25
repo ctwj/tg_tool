@@ -8,7 +8,7 @@ pub struct ApiKey {
     pub system_name: String,
     pub key_hash: String,
     pub key_prefix: String,
-    pub status: String, // enabled | disabled
+    pub status: String,   // enabled | disabled
     pub quota_limit: i64, // 0 = 无限
     pub quota_used: i64,
     pub quota_reset_at: Option<NaiveDateTime>,

@@ -7,7 +7,6 @@ import {
   ReloadOutlined, CheckCircleOutlined, CloseCircleOutlined,
   WarningOutlined, StopOutlined, ClockCircleOutlined, LoadingOutlined,
 } from '@ant-design/icons'
-import dayjs from 'dayjs'
 import { fmtUtc } from '../utils/time'
 import { useNavigate } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'

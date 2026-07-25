@@ -49,8 +49,8 @@ impl FieldNodeRow {
     /// 失败场景：DB 中存在非法 rule_json（手工 SQL 改坏）。
     /// 失败时返回错误字符串，由调用方决定降级策略。
     pub fn to_spec(&self) -> Result<FieldNodeSpecView, String> {
-        let scope = Scope::from_str(&self.scope)
-            .ok_or_else(|| format!("非法 scope: {}", self.scope))?;
+        let scope =
+            Scope::from_str(&self.scope).ok_or_else(|| format!("非法 scope: {}", self.scope))?;
         let field_type = FieldType::from_str(&self.field_type)
             .ok_or_else(|| format!("非法 field_type: {}", self.field_type))?;
         let source_layer = SourceLayer::from_str(&self.source_layer)
@@ -58,7 +58,10 @@ impl FieldNodeRow {
         let extractor_mode = ExtractorMode::from_str(&self.extractor_mode)
             .ok_or_else(|| format!("非法 extractor_mode: {}", self.extractor_mode))?;
 
-        let rule = crate::services::crawler::field_schema::deserialize_rule(extractor_mode, &self.rule_json)?;
+        let rule = crate::services::crawler::field_schema::deserialize_rule(
+            extractor_mode,
+            &self.rule_json,
+        )?;
 
         let post_processors: Vec<PostProcessor> = match &self.post_processors_json {
             None => Vec::new(),
@@ -154,7 +157,11 @@ pub struct FieldTreeNode {
 impl FieldTreeNode {
     /// 递归统计该子树节点总数（含自身）
     pub fn subtree_size(&self) -> usize {
-        1 + self.children.iter().map(FieldTreeNode::subtree_size).sum::<usize>()
+        1 + self
+            .children
+            .iter()
+            .map(FieldTreeNode::subtree_size)
+            .sum::<usize>()
     }
 }
 
@@ -190,7 +197,10 @@ pub fn from_rows(rows: Vec<FieldNodeRow>) -> FieldTree {
     let list_page = build_children(0, "list_page", &mut buckets);
     let detail_page = build_children(0, "detail_page", &mut buckets);
 
-    FieldTree { list_page, detail_page }
+    FieldTree {
+        list_page,
+        detail_page,
+    }
 }
 
 /// 递归组装子节点：从 buckets 中取出 (parent_id, scope) 桶，遍历构造嵌套树
@@ -217,15 +227,29 @@ fn build_children(
 
 /// 树形统计辅助：返回该树总节点数（含跨 scope）
 pub fn tree_total_nodes(tree: &FieldTree) -> usize {
-    tree.list_page.iter().map(FieldTreeNode::subtree_size).sum::<usize>()
-        + tree.detail_page.iter().map(FieldTreeNode::subtree_size).sum::<usize>()
+    tree.list_page
+        .iter()
+        .map(FieldTreeNode::subtree_size)
+        .sum::<usize>()
+        + tree
+            .detail_page
+            .iter()
+            .map(FieldTreeNode::subtree_size)
+            .sum::<usize>()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn row(id: i64, task: i64, parent: Option<i64>, scope: &str, name: &str, sort: i32) -> FieldNodeRow {
+    fn row(
+        id: i64,
+        task: i64,
+        parent: Option<i64>,
+        scope: &str,
+        name: &str,
+        sort: i32,
+    ) -> FieldNodeRow {
         FieldNodeRow {
             id,
             task_id: task,
@@ -242,8 +266,12 @@ mod tests {
             sort_order: sort,
             is_active: true,
             refresh_on_read: false,
-            created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
-            updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
+            created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                .unwrap()
+                .naive_utc(),
+            updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                .unwrap()
+                .naive_utc(),
         }
     }
 
@@ -387,10 +415,13 @@ mod tests {
         let spec = r.to_spec().expect("解析");
         let (rule_json, pp_json) = spec.to_db_json();
         // rule_json 应能再次被解析
-        assert!(crate::services::crawler::field_schema::deserialize_rule(
-            spec.extractor_mode,
-            &rule_json,
-        ).is_ok());
+        assert!(
+            crate::services::crawler::field_schema::deserialize_rule(
+                spec.extractor_mode,
+                &rule_json,
+            )
+            .is_ok()
+        );
         assert!(pp_json.is_none()); // 空后处理链
     }
 }

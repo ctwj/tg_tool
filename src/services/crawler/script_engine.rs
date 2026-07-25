@@ -323,9 +323,7 @@ fn classify_exception(exc: &rquickjs::Exception, start: Instant) -> ScriptError 
     }
 
     // is not defined → 大概率是访问了被删除的危险全局
-    if message.contains("is not defined")
-        && DANGER_NAMES.iter().any(|k| message.contains(k))
-    {
+    if message.contains("is not defined") && DANGER_NAMES.iter().any(|k| message.contains(k)) {
         return ScriptError::new(ScriptFailureCategory::SecurityViolation, message)
             .with_duration(elapsed);
     }
@@ -336,7 +334,8 @@ fn classify_exception(exc: &rquickjs::Exception, start: Instant) -> ScriptError 
         || message.contains("unexpected token")
         || message.contains("expecting")
     {
-        return ScriptError::new(ScriptFailureCategory::SyntaxError, message).with_duration(elapsed);
+        return ScriptError::new(ScriptFailureCategory::SyntaxError, message)
+            .with_duration(elapsed);
     }
     if message.contains("TypeError") {
         return ScriptError::new(ScriptFailureCategory::TypeError, message).with_duration(elapsed);
@@ -440,7 +439,9 @@ mod tests {
 
     // ---- evaluate_blocking 端到端 ----
 
-    fn simple_ctx(value: &str) -> impl for<'js> Fn(&Ctx<'js>) -> Result<Object<'js>, ScriptError> + '_ {
+    fn simple_ctx(
+        value: &str,
+    ) -> impl for<'js> Fn(&Ctx<'js>) -> Result<Object<'js>, ScriptError> + '_ {
         move |ctx: &Ctx| {
             let obj = Object::new(ctx.clone()).map_err(|e| {
                 ScriptError::new(

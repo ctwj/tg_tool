@@ -123,10 +123,7 @@ async fn tick(state: &AppState) -> Result<(), String> {
     let global_concurrency = global_concurrency(state).await;
     let sem = Arc::new(tokio::sync::Semaphore::new(global_concurrency as usize));
 
-    let task_ids: Vec<(i64, String)> = due
-        .iter()
-        .map(|t| (t.id, t.name.clone()))
-        .collect();
+    let task_ids: Vec<(i64, String)> = due.iter().map(|t| (t.id, t.name.clone())).collect();
     tracing::info!(
         "Crawler tick: {} due tasks (global_concurrency={})",
         task_ids.len(),
@@ -146,7 +143,8 @@ async fn tick(state: &AppState) -> Result<(), String> {
             if !guard.insert(task.id) {
                 tracing::info!(
                     "Task {} ({}) still running, skip this tick",
-                    task.id, task.name
+                    task.id,
+                    task.name
                 );
                 continue;
             }
@@ -155,7 +153,8 @@ async fn tick(state: &AppState) -> Result<(), String> {
         if crate::services::crawler::engine::is_task_running(&state.db, task.id).await {
             tracing::info!(
                 "Task {} ({}) has a running history row (manual trigger or orphan), skip this tick",
-                task.id, task.name
+                task.id,
+                task.name
             );
             // 回退刚才的内存标记（这次不跑，等下次 tick）
             let mut guard = running_set.lock().await;
@@ -174,26 +173,24 @@ async fn tick(state: &AppState) -> Result<(), String> {
                 let permit = match sem.acquire_owned().await {
                     Ok(p) => p,
                     Err(e) => {
-                        tracing::warn!(
-                            "Task {task_id} ({task_name}) acquire permit failed: {e}"
-                        );
+                        tracing::warn!("Task {task_id} ({task_name}) acquire permit failed: {e}");
                         return;
                     }
                 };
                 // 执行抓取
-                let result =
-                    crate::services::crawler::engine::run_task(task_id, &state).await;
+                let result = crate::services::crawler::engine::run_task(task_id, &state).await;
                 match result {
                     Ok(summary) => {
                         tracing::info!(
                             "Task {task_id} ({task_name}) done: status={} crawled={} new={} failed={}",
-                            summary.status, summary.crawled_count, summary.new_count, summary.failed_count
+                            summary.status,
+                            summary.crawled_count,
+                            summary.new_count,
+                            summary.failed_count
                         );
                     }
                     Err(e) => {
-                        tracing::warn!(
-                            "Task {task_id} ({task_name}) engine error: {e}"
-                        );
+                        tracing::warn!("Task {task_id} ({task_name}) engine error: {e}");
                     }
                 }
                 drop(permit);
@@ -294,6 +291,8 @@ pub async fn recover_active_tasks_schedule(state: &AppState) {
         }
     };
     if updated > 0 {
-        tracing::info!("Recovered {updated} active crawler tasks schedule (advanced next_run_at to now + interval)");
+        tracing::info!(
+            "Recovered {updated} active crawler tasks schedule (advanced next_run_at to now + interval)"
+        );
     }
 }

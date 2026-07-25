@@ -38,7 +38,9 @@ fn uc_req() -> CreatePanAccount {
 async fn test_create_uc_marks_disabled_no_network() {
     // uc 驱动未实现：创建标记 disabled，且不触发夸克网络调用
     let db = setup().await;
-    let view = pan_account::create_account(&db, &pan_key(), uc_req()).await.unwrap();
+    let view = pan_account::create_account(&db, &pan_key(), uc_req())
+        .await
+        .unwrap();
     assert_eq!(view.platform, "uc");
     assert_eq!(view.status, "disabled");
     assert_eq!(view.target_dir, "/tg/转存");
@@ -48,7 +50,9 @@ async fn test_create_uc_marks_disabled_no_network() {
 async fn test_view_excludes_credential_and_plaintext() {
     // FR-002：脱敏视图不含密文/nonce/明文
     let db = setup().await;
-    let view = pan_account::create_account(&db, &pan_key(), uc_req()).await.unwrap();
+    let view = pan_account::create_account(&db, &pan_key(), uc_req())
+        .await
+        .unwrap();
     let json = serde_json::to_string(&view).unwrap();
     assert!(!json.contains("fake_cookie_value"));
     assert!(!json.contains("credential_cipher"));
@@ -61,7 +65,9 @@ async fn test_list_and_get() {
     for i in 0..3 {
         let mut req = uc_req();
         req.display_name = format!("UC-{i}");
-        pan_account::create_account(&db, &pan_key(), req).await.unwrap();
+        pan_account::create_account(&db, &pan_key(), req)
+            .await
+            .unwrap();
     }
     let list = pan_account::list_accounts(&db).await.unwrap();
     assert_eq!(list.len(), 3);
@@ -79,13 +85,17 @@ async fn test_get_nonexistent_returns_err() {
 #[tokio::test]
 async fn test_update_fields_without_credential() {
     let db = setup().await;
-    let created = pan_account::create_account(&db, &pan_key(), uc_req()).await.unwrap();
+    let created = pan_account::create_account(&db, &pan_key(), uc_req())
+        .await
+        .unwrap();
     let upd = UpdatePanAccount {
         display_name: Some("new-name".into()),
         credential: None,
         target_dir: Some("/new".into()),
     };
-    let updated = pan_account::update_account(&db, &pan_key(), created.id, upd).await.unwrap();
+    let updated = pan_account::update_account(&db, &pan_key(), created.id, upd)
+        .await
+        .unwrap();
     assert_eq!(updated.display_name, "new-name");
     assert_eq!(updated.target_dir, "/new");
 }
@@ -93,9 +103,15 @@ async fn test_update_fields_without_credential() {
 #[tokio::test]
 async fn test_delete_then_not_found() {
     let db = setup().await;
-    let created = pan_account::create_account(&db, &pan_key(), uc_req()).await.unwrap();
+    let created = pan_account::create_account(&db, &pan_key(), uc_req())
+        .await
+        .unwrap();
     pan_account::delete_account(&db, created.id).await.unwrap();
-    assert!(pan_account::get_account_view(&db, created.id).await.is_err());
+    assert!(
+        pan_account::get_account_view(&db, created.id)
+            .await
+            .is_err()
+    );
     // 重复删除报错
     assert!(pan_account::delete_account(&db, created.id).await.is_err());
 }
@@ -105,7 +121,11 @@ async fn test_reject_unsupported_platform() {
     let db = setup().await;
     let mut req = uc_req();
     req.platform = "onedrive".into();
-    assert!(pan_account::create_account(&db, &pan_key(), req).await.is_err());
+    assert!(
+        pan_account::create_account(&db, &pan_key(), req)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -113,19 +133,33 @@ async fn test_reject_empty_credential() {
     let db = setup().await;
     let mut req = uc_req();
     req.credential = "   ".into();
-    assert!(pan_account::create_account(&db, &pan_key(), req).await.is_err());
+    assert!(
+        pan_account::create_account(&db, &pan_key(), req)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
 async fn test_reject_bad_pan_key() {
     let db = setup().await;
-    assert!(pan_account::create_account(&db, "!!!not-base64!!!", uc_req()).await.is_err());
+    assert!(
+        pan_account::create_account(&db, "!!!not-base64!!!", uc_req())
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
 async fn test_check_unsupported_platform_err_no_network() {
     // uc 驱动未实现：check_account 报错，不触发网络
     let db = setup().await;
-    let created = pan_account::create_account(&db, &pan_key(), uc_req()).await.unwrap();
-    assert!(pan_account::check_account(&db, &pan_key(), created.id).await.is_err());
+    let created = pan_account::create_account(&db, &pan_key(), uc_req())
+        .await
+        .unwrap();
+    assert!(
+        pan_account::check_account(&db, &pan_key(), created.id)
+            .await
+            .is_err()
+    );
 }

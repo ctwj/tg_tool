@@ -74,9 +74,7 @@ pub fn parse(raw: &str, extract_code: Option<&str>) -> ParsedLink {
 fn extract_pwd_from_query(url: &str) -> Option<String> {
     let idx = url.find("pwd=")?;
     let rest = &url[idx + 4..];
-    let end = rest
-        .find(['&', '#', ' ', '/'])
-        .unwrap_or(rest.len());
+    let end = rest.find(['&', '#', ' ', '/']).unwrap_or(rest.len());
     let v = &rest[..end];
     if v.is_empty() {
         None
@@ -100,9 +98,7 @@ fn parse_pan_share(url: &str) -> Option<(String, String)> {
     let marker = "/s/";
     let start = url.find(marker)? + marker.len();
     let rest = &url[start..];
-    let end = rest
-        .find(['?', '#', '/', ' ', '&'])
-        .unwrap_or(rest.len());
+    let end = rest.find(['?', '#', '/', ' ', '&']).unwrap_or(rest.len());
     let pwd_id = &rest[..end];
     if pwd_id.is_empty() {
         return None;

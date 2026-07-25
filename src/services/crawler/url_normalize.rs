@@ -291,7 +291,10 @@ mod tests {
     // ===== remove_dot_segments（RFC 3986 § 5.2.4）=====
     #[test]
     fn dot_segments_basic_parent() {
-        assert_eq!(remove_dot_segments("/page-2.html/../xiazai/article.html"), "/xiazai/article.html");
+        assert_eq!(
+            remove_dot_segments("/page-2.html/../xiazai/article.html"),
+            "/xiazai/article.html"
+        );
     }
 
     #[test]

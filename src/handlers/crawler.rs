@@ -12,7 +12,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::errors::AppError;
-use crate::models::crawler_article::{CrawlerArticle, CrawlerArticleDetail, CrawlerArticleListItem};
+use crate::models::crawler_article::{
+    CrawlerArticle, CrawlerArticleDetail, CrawlerArticleListItem,
+};
 use crate::models::crawler_article_image::CrawlerArticleImage;
 use crate::models::crawler_article_link::CrawlerArticleLink;
 use crate::models::crawler_run_history::{
@@ -52,7 +54,8 @@ pub async fn list_tasks(
 
     let total: i64 = match &state.db {
         DbPool::Sqlite(pool) => {
-            let sql = format!("SELECT COUNT(*) FROM crawler_tasks {where}", where = where_sql.sqlite);
+            let sql =
+                format!("SELECT COUNT(*) FROM crawler_tasks {where}", where = where_sql.sqlite);
             let mut q = sqlx::query_scalar::<_, i64>(&sql);
             if !keyword.is_empty() {
                 q = q.bind(format!("%{keyword}%")).bind(format!("%{keyword}%"));
@@ -63,7 +66,8 @@ pub async fn list_tasks(
             q.fetch_one(pool).await?
         }
         DbPool::Postgres(pool) => {
-            let sql = format!("SELECT COUNT(*) FROM crawler_tasks {where}", where = where_sql.postgres);
+            let sql =
+                format!("SELECT COUNT(*) FROM crawler_tasks {where}", where = where_sql.postgres);
             let mut q = sqlx::query_scalar::<_, i64>(&sql);
             if !keyword.is_empty() {
                 q = q.bind(format!("%{keyword}%")).bind(format!("%{keyword}%"));
@@ -221,9 +225,9 @@ pub async fn create_task(
     };
 
     // 读回完整行
-    let task = fetch_task(&state, id).await?.ok_or_else(|| {
-        AppError::Internal("刚插入的任务读取失败".into())
-    })?;
+    let task = fetch_task(&state, id)
+        .await?
+        .ok_or_else(|| AppError::Internal("刚插入的任务读取失败".into()))?;
     tracing::info!(target: "crawler", "Crawler task created: id={id} name={}", body.name);
     Ok(Json(json!({ "success": true, "data": task })))
 }
@@ -286,10 +290,16 @@ pub async fn update_task(
         merged.auto_link_check = a;
     }
     if let Some(b) = body.get("block_detection_config") {
-        merged.block_detection_config =
-            if b.is_null() { None } else { Some(b.to_string()) };
+        merged.block_detection_config = if b.is_null() {
+            None
+        } else {
+            Some(b.to_string())
+        };
     }
-    if let Some(m) = body.get("max_consecutive_failures").and_then(|v| v.as_i64()) {
+    if let Some(m) = body
+        .get("max_consecutive_failures")
+        .and_then(|v| v.as_i64())
+    {
         merged.max_consecutive_failures = m;
     }
     if let Some(s) = body.get("pagination_selector") {
@@ -426,9 +436,9 @@ pub async fn update_task(
         }
     }
 
-    let task = fetch_task(&state, id).await?.ok_or_else(|| {
-        AppError::Internal("更新后任务读取失败".into())
-    })?;
+    let task = fetch_task(&state, id)
+        .await?
+        .ok_or_else(|| AppError::Internal("更新后任务读取失败".into()))?;
     Ok(Json(json!({ "success": true, "data": task })))
 }
 
@@ -589,9 +599,9 @@ pub async fn toggle_task(
             }
         }
     }
-    let task = fetch_task(&state, id).await?.ok_or_else(|| {
-        AppError::Internal("toggle 后任务读取失败".into())
-    })?;
+    let task = fetch_task(&state, id)
+        .await?
+        .ok_or_else(|| AppError::Internal("toggle 后任务读取失败".into()))?;
     Ok(Json(json!({ "success": true, "data": task })))
 }
 
@@ -613,7 +623,9 @@ pub async fn run_task(
     }
     // 045：同一任务正在运行时拒绝重复触发（防止并发抓取）
     if crate::services::crawler::engine::is_task_running(&state.db, id).await {
-        return Err(AppError::BadRequest("任务正在运行中，请等待当前运行完成".into()));
+        return Err(AppError::BadRequest(
+            "任务正在运行中，请等待当前运行完成".into(),
+        ));
     }
     // 后台 spawn — engine::run_task 内部会 finalize_run 写历史
     let st = state.clone();
@@ -679,8 +691,14 @@ pub async fn export_task(
     Ok((
         axum::http::StatusCode::OK,
         [
-            (axum::http::header::CONTENT_TYPE, "application/json; charset=utf-8".to_string()),
-            (axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"{filename}\"")),
+            (
+                axum::http::header::CONTENT_TYPE,
+                "application/json; charset=utf-8".to_string(),
+            ),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
         ],
         body,
     )
@@ -693,9 +711,8 @@ pub async fn import_task(
     Json(body): Json<CrawlerTaskInput>,
 ) -> Result<Json<Value>, AppError> {
     // 任务字段校验
-    body.validate().map_err(|e| {
-        AppError::BadRequest(format!("导入配置校验失败: {e}"))
-    })?;
+    body.validate()
+        .map_err(|e| AppError::BadRequest(format!("导入配置校验失败: {e}")))?;
     // 字段树校验（若携带）：name 正则 + rule/mode 一致性 + 节点数上限（对齐 create_field_node）
     if let Some(tree) = body.field_tree.as_ref() {
         crate::services::crawler::templates::validate_field_tree(tree)
@@ -816,9 +833,9 @@ pub async fn import_task(
         }
     };
 
-    let task = fetch_task(&state, id).await?.ok_or_else(|| {
-        AppError::Internal("导入后任务读取失败".into())
-    })?;
+    let task = fetch_task(&state, id)
+        .await?
+        .ok_or_else(|| AppError::Internal("导入后任务读取失败".into()))?;
     Ok(Json(json!({ "success": true, "data": task })))
 }
 
@@ -827,9 +844,7 @@ pub async fn import_task(
 /// 043 取代路径：042 内置模板（generic_resource_site / discuz_forum / wordpress_blog）
 /// 已删除，本端点暂时返回空数组。US1 T038 将重写为「字段树预置模板」端点
 /// `GET /api/crawler/task-templates`。
-pub async fn list_templates(
-    State(_state): State<AppState>,
-) -> Result<Json<Value>, AppError> {
+pub async fn list_templates(State(_state): State<AppState>) -> Result<Json<Value>, AppError> {
     Ok(Json(json!({ "success": true, "data": [] })))
 }
 
@@ -838,9 +853,7 @@ pub async fn list_templates(
 /// `GET /api/crawler/task-templates` — 返回内置字段树预置模板列表
 ///
 /// 响应：`{ success: true, data: [{ key, name, description, source_type, field_tree }] }`
-pub async fn list_task_templates(
-    State(_state): State<AppState>,
-) -> Result<Json<Value>, AppError> {
+pub async fn list_task_templates(State(_state): State<AppState>) -> Result<Json<Value>, AppError> {
     let data = crate::services::crawler::templates::builtin_templates();
     Ok(Json(json!({ "success": true, "data": data })))
 }
@@ -926,9 +939,10 @@ pub async fn create_task_from_template(
     // 4. 事务：INSERT 任务 + 批量 INSERT 字段节点（保留父子映射）
     let (task_id, node_count) = match &state.db {
         DbPool::Sqlite(pool) => {
-            let mut tx = pool.begin().await.map_err(|e| {
-                AppError::Internal(format!("开启事务失败: {e}"))
-            })?;
+            let mut tx = pool
+                .begin()
+                .await
+                .map_err(|e| AppError::Internal(format!("开启事务失败: {e}")))?;
 
             let r = sqlx::query(
                 "INSERT INTO crawler_tasks (name, enabled, list_urls, two_stage, \
@@ -950,22 +964,20 @@ pub async fn create_task_from_template(
             .map_err(|e| map_unique_err_tx(e, task_name))?;
             let new_task_id = r.last_insert_rowid();
 
-            let count = insert_template_field_nodes_sqlite(
-                &mut tx,
-                new_task_id,
-                &template.field_tree,
-            )
-            .await?;
+            let count =
+                insert_template_field_nodes_sqlite(&mut tx, new_task_id, &template.field_tree)
+                    .await?;
 
-            tx.commit().await.map_err(|e| {
-                AppError::Internal(format!("提交事务失败: {e}"))
-            })?;
+            tx.commit()
+                .await
+                .map_err(|e| AppError::Internal(format!("提交事务失败: {e}")))?;
             (new_task_id, count)
         }
         DbPool::Postgres(pool) => {
-            let mut tx = pool.begin().await.map_err(|e| {
-                AppError::Internal(format!("开启事务失败: {e}"))
-            })?;
+            let mut tx = pool
+                .begin()
+                .await
+                .map_err(|e| AppError::Internal(format!("开启事务失败: {e}")))?;
 
             let r = sqlx::query(
                 "INSERT INTO crawler_tasks (name, enabled, list_urls, two_stage, \
@@ -988,16 +1000,12 @@ pub async fn create_task_from_template(
             let id_val: serde_json::Value = sqlx::Row::get(&r, "id");
             let new_task_id = id_val.as_i64().unwrap_or(0);
 
-            let count = insert_template_field_nodes_pg(
-                &mut tx,
-                new_task_id,
-                &template.field_tree,
-            )
-            .await?;
+            let count =
+                insert_template_field_nodes_pg(&mut tx, new_task_id, &template.field_tree).await?;
 
-            tx.commit().await.map_err(|e| {
-                AppError::Internal(format!("提交事务失败: {e}"))
-            })?;
+            tx.commit()
+                .await
+                .map_err(|e| AppError::Internal(format!("提交事务失败: {e}")))?;
             (new_task_id, count)
         }
     };
@@ -1028,13 +1036,25 @@ pub async fn create_task_from_template(
 /// 真正的 `parent_id` 由调用方在插入后用此索引回查。
 fn flatten_field_tree(
     tree: &crate::services::crawler::field_schema::FieldTree,
-) -> Vec<(Option<usize>, crate::services::crawler::field_schema::Scope, &crate::services::crawler::field_schema::FieldTreeNode)> {
+) -> Vec<(
+    Option<usize>,
+    crate::services::crawler::field_schema::Scope,
+    &crate::services::crawler::field_schema::FieldTreeNode,
+)> {
     use crate::services::crawler::field_schema::Scope;
-    let mut out: Vec<(Option<usize>, Scope, &crate::services::crawler::field_schema::FieldTreeNode)> = Vec::new();
+    let mut out: Vec<(
+        Option<usize>,
+        Scope,
+        &crate::services::crawler::field_schema::FieldTreeNode,
+    )> = Vec::new();
 
     // 用栈做 DFS：(parent_index_in_out, scope, node)
     // 我们需要「父在子之前」的顺序，所以用「先 push 父，再压子」的逆序栈
-    let mut stack: Vec<(Option<usize>, Scope, &crate::services::crawler::field_schema::FieldTreeNode)> = Vec::new();
+    let mut stack: Vec<(
+        Option<usize>,
+        Scope,
+        &crate::services::crawler::field_schema::FieldTreeNode,
+    )> = Vec::new();
     // detail_page 先压（出栈晚），list_page 后压（出栈早）；具体顺序无所谓，只要父在子前
     for node in tree.detail_page.iter().rev() {
         stack.push((None, Scope::DetailPage, node));
@@ -1163,10 +1183,16 @@ async fn fetch_task(state: &AppState, id: i64) -> Result<Option<CrawlerTask>, Ap
     let sql_pg = sql.replace("WHERE id = ?", "WHERE id = $1");
     Ok(match &state.db {
         DbPool::Sqlite(pool) => {
-            sqlx::query_as::<_, CrawlerTask>(sql).bind(id).fetch_optional(pool).await?
+            sqlx::query_as::<_, CrawlerTask>(sql)
+                .bind(id)
+                .fetch_optional(pool)
+                .await?
         }
         DbPool::Postgres(pool) => {
-            sqlx::query_as::<_, CrawlerTask>(&sql_pg).bind(id).fetch_optional(pool).await?
+            sqlx::query_as::<_, CrawlerTask>(&sql_pg)
+                .bind(id)
+                .fetch_optional(pool)
+                .await?
         }
     })
 }
@@ -1212,7 +1238,13 @@ fn map_unique_err(e: sqlx::Error, name: &str) -> AppError {
 
 fn sanitize_filename(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -1225,7 +1257,12 @@ struct WhereSql {
     postgres: String,
 }
 
-fn build_where(keyword: &str, status: Option<&str>, enabled: Option<bool>, _unused: bool) -> WhereSql {
+fn build_where(
+    keyword: &str,
+    status: Option<&str>,
+    enabled: Option<bool>,
+    _unused: bool,
+) -> WhereSql {
     let mut clauses: Vec<&'static str> = vec![];
     if !keyword.is_empty() {
         clauses.push("(name LIKE ? OR template_source LIKE ?)");
@@ -1266,7 +1303,10 @@ fn build_where(keyword: &str, status: Option<&str>, enabled: Option<bool>, _unus
         // enabled=1/0 无占位，原样追加
         pg.push_str(&clause_pg);
     }
-    WhereSql { sqlite, postgres: pg }
+    WhereSql {
+        sqlite,
+        postgres: pg,
+    }
 }
 
 fn pg_filter_count(keyword: &str, status: Option<&str>, enabled: Option<bool>) -> usize {
@@ -1681,56 +1721,54 @@ pub async fn get_article_detail(
     // 4. task_name（即使 task_id NULL 也回填快照）
     let task_name: Option<String> = if let Some(tid) = article.task_id {
         match &state.db {
-            DbPool::Sqlite(pool) => {
-                sqlx::query_scalar::<_, Option<String>>(
-                    "SELECT name FROM crawler_tasks WHERE id = ?",
-                )
-                .bind(tid)
-                .fetch_optional(pool)
-                .await?
-                .flatten()
-            }
-            DbPool::Postgres(pool) => {
-                sqlx::query_scalar::<_, Option<String>>(
-                    "SELECT name FROM crawler_tasks WHERE id = $1",
-                )
-                .bind(tid)
-                .fetch_optional(pool)
-                .await?
-                .flatten()
-            }
+            DbPool::Sqlite(pool) => sqlx::query_scalar::<_, Option<String>>(
+                "SELECT name FROM crawler_tasks WHERE id = ?",
+            )
+            .bind(tid)
+            .fetch_optional(pool)
+            .await?
+            .flatten(),
+            DbPool::Postgres(pool) => sqlx::query_scalar::<_, Option<String>>(
+                "SELECT name FROM crawler_tasks WHERE id = $1",
+            )
+            .bind(tid)
+            .fetch_optional(pool)
+            .await?
+            .flatten(),
         }
     } else {
         None
     };
 
     // 5. 字段值长表 + 统计（feature 043）
-    let field_values: Vec<crate::models::crawler_field_value::ArticleFieldValueRow> = match &state.db {
-        DbPool::Sqlite(pool) => {
-            sqlx::query_as::<_, crate::models::crawler_field_value::ArticleFieldValueRow>(
-                "SELECT * FROM crawler_article_field_values WHERE article_id = ? \
+    let field_values: Vec<crate::models::crawler_field_value::ArticleFieldValueRow> =
+        match &state.db {
+            DbPool::Sqlite(pool) => {
+                sqlx::query_as::<_, crate::models::crawler_field_value::ArticleFieldValueRow>(
+                    "SELECT * FROM crawler_article_field_values WHERE article_id = ? \
                  ORDER BY field_path, value_index, id",
-            )
-            .bind(id)
-            .fetch_all(pool)
-            .await?
-        }
-        DbPool::Postgres(pool) => {
-            sqlx::query_as::<_, crate::models::crawler_field_value::ArticleFieldValueRow>(
-                "SELECT * FROM crawler_article_field_values WHERE article_id = $1 \
+                )
+                .bind(id)
+                .fetch_all(pool)
+                .await?
+            }
+            DbPool::Postgres(pool) => {
+                sqlx::query_as::<_, crate::models::crawler_field_value::ArticleFieldValueRow>(
+                    "SELECT * FROM crawler_article_field_values WHERE article_id = $1 \
                  ORDER BY field_path, value_index, id",
-            )
-            .bind(id)
-            .fetch_all(pool)
-            .await?
-        }
-    };
+                )
+                .bind(id)
+                .fetch_all(pool)
+                .await?
+            }
+        };
 
     let field_stats = crate::models::crawler_field_value::aggregate_stats(&field_values);
 
     // 6. extra_fields：优先解析 extra_fields_json；为空时从 rows 即时聚合
     let extra_fields: Value = if let Some(json_str) = article.extra_fields_json.as_deref() {
-        serde_json::from_str(json_str).unwrap_or_else(|_| build_extra_fields_from_rows(&field_values))
+        serde_json::from_str(json_str)
+            .unwrap_or_else(|_| build_extra_fields_from_rows(&field_values))
     } else {
         build_extra_fields_from_rows(&field_values)
     };
@@ -1767,15 +1805,15 @@ fn build_extra_fields_from_rows(
             .next()
             .unwrap_or(&r.field_path)
             .to_string();
-        let v = r
-            .value_text
-            .clone()
-            .map(Value::String)
-            .unwrap_or_else(|| {
-                r.value_number
-                    .map(|n| serde_json::Number::from_f64(n).map(Value::Number).unwrap_or(Value::Null))
-                    .unwrap_or(Value::Null)
-            });
+        let v = r.value_text.clone().map(Value::String).unwrap_or_else(|| {
+            r.value_number
+                .map(|n| {
+                    serde_json::Number::from_f64(n)
+                        .map(Value::Number)
+                        .unwrap_or(Value::Null)
+                })
+                .unwrap_or(Value::Null)
+        });
         map.entry(key).or_default().push(v);
     }
     let mut out = serde_json::Map::new();
@@ -1804,9 +1842,8 @@ pub async fn update_article(
     Json(body): Json<UpdateArticleBody>,
 ) -> Result<Json<Value>, AppError> {
     let affected = match &state.db {
-        DbPool::Sqlite(pool) => {
-            sqlx::query(
-                "UPDATE crawler_articles
+        DbPool::Sqlite(pool) => sqlx::query(
+            "UPDATE crawler_articles
                  SET title = COALESCE(?, title),
                      content = COALESCE(?, content),
                      category = COALESCE(?, category),
@@ -1814,19 +1851,17 @@ pub async fn update_article(
                      is_edited = 1,
                      updated_at = CURRENT_TIMESTAMP
                  WHERE id = ?",
-            )
-            .bind(body.title)
-            .bind(body.content)
-            .bind(body.category)
-            .bind(body.tags)
-            .bind(id)
-            .execute(pool)
-            .await?
-            .rows_affected()
-        }
-        DbPool::Postgres(pool) => {
-            sqlx::query(
-                "UPDATE crawler_articles
+        )
+        .bind(body.title)
+        .bind(body.content)
+        .bind(body.category)
+        .bind(body.tags)
+        .bind(id)
+        .execute(pool)
+        .await?
+        .rows_affected(),
+        DbPool::Postgres(pool) => sqlx::query(
+            "UPDATE crawler_articles
                  SET title = COALESCE($1, title),
                      content = COALESCE($2, content),
                      category = COALESCE($3, category),
@@ -1834,16 +1869,15 @@ pub async fn update_article(
                      is_edited = TRUE,
                      updated_at = CURRENT_TIMESTAMP
                  WHERE id = $5",
-            )
-            .bind(body.title)
-            .bind(body.content)
-            .bind(body.category)
-            .bind(body.tags)
-            .bind(id)
-            .execute(pool)
-            .await?
-            .rows_affected()
-        }
+        )
+        .bind(body.title)
+        .bind(body.content)
+        .bind(body.category)
+        .bind(body.tags)
+        .bind(id)
+        .execute(pool)
+        .await?
+        .rows_affected(),
     };
     if affected == 0 {
         return Err(AppError::NotFound(format!("文章 {id} 不存在")));
@@ -1919,7 +1953,9 @@ pub async fn batch_delete_articles(
         "batch_delete_articles: incoming"
     );
     if body.ids.is_empty() {
-        return Ok(Json(json!({ "success": true, "data": { "deleted": 0, "requested": 0 } })));
+        return Ok(Json(
+            json!({ "success": true, "data": { "deleted": 0, "requested": 0 } }),
+        ));
     }
     let mut total: u64 = 0;
     for id in &body.ids {
@@ -1968,7 +2004,9 @@ pub async fn batch_delete_articles(
             }
         }
     }
-    Ok(Json(json!({ "success": true, "data": { "deleted": total, "requested": body.ids.len() } })))
+    Ok(Json(
+        json!({ "success": true, "data": { "deleted": total, "requested": body.ids.len() } }),
+    ))
 }
 
 /// `POST /api/crawler/articles/:id/images/:image_id/retry` — 重置图片重试计数
@@ -2007,7 +2045,9 @@ pub async fn retry_image(
             "图片 {image_id}（文章 {id}）不存在"
         )));
     }
-    Ok(Json(json!({ "id": image_id, "article_id": id, "reset": true })))
+    Ok(Json(
+        json!({ "id": image_id, "article_id": id, "reset": true }),
+    ))
 }
 
 /// `POST /api/crawler/articles/:id/links/check` — 调用 LinkChecker 检测网盘链接
@@ -2036,7 +2076,9 @@ pub async fn check_article_links(
     };
 
     if pan_links.is_empty() {
-        return Ok(Json(json!({ "article_id": id, "checked": 0, "note": "无网盘链接" })));
+        return Ok(Json(
+            json!({ "article_id": id, "checked": 0, "note": "无网盘链接" }),
+        ));
     }
 
     // 2. 解析 LinkChecker（PanCheck 未配置则全 unknown 不报错）
@@ -2325,16 +2367,20 @@ pub async fn get_history_detail(
 ) -> Result<Json<CrawlerRunHistoryDetail>, AppError> {
     let row: CrawlerRunHistory = match &state.db {
         DbPool::Sqlite(pool) => {
-            sqlx::query_as::<_, CrawlerRunHistory>("SELECT * FROM crawler_run_histories WHERE id = ?")
-                .bind(id)
-                .fetch_optional(pool)
-                .await?
+            sqlx::query_as::<_, CrawlerRunHistory>(
+                "SELECT * FROM crawler_run_histories WHERE id = ?",
+            )
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
         }
         DbPool::Postgres(pool) => {
-            sqlx::query_as::<_, CrawlerRunHistory>("SELECT * FROM crawler_run_histories WHERE id = $1")
-                .bind(id)
-                .fetch_optional(pool)
-                .await?
+            sqlx::query_as::<_, CrawlerRunHistory>(
+                "SELECT * FROM crawler_run_histories WHERE id = $1",
+            )
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
         }
     }
     .ok_or_else(|| AppError::NotFound(format!("历史 {id} 不存在")))?;
@@ -2520,9 +2566,13 @@ pub async fn get_history_stats(
 // Feature 043 — Visual Field Configurator (US1 T022-T025)
 // ============================================================================
 
-use crate::models::crawler_field_library::{FieldLibraryRow, FieldLibraryCategory};
-use crate::models::crawler_field_node::{FieldNodeRow, FieldNodeSpecView, FieldTree as FieldTreeModel, from_rows as field_tree_from_rows};
-use crate::services::crawler::field_schema::{self, validate_name, validate_rule, ExtractorMode, Scope, SourceLayer};
+use crate::models::crawler_field_library::{FieldLibraryCategory, FieldLibraryRow};
+use crate::models::crawler_field_node::{
+    FieldNodeRow, FieldNodeSpecView, FieldTree as FieldTreeModel, from_rows as field_tree_from_rows,
+};
+use crate::services::crawler::field_schema::{
+    self, ExtractorMode, Scope, SourceLayer, validate_name, validate_rule,
+};
 use crate::services::crawler::probe::{self, ProbeRequest, ProbeResponse};
 use crate::services::crawler::source_layer::{self, ProbeCategory, ProbeError};
 
@@ -2647,14 +2697,10 @@ pub async fn field_probe(
     if let Some(parent_node_id) = req.parent_node_id.take() {
         let parent_row: FieldNodeRow = fetch_field_node(&state, parent_node_id)
             .await?
-            .ok_or_else(|| {
-                AppError::BadRequest(format!(
-                    "父字段节点 {parent_node_id} 不存在"
-                ))
-            })?;
-        let spec = parent_row.to_spec().map_err(|e| {
-            AppError::Internal(format!("父节点 rule 解析失败: {e}"))
-        })?;
+            .ok_or_else(|| AppError::BadRequest(format!("父字段节点 {parent_node_id} 不存在")))?;
+        let spec = parent_row
+            .to_spec()
+            .map_err(|e| AppError::Internal(format!("父节点 rule 解析失败: {e}")))?;
         req.parent_field = Some(probe::ParentFieldDef {
             source_layer: spec.source_layer,
             rule: spec.rule,
@@ -2663,16 +2709,16 @@ pub async fn field_probe(
         });
     }
 
-    let resp: ProbeResponse = probe::run_probe(req).await.map_err(map_probe_error_to_app)?;
+    let resp: ProbeResponse = probe::run_probe(req)
+        .await
+        .map_err(map_probe_error_to_app)?;
     Ok(Json(json!({ "success": true, "data": resp })))
 }
 
 // -------------------- T024: field-library --------------------
 
 /// `GET /api/crawler/field-library` — 预置字段库（按 category 分组）
-pub async fn list_field_library(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, AppError> {
+pub async fn list_field_library(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     let rows: Vec<FieldLibraryRow> = match &state.db {
         DbPool::Sqlite(pool) => {
             sqlx::query_as::<_, FieldLibraryRow>(
@@ -2691,7 +2737,8 @@ pub async fn list_field_library(
     };
 
     // 分组（直接传 Vec，model 内部按 category 分桶）
-    let grouped: Vec<FieldLibraryCategory> = crate::models::crawler_field_library::group_by_category(rows);
+    let grouped: Vec<FieldLibraryCategory> =
+        crate::models::crawler_field_library::group_by_category(rows);
 
     Ok(Json(json!({ "success": true, "data": grouped })))
 }
@@ -2802,12 +2849,18 @@ fn db_tree_to_portable_tree(tree: &FieldTreeModel) -> Result<field_schema::Field
         .iter()
         .map(convert)
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(field_schema::FieldTree { list_page, detail_page })
+    Ok(field_schema::FieldTree {
+        list_page,
+        detail_page,
+    })
 }
 
 /// 查询任务的字段节点并组装为 DB 层 FieldTree（list_page + detail_page 双根，含父子嵌套）。
 /// export_task 与 get_field_tree 共用此查询。
-async fn fetch_field_tree_model(state: &AppState, task_id: i64) -> Result<FieldTreeModel, AppError> {
+async fn fetch_field_tree_model(
+    state: &AppState,
+    task_id: i64,
+) -> Result<FieldTreeModel, AppError> {
     let rows: Vec<FieldNodeRow> = match &state.db {
         DbPool::Sqlite(pool) => {
             sqlx::query_as::<_, FieldNodeRow>(
@@ -3015,7 +3068,8 @@ pub async fn update_field_node(
     Path((id, node_id)): Path<(i64, i64)>,
     Json(body): Json<CreateFieldNodeBody>,
 ) -> Result<Json<Value>, AppError> {
-    let existing = fetch_field_node(&state, node_id).await?
+    let existing = fetch_field_node(&state, node_id)
+        .await?
         .ok_or_else(|| AppError::NotFound(format!("节点 {node_id} 不存在")))?;
     if existing.task_id != id {
         return Err(AppError::BadRequest("节点不属于该任务".into()));
@@ -3035,13 +3089,16 @@ pub async fn update_field_node(
 
     // scope/parent_id 不能跨 scope 变更（保持父子一致）
     if let Some(pid) = body.parent_id {
-        let parent = fetch_field_node(&state, pid).await?
+        let parent = fetch_field_node(&state, pid)
+            .await?
             .ok_or_else(|| AppError::BadRequest(format!("父节点 {pid} 不存在")))?;
         if parent.task_id != id {
             return Err(AppError::BadRequest("父节点不属于该任务".into()));
         }
         if parent.scope != body.scope.as_str() {
-            return Err(AppError::BadRequest("父节点 scope 与子节点 scope 不一致".into()));
+            return Err(AppError::BadRequest(
+                "父节点 scope 与子节点 scope 不一致".into(),
+            ));
         }
     }
     // 自引用检查
@@ -3050,7 +3107,16 @@ pub async fn update_field_node(
     }
 
     // UNIQUE 检查（排除自己）
-    if field_node_name_exists_exclude(&state, id, body.parent_id, body.scope.as_str(), &body.name, node_id).await? {
+    if field_node_name_exists_exclude(
+        &state,
+        id,
+        body.parent_id,
+        body.scope.as_str(),
+        &body.name,
+        node_id,
+    )
+    .await?
+    {
         return Err(AppError::BadRequest(format!(
             "同 scope + 同 parent 下已存在 name='{}' 的节点",
             body.name
@@ -3202,7 +3268,9 @@ pub async fn reorder_field_nodes(
         };
         updated += n;
     }
-    Ok(Json(json!({ "success": true, "data": { "updated": updated } })))
+    Ok(Json(
+        json!({ "success": true, "data": { "updated": updated } }),
+    ))
 }
 
 /// `DELETE /api/crawler/tasks/{id}/field-nodes/{node_id}` — 删除节点（级联删子孙）
@@ -3285,10 +3353,12 @@ async fn fetch_field_node(
                 .await?
         }
         DbPool::Postgres(pool) => {
-            sqlx::query_as::<_, FieldNodeRow>("SELECT * FROM crawler_task_field_nodes WHERE id = $1")
-                .bind(node_id)
-                .fetch_optional(pool)
-                .await?
+            sqlx::query_as::<_, FieldNodeRow>(
+                "SELECT * FROM crawler_task_field_nodes WHERE id = $1",
+            )
+            .bind(node_id)
+            .fetch_optional(pool)
+            .await?
         }
     })
 }
@@ -3583,9 +3653,9 @@ pub async fn refresh_article_field(
         refresh::RefreshError::NotScriptField { field_name, mode } => AppError::BadRequest(
             format!("字段 {field_name} 不是 script 模式（mode={mode}），不可刷新"),
         ),
-        refresh::RefreshError::ScriptFailed { category, message } => AppError::Internal(format!(
-            "脚本求值失败 [{category}]: {message}"
-        )),
+        refresh::RefreshError::ScriptFailed { category, message } => {
+            AppError::Internal(format!("脚本求值失败 [{category}]: {message}"))
+        }
         other => AppError::Internal(other.to_string()),
     })?;
 

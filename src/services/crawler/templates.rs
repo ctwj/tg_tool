@@ -14,8 +14,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::services::crawler::field_schema::{
-    validate_name, validate_rule, ExtractorMode, FieldNodeSpec, FieldTree, FieldType,
-    FieldTreeNode, PostProcessor, PostProcessorOp, Rule, Scope, SourceLayer,
+    ExtractorMode, FieldNodeSpec, FieldTree, FieldTreeNode, FieldType, PostProcessor,
+    PostProcessorOp, Rule, Scope, SourceLayer, validate_name, validate_rule,
 };
 
 // ============================================================================
@@ -556,8 +556,8 @@ fn validate_node(node: &FieldTreeNode) -> Result<(), String> {
     let s = &node.spec;
     validate_name(&s.name)?;
     // Rule 序列化为 {"mode":"css","spec":{...}}，需要取出 "spec" 内层
-    let full = serde_json::to_value(&s.rule)
-        .map_err(|e| format!("rule 序列化失败 ({}): {e}", s.name))?;
+    let full =
+        serde_json::to_value(&s.rule).map_err(|e| format!("rule 序列化失败 ({}): {e}", s.name))?;
     let inner = full
         .get("spec")
         .ok_or_else(|| format!("rule 缺少 spec 字段 ({})", s.name))?;
@@ -610,9 +610,7 @@ mod tests {
             "wordpress"
         );
         assert_eq!(
-            find_template("generic_resource_site")
-                .unwrap()
-                .source_type,
+            find_template("generic_resource_site").unwrap().source_type,
             "generic"
         );
         assert!(find_template("non_existent").is_none());
@@ -695,24 +693,69 @@ mod tests {
     #[test]
     fn discuz_forum_template_complete() {
         let t = find_template("discuz_forum").expect("discuz_forum 模板存在");
-        assert!(t.field_tree.list_page.iter().any(|n| n.spec.name == "thread_card"));
-        assert!(t.field_tree.detail_page.iter().any(|n| n.spec.name == "title"));
-        assert!(t.field_tree.detail_page.iter().any(|n| n.spec.name == "content"));
+        assert!(
+            t.field_tree
+                .list_page
+                .iter()
+                .any(|n| n.spec.name == "thread_card")
+        );
+        assert!(
+            t.field_tree
+                .detail_page
+                .iter()
+                .any(|n| n.spec.name == "title")
+        );
+        assert!(
+            t.field_tree
+                .detail_page
+                .iter()
+                .any(|n| n.spec.name == "content")
+        );
     }
 
     #[test]
     fn wordpress_blog_template_complete() {
         let t = find_template("wordpress_blog").expect("wordpress_blog 模板存在");
-        assert!(t.field_tree.list_page.iter().any(|n| n.spec.name == "post_card"));
-        assert!(t.field_tree.detail_page.iter().any(|n| n.spec.name == "title"));
-        assert!(t.field_tree.detail_page.iter().any(|n| n.spec.name == "content"));
+        assert!(
+            t.field_tree
+                .list_page
+                .iter()
+                .any(|n| n.spec.name == "post_card")
+        );
+        assert!(
+            t.field_tree
+                .detail_page
+                .iter()
+                .any(|n| n.spec.name == "title")
+        );
+        assert!(
+            t.field_tree
+                .detail_page
+                .iter()
+                .any(|n| n.spec.name == "content")
+        );
     }
 
     #[test]
     fn generic_resource_site_template_complete() {
         let t = find_template("generic_resource_site").expect("generic_resource_site 模板存在");
-        assert!(t.field_tree.list_page.iter().any(|n| n.spec.name == "resource_card"));
-        assert!(t.field_tree.detail_page.iter().any(|n| n.spec.name == "title"));
-        assert!(t.field_tree.detail_page.iter().any(|n| n.spec.name == "content"));
+        assert!(
+            t.field_tree
+                .list_page
+                .iter()
+                .any(|n| n.spec.name == "resource_card")
+        );
+        assert!(
+            t.field_tree
+                .detail_page
+                .iter()
+                .any(|n| n.spec.name == "title")
+        );
+        assert!(
+            t.field_tree
+                .detail_page
+                .iter()
+                .any(|n| n.spec.name == "content")
+        );
     }
 }

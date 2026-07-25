@@ -487,7 +487,10 @@ pub async fn seed_if_empty_sqlite(pool: &SqlitePool) -> Result<(), sqlx::Error> 
         tracing::debug!("crawler_field_library 已有 {count} 条，跳过种子化");
         return Ok(());
     }
-    tracing::info!("crawler_field_library 为空，开始应用层种子化（{} 条）", BUILTIN_PRESETS.len());
+    tracing::info!(
+        "crawler_field_library 为空，开始应用层种子化（{} 条）",
+        BUILTIN_PRESETS.len()
+    );
     for p in BUILTIN_PRESETS {
         sqlx::query(
             "INSERT OR IGNORE INTO crawler_field_library \
@@ -516,7 +519,10 @@ pub async fn seed_if_empty_postgres(pool: &PgPool) -> Result<(), sqlx::Error> {
         tracing::debug!("crawler_field_library 已有 {count} 条，跳过种子化");
         return Ok(());
     }
-    tracing::info!("crawler_field_library 为空，开始应用层种子化（{} 条）", BUILTIN_PRESETS.len());
+    tracing::info!(
+        "crawler_field_library 为空，开始应用层种子化（{} 条）",
+        BUILTIN_PRESETS.len()
+    );
     for p in BUILTIN_PRESETS {
         sqlx::query(
             "INSERT INTO crawler_field_library \
@@ -584,11 +590,21 @@ mod tests {
 
     #[test]
     fn t_builtin_presets_required_keys_present() {
-        let keys: std::collections::HashSet<&str> =
-            BUILTIN_PRESETS.iter().map(|p| p.key).collect();
+        let keys: std::collections::HashSet<&str> = BUILTIN_PRESETS.iter().map(|p| p.key).collect();
         for required in [
-            "title", "url", "cover", "description", "content", "author", "published_at",
-            "category", "tags", "view_count", "file_size", "download_url", "resource_name",
+            "title",
+            "url",
+            "cover",
+            "description",
+            "content",
+            "author",
+            "published_at",
+            "category",
+            "tags",
+            "view_count",
+            "file_size",
+            "download_url",
+            "resource_name",
         ] {
             assert!(keys.contains(required), "缺失必需字段 {required}");
         }
@@ -597,10 +613,16 @@ mod tests {
     #[test]
     fn t_resource_category_sort_order_download_url_first() {
         // download_url 必须排第 1，resource_name 排第 2（资源场景核心字段）
-        let mut resource: Vec<&PresetField> =
-            BUILTIN_PRESETS.iter().filter(|p| p.category == "resource").collect();
+        let mut resource: Vec<&PresetField> = BUILTIN_PRESETS
+            .iter()
+            .filter(|p| p.category == "resource")
+            .collect();
         resource.sort_by_key(|p| p.sort_order);
-        assert_eq!(resource.len(), 26, "resource 类应有 26 条（原 5 + 游戏/软件/教程 11 + 视频 6 + APP 1 + 安装包元信息 3）");
+        assert_eq!(
+            resource.len(),
+            26,
+            "resource 类应有 26 条（原 5 + 游戏/软件/教程 11 + 视频 6 + APP 1 + 安装包元信息 3）"
+        );
         assert_eq!(resource[0].key, "download_url");
         assert_eq!(resource[1].key, "resource_name");
         assert_eq!(resource[0].field_type, "url");
@@ -643,8 +665,17 @@ mod tests {
     fn t_resource_new_fields_keys_unique_vs_existing() {
         // 新增 11 字段不能与原 26 字段 key 冲突（key 全局唯一约束）
         let new_keys = [
-            "platform", "developer", "publisher", "release_date", "system_requirements",
-            "format", "license", "instructor", "lesson_count", "course_duration", "course_level",
+            "platform",
+            "developer",
+            "publisher",
+            "release_date",
+            "system_requirements",
+            "format",
+            "license",
+            "instructor",
+            "lesson_count",
+            "course_duration",
+            "course_level",
         ];
         let existing: std::collections::HashSet<&str> =
             BUILTIN_PRESETS.iter().map(|p| p.key).collect();

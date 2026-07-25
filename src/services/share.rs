@@ -44,14 +44,18 @@ pub async fn create(
 
 pub async fn get(db: &DbPool, id: i64) -> Result<ShareRecord, AppError> {
     match db {
-        DbPool::Sqlite(p) => sqlx::query_as::<_, ShareRecord>("SELECT * FROM share_records WHERE id = ?")
-            .bind(id)
-            .fetch_optional(p)
-            .await?,
-        DbPool::Postgres(p) => sqlx::query_as::<_, ShareRecord>("SELECT * FROM share_records WHERE id = $1")
-            .bind(id)
-            .fetch_optional(p)
-            .await?,
+        DbPool::Sqlite(p) => {
+            sqlx::query_as::<_, ShareRecord>("SELECT * FROM share_records WHERE id = ?")
+                .bind(id)
+                .fetch_optional(p)
+                .await?
+        }
+        DbPool::Postgres(p) => {
+            sqlx::query_as::<_, ShareRecord>("SELECT * FROM share_records WHERE id = $1")
+                .bind(id)
+                .fetch_optional(p)
+                .await?
+        }
     }
     .ok_or_else(|| AppError::NotFound(format!("分享记录 {id} 不存在")))
 }

@@ -97,11 +97,9 @@ pub struct AppState {
     pub extract_scheduler: crate::services::scheduler::ExtractSchedulerHandle,
     pub forward_scheduler: crate::services::forward_queue::ForwardSchedulerHandle,
     /// 爬虫调度器（feature 042-web-crawler-collector）
-    pub crawler_scheduler:
-        crate::services::crawler::scheduler::CrawlerSchedulerHandle,
+    pub crawler_scheduler: crate::services::crawler::scheduler::CrawlerSchedulerHandle,
     /// 爬虫图片上传 worker（feature 042 T023）
-    pub crawler_image_uploader:
-        crate::services::crawler::image_uploader::ImageUploaderHandle,
+    pub crawler_image_uploader: crate::services::crawler::image_uploader::ImageUploaderHandle,
     pub peer_cache: PeerCache,
     pub rate_limiter: crate::middleware::rate_limit::RateLimiter,
     pub captcha_store: CaptchaStore,

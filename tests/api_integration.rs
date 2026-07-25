@@ -366,19 +366,33 @@ async fn test_pan_transfer_create_idempotent_and_get() {
     let token = get_root_token(&mut app).await;
 
     // 建目标账号（uc：不触发夸克网络）
-    let acc_body = serde_json::json!({"platform":"uc","display_name":"UC","credential":"c","target_dir":"0"}).to_string();
+    let acc_body =
+        serde_json::json!({"platform":"uc","display_name":"UC","credential":"c","target_dir":"0"})
+            .to_string();
     let resp = app
         .clone()
-        .oneshot(build_auth_request("POST", "/api/pan/accounts", &token, Some(acc_body)))
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/pan/accounts",
+            &token,
+            Some(acc_body),
+        ))
         .await
         .unwrap();
-    let acc_id = parse_body(resp.into_body()).await["data"]["id"].as_i64().unwrap();
+    let acc_id = parse_body(resp.into_body()).await["data"]["id"]
+        .as_i64()
+        .unwrap();
 
     // 提交转存任务
     let body = serde_json::json!({"source_url":"https://pan.quark.cn/s/shareid?pwd=pp","target_account_id":acc_id}).to_string();
     let resp = app
         .clone()
-        .oneshot(build_auth_request("POST", "/api/pan/transfers", &token, Some(body)))
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/pan/transfers",
+            &token,
+            Some(body),
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
@@ -391,7 +405,12 @@ async fn test_pan_transfer_create_idempotent_and_get() {
     let body2 = serde_json::json!({"source_url":"https://pan.quark.cn/s/shareid?pwd=pp","target_account_id":acc_id}).to_string();
     let resp = app
         .clone()
-        .oneshot(build_auth_request("POST", "/api/pan/transfers", &token, Some(body2)))
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/pan/transfers",
+            &token,
+            Some(body2),
+        ))
         .await
         .unwrap();
     let body = parse_body(resp.into_body()).await;
@@ -400,7 +419,12 @@ async fn test_pan_transfer_create_idempotent_and_get() {
     // 查询
     let resp = app
         .clone()
-        .oneshot(build_auth_request("GET", &format!("/api/pan/transfers/{task_id}"), &token, None))
+        .oneshot(build_auth_request(
+            "GET",
+            &format!("/api/pan/transfers/{task_id}"),
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     let body = parse_body(resp.into_body()).await;
@@ -435,7 +459,12 @@ async fn test_open_api_key_auth_and_quota() {
     let body = serde_json::json!({"system_name":"ext-sys","quota_limit":2}).to_string();
     let resp = app
         .clone()
-        .oneshot(build_auth_request("POST", "/api/pan/api-keys", &token, Some(body)))
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/pan/api-keys",
+            &token,
+            Some(body),
+        ))
         .await
         .unwrap();
     let b = parse_body(resp.into_body()).await;
@@ -446,21 +475,36 @@ async fn test_open_api_key_auth_and_quota() {
     // 用 key 访问 → 200（quota 1）
     let resp = app
         .clone()
-        .oneshot(build_apikey_request("GET", "/api/v1/accounts", &plaintext, None))
+        .oneshot(build_apikey_request(
+            "GET",
+            "/api/v1/accounts",
+            &plaintext,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
     // 再访问 → 200（quota 2）
     let resp = app
         .clone()
-        .oneshot(build_apikey_request("GET", "/api/v1/accounts", &plaintext, None))
+        .oneshot(build_apikey_request(
+            "GET",
+            "/api/v1/accounts",
+            &plaintext,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
     // 第三次 → 429 配额耗尽
     let resp = app
         .clone()
-        .oneshot(build_apikey_request("GET", "/api/v1/accounts", &plaintext, None))
+        .oneshot(build_apikey_request(
+            "GET",
+            "/api/v1/accounts",
+            &plaintext,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), 429);
@@ -476,7 +520,12 @@ async fn test_open_api_revoked_key_unauthorized() {
     let body = serde_json::json!({"system_name":"ext","quota_limit":0}).to_string();
     let resp = app
         .clone()
-        .oneshot(build_auth_request("POST", "/api/pan/api-keys", &token, Some(body)))
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/pan/api-keys",
+            &token,
+            Some(body),
+        ))
         .await
         .unwrap();
     let b = parse_body(resp.into_body()).await;
@@ -497,7 +546,12 @@ async fn test_open_api_revoked_key_unauthorized() {
 
     // 吊销后 → 401
     let resp = app
-        .oneshot(build_apikey_request("GET", "/api/v1/accounts", &plaintext, None))
+        .oneshot(build_apikey_request(
+            "GET",
+            "/api/v1/accounts",
+            &plaintext,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), 401);
@@ -511,18 +565,32 @@ async fn test_pan_transfer_list_filter_and_retry() {
     let token = get_root_token(&mut app).await;
 
     // 建账号 + 提交任务（uc 目标 → run_task 后 failed）
-    let acc_body = serde_json::json!({"platform":"uc","display_name":"UC","credential":"c","target_dir":"0"}).to_string();
+    let acc_body =
+        serde_json::json!({"platform":"uc","display_name":"UC","credential":"c","target_dir":"0"})
+            .to_string();
     let resp = app
         .clone()
-        .oneshot(build_auth_request("POST", "/api/pan/accounts", &token, Some(acc_body)))
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/pan/accounts",
+            &token,
+            Some(acc_body),
+        ))
         .await
         .unwrap();
-    let acc_id = parse_body(resp.into_body()).await["data"]["id"].as_i64().unwrap();
+    let acc_id = parse_body(resp.into_body()).await["data"]["id"]
+        .as_i64()
+        .unwrap();
 
     let body = serde_json::json!({"source_url":"https://pan.quark.cn/s/listtest","target_account_id":acc_id}).to_string();
     let _ = app
         .clone()
-        .oneshot(build_auth_request("POST", "/api/pan/transfers", &token, Some(body)))
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/pan/transfers",
+            &token,
+            Some(body),
+        ))
         .await
         .unwrap();
     // 等 spawn 的 run_task 完成（uc 立即 failed）
@@ -531,7 +599,12 @@ async fn test_pan_transfer_list_filter_and_retry() {
     // list 筛选 failed
     let resp = app
         .clone()
-        .oneshot(build_auth_request("GET", "/api/pan/transfers?status=failed", &token, None))
+        .oneshot(build_auth_request(
+            "GET",
+            "/api/pan/transfers?status=failed",
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     let b = parse_body(resp.into_body()).await;
@@ -541,10 +614,17 @@ async fn test_pan_transfer_list_filter_and_retry() {
     // 取 task id 并重试 → pending
     let resp = app
         .clone()
-        .oneshot(build_auth_request("GET", "/api/pan/transfers", &token, None))
+        .oneshot(build_auth_request(
+            "GET",
+            "/api/pan/transfers",
+            &token,
+            None,
+        ))
         .await
         .unwrap();
-    let task_id = parse_body(resp.into_body()).await["data"]["items"][0]["id"].as_i64().unwrap();
+    let task_id = parse_body(resp.into_body()).await["data"]["items"][0]["id"]
+        .as_i64()
+        .unwrap();
     let resp = app
         .clone()
         .oneshot(build_auth_request(
@@ -568,19 +648,35 @@ async fn test_pan_transfer_direct_link_dispatch() {
     let mut app = build_test_app(state);
     let token = get_root_token(&mut app).await;
 
-    let acc_body = serde_json::json!({"platform":"uc","display_name":"UC","credential":"c","target_dir":"0"}).to_string();
+    let acc_body =
+        serde_json::json!({"platform":"uc","display_name":"UC","credential":"c","target_dir":"0"})
+            .to_string();
     let resp = app
         .clone()
-        .oneshot(build_auth_request("POST", "/api/pan/accounts", &token, Some(acc_body)))
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/pan/accounts",
+            &token,
+            Some(acc_body),
+        ))
         .await
         .unwrap();
-    let acc_id = parse_body(resp.into_body()).await["data"]["id"].as_i64().unwrap();
+    let acc_id = parse_body(resp.into_body()).await["data"]["id"]
+        .as_i64()
+        .unwrap();
 
     // 直链任务：自动识别为 direct_link
-    let body = serde_json::json!({"source_url":"https://example.com/file.mp4","target_account_id":acc_id}).to_string();
+    let body =
+        serde_json::json!({"source_url":"https://example.com/file.mp4","target_account_id":acc_id})
+            .to_string();
     let resp = app
         .clone()
-        .oneshot(build_auth_request("POST", "/api/pan/transfers", &token, Some(body)))
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/pan/transfers",
+            &token,
+            Some(body),
+        ))
         .await
         .unwrap();
     let b = parse_body(resp.into_body()).await;
@@ -591,7 +687,12 @@ async fn test_pan_transfer_direct_link_dispatch() {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     let resp = app
         .clone()
-        .oneshot(build_auth_request("GET", "/api/pan/transfers?status=failed", &token, None))
+        .oneshot(build_auth_request(
+            "GET",
+            "/api/pan/transfers?status=failed",
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     let b = parse_body(resp.into_body()).await;
@@ -4439,7 +4540,10 @@ async fn test_crawler_task_force_full_collect_roundtrip() {
         .unwrap();
     let body = parse_body(resp.into_body()).await;
     assert_success(&body);
-    assert_eq!(body["data"]["force_full_collect"], true, "GET 读回默认 true");
+    assert_eq!(
+        body["data"]["force_full_collect"], true,
+        "GET 读回默认 true"
+    );
 
     // 3. PATCH force_full_collect=false → 返回 false
     let resp = app
@@ -4523,8 +4627,14 @@ async fn test_crawler_task_url_template_roundtrip() {
     let body = parse_body(resp.into_body()).await;
     assert_success(&body);
     let id = body["data"]["id"].as_i64().expect("新建任务应返回 id");
-    assert_eq!(body["data"]["page_url_template"], "", "默认模板为空串（未启用）");
-    assert_eq!(body["data"]["page_start"], 1, "默认 page_start=1（migration 033 DEFAULT 1）");
+    assert_eq!(
+        body["data"]["page_url_template"], "",
+        "默认模板为空串（未启用）"
+    );
+    assert_eq!(
+        body["data"]["page_start"], 1,
+        "默认 page_start=1（migration 033 DEFAULT 1）"
+    );
     assert_eq!(body["data"]["page_end"], 0, "默认 page_end=0（不限）");
 
     // 2. PATCH 设模板 + 起止页 → 读回持久化
@@ -4547,7 +4657,10 @@ async fn test_crawler_task_url_template_roundtrip() {
         .unwrap();
     let body = parse_body(resp.into_body()).await;
     assert_success(&body);
-    assert_eq!(body["data"]["page_url_template"], "https://example.com/page-{page}.html");
+    assert_eq!(
+        body["data"]["page_url_template"],
+        "https://example.com/page-{page}.html"
+    );
     assert_eq!(body["data"]["page_start"], 2);
     assert_eq!(body["data"]["page_end"], 50);
 
@@ -4563,7 +4676,10 @@ async fn test_crawler_task_url_template_roundtrip() {
         .await
         .unwrap();
     let body = parse_body(resp.into_body()).await;
-    assert_eq!(body["data"]["page_url_template"], "https://example.com/page-{page}.html", "GET 读回模板");
+    assert_eq!(
+        body["data"]["page_url_template"], "https://example.com/page-{page}.html",
+        "GET 读回模板"
+    );
     assert_eq!(body["data"]["page_start"], 2, "GET 读回 page_start");
     assert_eq!(body["data"]["page_end"], 50, "GET 读回 page_end");
 }
@@ -4628,8 +4744,13 @@ async fn test_crawler_task_template_mode_without_list_urls() {
     assert_eq!(resp.status(), 200, "纯模板模式（空 list_urls）应创建成功");
     let body = parse_body(resp.into_body()).await;
     assert_success(&body);
-    assert_eq!(body["data"]["page_url_template"], "https://example.com/page-{page}.html");
-    assert_eq!(body["data"]["list_urls"], serde_json::json!([]));
+    assert_eq!(
+        body["data"]["page_url_template"],
+        "https://example.com/page-{page}.html"
+    );
+    // list_urls 在 DB 与 API 响应中均为 JSON 字符串（CrawlerTask.list_urls: String），
+    // 前端用 parseListUrls 兼容解析。空数组序列化结果为 "[]"。
+    assert_eq!(body["data"]["list_urls"], serde_json::json!("[]"));
 }
 
 /// 045：模板模式 page_end=0（缺终止边界）应被 400 拒绝
@@ -4658,7 +4779,11 @@ async fn test_crawler_task_template_mode_rejects_zero_page_end() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), 400, "模板模式 page_end=0 应被 400 拒绝（需终止边界）");
+    assert_eq!(
+        resp.status(),
+        400,
+        "模板模式 page_end=0 应被 400 拒绝（需终止边界）"
+    );
 }
 
 // ============================================================================
@@ -4750,14 +4875,30 @@ async fn test_export_task_includes_field_tree() {
     let export_json = parse_body(resp.into_body()).await;
 
     let ft = export_json.get("field_tree").expect("导出应含 field_tree");
-    assert_eq!(ft["list_page"].as_array().unwrap().len(), 1, "list_page 1 根");
-    assert_eq!(ft["detail_page"].as_array().unwrap().len(), 1, "detail_page 1 根");
+    assert_eq!(
+        ft["list_page"].as_array().unwrap().len(),
+        1,
+        "list_page 1 根"
+    );
+    assert_eq!(
+        ft["detail_page"].as_array().unwrap().len(),
+        1,
+        "detail_page 1 根"
+    );
     let card = &ft["list_page"][0];
     assert_eq!(card["spec"]["name"], "link_card");
-    assert_eq!(card["spec"]["id"], serde_json::Value::Null, "导出 id 应为 null");
+    assert_eq!(
+        card["spec"]["id"],
+        serde_json::Value::Null,
+        "导出 id 应为 null"
+    );
     assert_eq!(card["spec"]["task_id"], serde_json::Value::Null);
     assert_eq!(card["spec"]["parent_id"], serde_json::Value::Null);
-    assert_eq!(card["children"].as_array().unwrap().len(), 1, "link_card 下 1 子");
+    assert_eq!(
+        card["children"].as_array().unwrap().len(),
+        1,
+        "link_card 下 1 子"
+    );
     assert_eq!(card["children"][0]["spec"]["name"], "title");
     assert_eq!(card["children"][0]["spec"]["id"], serde_json::Value::Null);
     assert_eq!(ft["detail_page"][0]["spec"]["name"], "content");
@@ -4779,8 +4920,7 @@ async fn test_import_task_restores_field_tree() {
             "/api/crawler/tasks",
             &token,
             Some(
-                serde_json::json!({"name":"restore-src","list_urls":["https://x.com"]})
-                    .to_string(),
+                serde_json::json!({"name":"restore-src","list_urls":["https://x.com"]}).to_string(),
             ),
         ))
         .await
@@ -4897,7 +5037,7 @@ async fn test_import_task_rejects_too_many_nodes() {
     let token = get_root_token(&mut app).await;
 
     use tgTool::services::crawler::field_schema::{
-        CssRule, ExtractorMode, FieldNodeSpec, FieldType, FieldTree, FieldTreeNode, Rule, Scope,
+        CssRule, ExtractorMode, FieldNodeSpec, FieldTree, FieldTreeNode, FieldType, Rule, Scope,
         SourceLayer,
     };
     let nodes: Vec<FieldTreeNode> = (0..101)
@@ -4960,7 +5100,7 @@ async fn test_import_task_rejects_invalid_field_name() {
     let token = get_root_token(&mut app).await;
 
     use tgTool::services::crawler::field_schema::{
-        CssRule, ExtractorMode, FieldNodeSpec, FieldType, FieldTree, FieldTreeNode, Rule, Scope,
+        CssRule, ExtractorMode, FieldNodeSpec, FieldTree, FieldTreeNode, FieldType, Rule, Scope,
         SourceLayer,
     };
     let tree_val = serde_json::to_value(&FieldTree {
@@ -5049,7 +5189,8 @@ async fn t_field_node_crud_accepts_script_mode() {
     let (state, _) = make_test_state(db);
     let mut app = build_test_app(state);
     let token = get_root_token(&mut app).await;
-    let task_id = create_minimal_crawler_task_for_script_test(&mut app, &token, "script-crud-ok").await;
+    let task_id =
+        create_minimal_crawler_task_for_script_test(&mut app, &token, "script-crud-ok").await;
 
     let body = serde_json::json!({
         "scope": "detail_page",
@@ -5097,10 +5238,12 @@ async fn t_field_node_crud_accepts_script_mode() {
     assert_eq!(detail[0]["spec"]["name"], "computed");
     assert_eq!(detail[0]["spec"]["extractor_mode"], "script");
     assert_eq!(detail[0]["spec"]["rule"]["mode"], "script");
-    assert!(detail[0]["spec"]["rule"]["spec"]["body"]
-        .as_str()
-        .unwrap()
-        .contains("ctx.value"));
+    assert!(
+        detail[0]["spec"]["rule"]["spec"]["body"]
+            .as_str()
+            .unwrap()
+            .contains("ctx.value")
+    );
 
     let _ = node_id;
 }
@@ -5113,7 +5256,8 @@ async fn t_field_node_crud_rejects_list_scope_with_script() {
     let mut app = build_test_app(state);
     let token = get_root_token(&mut app).await;
     let task_id =
-        create_minimal_crawler_task_for_script_test(&mut app, &token, "script-crud-list-scope").await;
+        create_minimal_crawler_task_for_script_test(&mut app, &token, "script-crud-list-scope")
+            .await;
 
     let body = serde_json::json!({
         "scope": "list_page",
@@ -5146,7 +5290,8 @@ async fn t_field_node_crud_rejects_oversized_body() {
     let mut app = build_test_app(state);
     let token = get_root_token(&mut app).await;
     let task_id =
-        create_minimal_crawler_task_for_script_test(&mut app, &token, "script-crud-oversized").await;
+        create_minimal_crawler_task_for_script_test(&mut app, &token, "script-crud-oversized")
+            .await;
 
     // 65_553 字节（> 64KB 上限 65_536）
     let big = "x".repeat(65_537);
@@ -5204,7 +5349,11 @@ async fn t_field_node_crud_persists_refresh_on_read() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200, "refresh_on_read=true 在 script 下应接受");
+    assert_eq!(
+        resp.status(),
+        200,
+        "refresh_on_read=true 在 script 下应接受"
+    );
 
     // GET 验证 round-trip 包含 refresh_on_read=true
     let resp = app
@@ -5253,5 +5402,9 @@ async fn t_field_node_crud_rejects_refresh_on_read_with_non_script_mode() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), 400, "非 script + refresh_on_read=true 必须拒绝");
+    assert_eq!(
+        resp.status(),
+        400,
+        "非 script + refresh_on_read=true 必须拒绝"
+    );
 }

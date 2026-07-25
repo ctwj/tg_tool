@@ -9,7 +9,6 @@ import {
   CheckCircleOutlined, WarningOutlined, QuestionCircleOutlined, CloseCircleOutlined,
   RedoOutlined,
 } from '@ant-design/icons'
-import dayjs from 'dayjs'
 import { fmtUtc } from '../utils/time'
 import PageHeader from '../components/PageHeader'
 import { useTableScrollY } from '../hooks/useTableScroll'

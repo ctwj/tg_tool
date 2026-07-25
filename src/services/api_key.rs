@@ -23,10 +23,7 @@ pub fn hash_key(plaintext: &str) -> String {
 }
 
 /// 创建 Key，返回（脱敏视图，明文——仅此一次）
-pub async fn create(
-    db: &DbPool,
-    req: CreateApiKey,
-) -> Result<(ApiKeyView, String), AppError> {
+pub async fn create(db: &DbPool, req: CreateApiKey) -> Result<(ApiKeyView, String), AppError> {
     if req.system_name.trim().is_empty() {
         return Err(AppError::BadRequest("system_name 不能为空".into()));
     }
@@ -74,18 +71,22 @@ pub async fn create(
 pub async fn validate(db: &DbPool, plaintext: &str) -> Result<ApiKey, AppError> {
     let hash = hash_key(plaintext);
     let key = match db {
-        DbPool::Sqlite(p) => sqlx::query_as::<_, ApiKey>(
-            "SELECT * FROM api_keys WHERE key_hash = ? AND status = 'enabled'",
-        )
-        .bind(&hash)
-        .fetch_optional(p)
-        .await?,
-        DbPool::Postgres(p) => sqlx::query_as::<_, ApiKey>(
-            "SELECT * FROM api_keys WHERE key_hash = $1 AND status = 'enabled'",
-        )
-        .bind(&hash)
-        .fetch_optional(p)
-        .await?,
+        DbPool::Sqlite(p) => {
+            sqlx::query_as::<_, ApiKey>(
+                "SELECT * FROM api_keys WHERE key_hash = ? AND status = 'enabled'",
+            )
+            .bind(&hash)
+            .fetch_optional(p)
+            .await?
+        }
+        DbPool::Postgres(p) => {
+            sqlx::query_as::<_, ApiKey>(
+                "SELECT * FROM api_keys WHERE key_hash = $1 AND status = 'enabled'",
+            )
+            .bind(&hash)
+            .fetch_optional(p)
+            .await?
+        }
     };
     key.ok_or_else(|| AppError::Unauthorized("无效或已吊销的 API Key".into()))
 }
@@ -179,30 +180,34 @@ pub async fn rotate(db: &DbPool, id: i64) -> Result<(ApiKeyView, String), AppErr
 
 pub async fn list(db: &DbPool) -> Result<Vec<ApiKeyView>, AppError> {
     let rows = match db {
-        DbPool::Sqlite(p) => sqlx::query_as::<_, ApiKey>(
-            "SELECT * FROM api_keys ORDER BY id DESC",
-        )
-        .fetch_all(p)
-        .await?,
-        DbPool::Postgres(p) => sqlx::query_as::<_, ApiKey>(
-            "SELECT * FROM api_keys ORDER BY id DESC",
-        )
-        .fetch_all(p)
-        .await?,
+        DbPool::Sqlite(p) => {
+            sqlx::query_as::<_, ApiKey>("SELECT * FROM api_keys ORDER BY id DESC")
+                .fetch_all(p)
+                .await?
+        }
+        DbPool::Postgres(p) => {
+            sqlx::query_as::<_, ApiKey>("SELECT * FROM api_keys ORDER BY id DESC")
+                .fetch_all(p)
+                .await?
+        }
     };
     Ok(rows.into_iter().map(Into::into).collect())
 }
 
 async fn get_full(db: &DbPool, id: i64) -> Result<ApiKey, AppError> {
     match db {
-        DbPool::Sqlite(p) => sqlx::query_as::<_, ApiKey>("SELECT * FROM api_keys WHERE id = ?")
-            .bind(id)
-            .fetch_optional(p)
-            .await?,
-        DbPool::Postgres(p) => sqlx::query_as::<_, ApiKey>("SELECT * FROM api_keys WHERE id = $1")
-            .bind(id)
-            .fetch_optional(p)
-            .await?,
+        DbPool::Sqlite(p) => {
+            sqlx::query_as::<_, ApiKey>("SELECT * FROM api_keys WHERE id = ?")
+                .bind(id)
+                .fetch_optional(p)
+                .await?
+        }
+        DbPool::Postgres(p) => {
+            sqlx::query_as::<_, ApiKey>("SELECT * FROM api_keys WHERE id = $1")
+                .bind(id)
+                .fetch_optional(p)
+                .await?
+        }
     }
     .ok_or_else(|| AppError::NotFound(format!("API Key {id} 不存在")))
 }

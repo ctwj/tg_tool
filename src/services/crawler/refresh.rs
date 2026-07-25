@@ -49,10 +49,7 @@ pub enum RefreshError {
     #[error("字段 {field_name} 不是 script 模式（mode={mode}），不可刷新")]
     NotScriptField { field_name: String, mode: String },
     #[error("脚本求值失败 [{category}]: {message}")]
-    ScriptFailed {
-        category: String,
-        message: String,
-    },
+    ScriptFailed { category: String, message: String },
     #[error("数据库错：{0}")]
     Database(String),
     #[error("Tokio runtime 错：{0}")]
@@ -122,30 +119,26 @@ async fn load_current_value(
     field_node_id: i64,
 ) -> Result<Option<String>, RefreshError> {
     let value: Option<(Option<String>,)> = match db {
-        DbPool::Sqlite(pool) => {
-            sqlx::query_as::<_, (Option<String>,)>(
-                "SELECT value_text FROM crawler_article_field_values \
+        DbPool::Sqlite(pool) => sqlx::query_as::<_, (Option<String>,)>(
+            "SELECT value_text FROM crawler_article_field_values \
                  WHERE article_id = ? AND field_node_id = ? AND is_hit = 1 \
                  ORDER BY value_index ASC LIMIT 1",
-            )
-            .bind(article_id)
-            .bind(field_node_id)
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| RefreshError::Database(e.to_string()))?
-        }
-        DbPool::Postgres(pool) => {
-            sqlx::query_as::<_, (Option<String>,)>(
-                "SELECT value_text FROM crawler_article_field_values \
+        )
+        .bind(article_id)
+        .bind(field_node_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| RefreshError::Database(e.to_string()))?,
+        DbPool::Postgres(pool) => sqlx::query_as::<_, (Option<String>,)>(
+            "SELECT value_text FROM crawler_article_field_values \
                  WHERE article_id = $1 AND field_node_id = $2 AND is_hit = true \
                  ORDER BY value_index ASC LIMIT 1",
-            )
-            .bind(article_id)
-            .bind(field_node_id)
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| RefreshError::Database(e.to_string()))?
-        }
+        )
+        .bind(article_id)
+        .bind(field_node_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| RefreshError::Database(e.to_string()))?,
     };
     Ok(value.and_then(|(v,)| v))
 }
@@ -159,30 +152,26 @@ async fn load_sibling_values(
     exclude_field_node_id: i64,
 ) -> Result<HashMap<String, String>, RefreshError> {
     let rows: Vec<(String, Option<String>)> = match db {
-        DbPool::Sqlite(pool) => {
-            sqlx::query_as::<_, (String, Option<String>)>(
-                "SELECT field_path, value_text FROM crawler_article_field_values \
+        DbPool::Sqlite(pool) => sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT field_path, value_text FROM crawler_article_field_values \
                  WHERE article_id = ? AND field_node_id != ? AND is_hit = 1 \
                  AND scope = 'detail_page' AND value_index = 0",
-            )
-            .bind(article_id)
-            .bind(exclude_field_node_id)
-            .fetch_all(pool)
-            .await
-            .map_err(|e| RefreshError::Database(e.to_string()))?
-        }
-        DbPool::Postgres(pool) => {
-            sqlx::query_as::<_, (String, Option<String>)>(
-                "SELECT field_path, value_text FROM crawler_article_field_values \
+        )
+        .bind(article_id)
+        .bind(exclude_field_node_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| RefreshError::Database(e.to_string()))?,
+        DbPool::Postgres(pool) => sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT field_path, value_text FROM crawler_article_field_values \
                  WHERE article_id = $1 AND field_node_id != $2 AND is_hit = true \
                  AND scope = 'detail_page' AND value_index = 0",
-            )
-            .bind(article_id)
-            .bind(exclude_field_node_id)
-            .fetch_all(pool)
-            .await
-            .map_err(|e| RefreshError::Database(e.to_string()))?
-        }
+        )
+        .bind(article_id)
+        .bind(exclude_field_node_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| RefreshError::Database(e.to_string()))?,
     };
     let mut map = HashMap::new();
     for (path, value) in rows {
@@ -200,22 +189,23 @@ async fn load_sibling_values(
 /// 加载 article → task_id
 async fn load_article_task_id(db: &DbPool, article_id: i64) -> Result<i64, RefreshError> {
     let row: Option<(i64,)> = match db {
-        DbPool::Sqlite(pool) => sqlx::query_as::<_, (i64,)>(
-            "SELECT task_id FROM crawler_articles WHERE id = ?",
-        )
-        .bind(article_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| RefreshError::Database(e.to_string()))?,
-        DbPool::Postgres(pool) => sqlx::query_as::<_, (i64,)>(
-            "SELECT task_id FROM crawler_articles WHERE id = $1",
-        )
-        .bind(article_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| RefreshError::Database(e.to_string()))?,
+        DbPool::Sqlite(pool) => {
+            sqlx::query_as::<_, (i64,)>("SELECT task_id FROM crawler_articles WHERE id = ?")
+                .bind(article_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| RefreshError::Database(e.to_string()))?
+        }
+        DbPool::Postgres(pool) => {
+            sqlx::query_as::<_, (i64,)>("SELECT task_id FROM crawler_articles WHERE id = $1")
+                .bind(article_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| RefreshError::Database(e.to_string()))?
+        }
     };
-    row.map(|(t,)| t).ok_or(RefreshError::ArticleNotFound { article_id })
+    row.map(|(t,)| t)
+        .ok_or(RefreshError::ArticleNotFound { article_id })
 }
 
 /// 加载 article url（详情页 URL）+ task user_agent + proxy 用于脚本求值
@@ -317,19 +307,17 @@ pub async fn get_article_field_for_use(
         api_version: "v1".into(),
     };
     let opts = ScriptOpts::default();
-    let new_value = script_runner::run_script(
-        &rule,
-        String::new(),
-        ctx_fields,
-        &url,
-        http_client,
-        &opts,
-    )
-    .await
-    .map_err(|ScriptError { category, message, .. }| RefreshError::ScriptFailed {
-        category: category.as_str().to_string(),
-        message,
-    })?;
+    let new_value =
+        script_runner::run_script(&rule, String::new(), ctx_fields, &url, http_client, &opts)
+            .await
+            .map_err(
+                |ScriptError {
+                     category, message, ..
+                 }| RefreshError::ScriptFailed {
+                    category: category.as_str().to_string(),
+                    message,
+                },
+            )?;
 
     let duration_ms = started.elapsed().as_millis() as u64;
 
@@ -561,21 +549,27 @@ pub async fn run_script_sandbox(
         api_version: "v1".into(),
     };
     let opts = ScriptOpts::default();
-    let (value, error) =
-        match script_runner::run_script(&rule, String::new(), fields.clone(), &url, client.as_ref(), &opts)
-            .await
-        {
-            Ok(v) => (Some(v), None),
-            Err(ScriptError {
-                category, message, ..
-            }) => (
-                None,
-                Some(SandboxErrorInfo {
-                    category: category.as_str().to_string(),
-                    message,
-                }),
-            ),
-        };
+    let (value, error) = match script_runner::run_script(
+        &rule,
+        String::new(),
+        fields.clone(),
+        &url,
+        client.as_ref(),
+        &opts,
+    )
+    .await
+    {
+        Ok(v) => (Some(v), None),
+        Err(ScriptError {
+            category, message, ..
+        }) => (
+            None,
+            Some(SandboxErrorInfo {
+                category: category.as_str().to_string(),
+                message,
+            }),
+        ),
+    };
 
     // 7. DB 当前值（可选，用于前端展示新旧对比）
     let current_db_value = if let Some(name) = field_name {

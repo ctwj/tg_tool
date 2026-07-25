@@ -22,6 +22,6 @@ pub mod scheduler;
 pub mod share;
 pub mod staging;
 pub mod tg_api;
-pub mod transfer;
 pub mod tg_auth;
 pub mod tg_manager;
+pub mod transfer;

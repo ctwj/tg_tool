@@ -31,14 +31,15 @@ fn urldecode(s: &str) -> String {
     let mut out: Vec<u8> = Vec::with_capacity(s.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len()
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
             && let Ok(b) =
                 u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16)
-            {
-                out.push(b);
-                i += 3;
-                continue;
-            }
+        {
+            out.push(b);
+            i += 3;
+            continue;
+        }
         out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
         i += 1;
     }
@@ -81,11 +82,10 @@ pub async fn download_to_staging(
         .map_err(|e| AppError::Internal(format!("创建中转文件失败: {e}")))?;
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk =
-            chunk.map_err(|e| AppError::Internal(format!("下载流读取失败: {e}")))?;
-        file.write_all(&chunk).await.map_err(|e| {
-            AppError::Internal(format!("写入中转失败（可能磁盘不足）: {e}"))
-        })?;
+        let chunk = chunk.map_err(|e| AppError::Internal(format!("下载流读取失败: {e}")))?;
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| AppError::Internal(format!("写入中转失败（可能磁盘不足）: {e}")))?;
     }
     file.flush()
         .await
@@ -98,9 +98,10 @@ pub async fn download_to_staging(
 /// 清理中转文件（不存在视为成功）
 pub async fn cleanup(path: &Path) {
     if let Err(e) = tokio::fs::remove_file(path).await
-        && e.kind() != std::io::ErrorKind::NotFound {
-            tracing::warn!("清理中转文件失败 {:?}: {e}", path);
-        }
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!("清理中转文件失败 {:?}: {e}", path);
+    }
 }
 
 use tokio::io::AsyncWriteExt;
@@ -111,12 +112,18 @@ mod tests {
 
     #[test]
     fn test_extract_filename_plain() {
-        assert_eq!(extract_filename("https://example.com/files/movie.mp4", 1), "movie.mp4");
+        assert_eq!(
+            extract_filename("https://example.com/files/movie.mp4", 1),
+            "movie.mp4"
+        );
     }
 
     #[test]
     fn test_extract_filename_with_query() {
-        assert_eq!(extract_filename("https://example.com/a.txt?token=xxx&x=1", 2), "a.txt");
+        assert_eq!(
+            extract_filename("https://example.com/a.txt?token=xxx&x=1", 2),
+            "a.txt"
+        );
     }
 
     #[test]

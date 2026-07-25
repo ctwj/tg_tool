@@ -38,13 +38,14 @@ pub async fn get_one(
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let task = transfer::get_task(&state.db, id).await?;
-    let mut data = serde_json::to_value(&task)
-        .map_err(|e| AppError::Internal(format!("序列化失败: {e}")))?;
+    let mut data =
+        serde_json::to_value(&task).map_err(|e| AppError::Internal(format!("序列化失败: {e}")))?;
     if let Some(sid) = task.share_id
-        && let Ok(s) = crate::services::share::get(&state.db, sid).await {
-            data["share_url"] = json!(s.share_url);
-            data["share_extract_code"] = json!(s.extract_code);
-        }
+        && let Ok(s) = crate::services::share::get(&state.db, sid).await
+    {
+        data["share_url"] = json!(s.share_url);
+        data["share_extract_code"] = json!(s.extract_code);
+    }
     Ok(Json(json!({ "success": true, "data": data })))
 }
 
@@ -107,5 +108,7 @@ pub async fn cleanup(State(state): State<AppState>) -> Result<Json<Value>, AppEr
             .max(1)
     };
     let deleted = transfer::cleanup_expired(&state.db, days).await?;
-    Ok(Json(json!({ "success": true, "data": { "deleted": deleted, "retention_days": days } })))
+    Ok(Json(
+        json!({ "success": true, "data": { "deleted": deleted, "retention_days": days } }),
+    ))
 }

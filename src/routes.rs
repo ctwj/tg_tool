@@ -284,23 +284,50 @@ pub fn build_router(state: AppState) -> Router {
             "/crawler/tasks",
             get(handlers::crawler::list_tasks).post(handlers::crawler::create_task),
         )
-        .route("/crawler/tasks/import", post(handlers::crawler::import_task))
-        .route("/crawler/tasks/from-template", post(handlers::crawler::create_task_from_template))
-        .route("/crawler/tasks/fetch-source", post(handlers::crawler::fetch_source))
-        .route("/crawler/tasks/fetch-detail-sample", post(handlers::crawler::fetch_detail_sample))
-        .route("/crawler/tasks/field-probe", post(handlers::crawler::field_probe))
+        .route(
+            "/crawler/tasks/import",
+            post(handlers::crawler::import_task),
+        )
+        .route(
+            "/crawler/tasks/from-template",
+            post(handlers::crawler::create_task_from_template),
+        )
+        .route(
+            "/crawler/tasks/fetch-source",
+            post(handlers::crawler::fetch_source),
+        )
+        .route(
+            "/crawler/tasks/fetch-detail-sample",
+            post(handlers::crawler::fetch_detail_sample),
+        )
+        .route(
+            "/crawler/tasks/field-probe",
+            post(handlers::crawler::field_probe),
+        )
         .route("/crawler/templates", get(handlers::crawler::list_templates))
-        .route("/crawler/task-templates", get(handlers::crawler::list_task_templates))
+        .route(
+            "/crawler/task-templates",
+            get(handlers::crawler::list_task_templates),
+        )
         .route(
             "/crawler/tasks/{id}",
             get(handlers::crawler::get_task)
                 .put(handlers::crawler::update_task)
                 .delete(handlers::crawler::delete_task),
         )
-        .route("/crawler/tasks/{id}/toggle", put(handlers::crawler::toggle_task))
+        .route(
+            "/crawler/tasks/{id}/toggle",
+            put(handlers::crawler::toggle_task),
+        )
         .route("/crawler/tasks/{id}/run", post(handlers::crawler::run_task))
-        .route("/crawler/tasks/{id}/test", post(handlers::crawler::test_task))
-        .route("/crawler/tasks/{id}/export", get(handlers::crawler::export_task))
+        .route(
+            "/crawler/tasks/{id}/test",
+            post(handlers::crawler::test_task),
+        )
+        .route(
+            "/crawler/tasks/{id}/export",
+            get(handlers::crawler::export_task),
+        )
         // Crawler — 字段树 CRUD (feature 043, US1 T025)
         .route(
             "/crawler/tasks/{id}/field-tree",
@@ -316,8 +343,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/crawler/tasks/{id}/field-nodes/{node_id}",
-            put(handlers::crawler::update_field_node)
-                .delete(handlers::crawler::delete_field_node),
+            put(handlers::crawler::update_field_node).delete(handlers::crawler::delete_field_node),
         )
         // Crawler — 字段命中率统计 (feature 043, Phase 8 T058 / FR-027)
         .route(
@@ -330,11 +356,11 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers::crawler::list_field_library),
         )
         // Crawler — 文章端点（US2）
+        .route("/crawler/articles", get(handlers::crawler::list_articles))
         .route(
-            "/crawler/articles",
-            get(handlers::crawler::list_articles),
+            "/crawler/articles/batch-delete",
+            post(handlers::crawler::batch_delete_articles),
         )
-        .route("/crawler/articles/batch-delete", post(handlers::crawler::batch_delete_articles))
         .route(
             "/crawler/articles/{id}",
             get(handlers::crawler::get_article_detail)
@@ -360,11 +386,11 @@ pub fn build_router(state: AppState) -> Router {
             post(handlers::crawler::script_sandbox),
         )
         // Crawler — 历史与统计端点（US3）
-        .route("/crawler/histories/stats", get(handlers::crawler::get_history_stats))
         .route(
-            "/crawler/histories",
-            get(handlers::crawler::list_histories),
+            "/crawler/histories/stats",
+            get(handlers::crawler::get_history_stats),
         )
+        .route("/crawler/histories", get(handlers::crawler::list_histories))
         .route(
             "/crawler/histories/{id}",
             get(handlers::crawler::get_history_detail),
@@ -393,10 +419,7 @@ pub fn build_router(state: AppState) -> Router {
             "/pan/transfers/cleanup",
             post(handlers::pan_transfer::cleanup),
         )
-        .route(
-            "/pan/transfers/{id}",
-            get(handlers::pan_transfer::get_one),
-        )
+        .route("/pan/transfers/{id}", get(handlers::pan_transfer::get_one))
         .route(
             "/pan/transfers/{id}/retry",
             post(handlers::pan_transfer::retry),

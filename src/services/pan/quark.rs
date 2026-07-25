@@ -177,7 +177,13 @@ pub async fn transfer_share(
     let resp: serde_json::Value = client
         .post(SHARE_SAVE_URL)
         .header("cookie", cookie)
-        .query(&[("pr", "ucpro"), ("fr", "pc"), ("uc_param_str", ""), ("__dt", dt.as_str()), ("__t", t.as_str())])
+        .query(&[
+            ("pr", "ucpro"),
+            ("fr", "pc"),
+            ("uc_param_str", ""),
+            ("__dt", dt.as_str()),
+            ("__t", t.as_str()),
+        ])
         .json(&save_body)
         .send()
         .await
@@ -197,9 +203,10 @@ pub async fn transfer_share(
     Ok(saved_fids
         .iter()
         .filter_map(|fid| {
-            name_map
-                .get(fid)
-                .map(|n| SavedFile { fid: fid.clone(), file_name: n.clone() })
+            name_map.get(fid).map(|n| SavedFile {
+                fid: fid.clone(),
+                file_name: n.clone(),
+            })
         })
         .collect())
 }
@@ -376,8 +383,13 @@ fn build_client() -> Result<reqwest::Client, AppError> {
 fn check_code(resp: &serde_json::Value, ctx: &str) -> Result<(), AppError> {
     let code = resp.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
     if code != 0 {
-        let msg = resp.get("message").and_then(|v| v.as_str()).unwrap_or("未知");
-        return Err(AppError::Internal(format!("夸克{ctx}失败(code={code}): {msg}")));
+        let msg = resp
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("未知");
+        return Err(AppError::Internal(format!(
+            "夸克{ctx}失败(code={code}): {msg}"
+        )));
     }
     Ok(())
 }
@@ -453,7 +465,8 @@ pub async fn upload_file(
 
     // 2. upHash（秒传）
     let hash_body = serde_json::json!({ "md5": md5hex, "sha1": sha1hex, "task_id": task_id });
-    let hash_resp: serde_json::Value = post_quark(&client, cookie, UPLOAD_HASH_URL, &hash_body).await?;
+    let hash_resp: serde_json::Value =
+        post_quark(&client, cookie, UPLOAD_HASH_URL, &hash_body).await?;
     check_code(&hash_resp, "upHash")?;
     if hash_resp
         .get("data")
@@ -483,8 +496,7 @@ pub async fn upload_file(
         let auth_meta = format!(
             "PUT\n\n{DEFAULT_MIME}\n{date}\nx-oss-user-agent:{OSS_UA}\n/{bucket}/{obj_key}?partNumber={part_no}&uploadId={upload_id}"
         );
-        let auth_body =
-            serde_json::json!({ "auth_info": auth_info, "auth_meta": auth_meta, "task_id": task_id });
+        let auth_body = serde_json::json!({ "auth_info": auth_info, "auth_meta": auth_meta, "task_id": task_id });
         let auth_resp: serde_json::Value =
             post_quark(&client, cookie, UPLOAD_AUTH_URL, &auth_body).await?;
         check_code(&auth_resp, "upPart auth")?;
@@ -500,7 +512,10 @@ pub async fn upload_file(
             .header("Referer", "https://pan.quark.cn/")
             .header("x-oss-date", &date)
             .header("x-oss-user-agent", OSS_UA)
-            .query(&[("partNumber", part_no.to_string()), ("uploadId", upload_id.clone())])
+            .query(&[
+                ("partNumber", part_no.to_string()),
+                ("uploadId", upload_id.clone()),
+            ])
             .body(chunk)
             .send()
             .await
@@ -571,7 +586,8 @@ pub async fn upload_file(
 
     // 5. upFinish
     let finish_body = serde_json::json!({ "obj_key": obj_key, "task_id": task_id });
-    let resp: serde_json::Value = post_quark(&client, cookie, UPLOAD_FINISH_URL, &finish_body).await?;
+    let resp: serde_json::Value =
+        post_quark(&client, cookie, UPLOAD_FINISH_URL, &finish_body).await?;
     check_code(&resp, "upFinish")?;
 
     // 上传完成后按文件名取 fid
@@ -629,9 +645,10 @@ async fn find_fid_by_name(
     {
         for f in list {
             if f.get("file_name").and_then(|v| v.as_str()) == Some(file_name)
-                && let Some(fid) = f.get("fid").and_then(|v| v.as_str()) {
-                    return Ok(fid.to_string());
-                }
+                && let Some(fid) = f.get("fid").and_then(|v| v.as_str())
+            {
+                return Ok(fid.to_string());
+            }
         }
     }
     Err(AppError::Internal(format!(

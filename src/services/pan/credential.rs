@@ -20,7 +20,11 @@ pub fn encrypt_credential(plaintext: &str, key_b64: &str) -> Result<(String, Str
 }
 
 /// 解密凭据密文 → 明文
-pub fn decrypt_credential(cipher_b64: &str, nonce_b64: &str, key_b64: &str) -> Result<String, AppError> {
+pub fn decrypt_credential(
+    cipher_b64: &str,
+    nonce_b64: &str,
+    key_b64: &str,
+) -> Result<String, AppError> {
     let key = decode_key(key_b64)?;
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|_| AppError::Internal("网盘主密钥长度无效".into()))?;
@@ -34,10 +38,7 @@ pub fn decrypt_credential(cipher_b64: &str, nonce_b64: &str, key_b64: &str) -> R
         return Err(AppError::Internal("nonce 长度无效".into()));
     }
     let pt = cipher
-        .decrypt(
-            Nonce::from_slice(&nonce_bytes),
-            ct.as_slice(),
-        )
+        .decrypt(Nonce::from_slice(&nonce_bytes), ct.as_slice())
         .map_err(|_| AppError::Internal("凭据解密失败（密钥错误或数据损坏）".into()))?;
     String::from_utf8(pt).map_err(|_| AppError::Internal("凭据明文非 UTF-8".into()))
 }
@@ -51,7 +52,8 @@ pub fn validate_pan_key(key_b64: &str) -> Result<(), AppError> {
 fn decode_key(key_b64: &str) -> Result<[u8; 32], AppError> {
     if key_b64.trim().is_empty() {
         return Err(AppError::Internal(
-            "PAN_CRED_KEY 未配置：请设置 32 字节随机密钥（base64，如 openssl rand -base64 32）".into(),
+            "PAN_CRED_KEY 未配置：请设置 32 字节随机密钥（base64，如 openssl rand -base64 32）"
+                .into(),
         ));
     }
     let raw = B64

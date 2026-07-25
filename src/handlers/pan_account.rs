@@ -51,7 +51,9 @@ pub async fn delete(
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     pan_account::delete_account(&state.db, id).await?;
-    Ok(Json(json!({ "success": true, "message": format!("账号 {id} 已删除") })))
+    Ok(Json(
+        json!({ "success": true, "message": format!("账号 {id} 已删除") }),
+    ))
 }
 
 /// POST /api/pan/accounts/{id}/check — 手动健康校验（回写 status/capacity/last_checked_at）

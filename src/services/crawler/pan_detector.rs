@@ -76,9 +76,7 @@ pub fn detect_platform(url: &str) -> Option<Platform> {
     if host.contains("cloud.189.cn") || host.contains("pan.189.cn") {
         return Some(Platform::Tianyi);
     }
-    if host.contains("123912.com")
-        || host.contains("123pan.com")
-        || host.contains("www.123pan.cn")
+    if host.contains("123912.com") || host.contains("123pan.com") || host.contains("www.123pan.cn")
     {
         return Some(Platform::Pan123);
     }
@@ -94,9 +92,7 @@ pub fn detect_platform(url: &str) -> Option<Platform> {
     if host.contains("pan.xunlei.com") || host.contains("xunlei.com") {
         return Some(Platform::Xunlei);
     }
-    if host.contains("caiyun.139.com")
-        || host.contains("yun.139.com")
-        || host.ends_with(".139.com")
+    if host.contains("caiyun.139.com") || host.contains("yun.139.com") || host.ends_with(".139.com")
     {
         return Some(Platform::Mobile);
     }

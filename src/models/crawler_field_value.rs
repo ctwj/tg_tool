@@ -83,19 +83,31 @@ mod tests {
             value_text: if is_hit { Some("v".into()) } else { None },
             value_number: None,
             is_hit,
-            created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
+            created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                .unwrap()
+                .naive_utc(),
         }
     }
 
     #[test]
     fn hit_rate_zero_total() {
-        let s = FieldHitStats { field_path: "x".into(), total: 0, hit: 0, missed: 0 };
+        let s = FieldHitStats {
+            field_path: "x".into(),
+            total: 0,
+            hit: 0,
+            missed: 0,
+        };
         assert_eq!(s.hit_rate(), 0.0);
     }
 
     #[test]
     fn hit_rate_normal() {
-        let s = FieldHitStats { field_path: "x".into(), total: 4, hit: 3, missed: 1 };
+        let s = FieldHitStats {
+            field_path: "x".into(),
+            total: 4,
+            hit: 3,
+            missed: 1,
+        };
         assert!((s.hit_rate() - 0.75).abs() < 1e-9);
     }
 

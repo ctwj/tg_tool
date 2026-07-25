@@ -31,7 +31,7 @@ use crate::services::crawler::field_schema::{Rule, SourceLayer};
 use crate::services::crawler::script_engine::ScriptFailureCategory;
 use crate::services::crawler::script_runner::{self, ScriptOpts};
 use crate::services::crawler::source_layer::{
-    fetch_source_material, ProbeCategory, ProbeError, ProbeStage, SourceMaterial,
+    ProbeCategory, ProbeError, ProbeStage, SourceMaterial, fetch_source_material,
 };
 
 // ============================================================================
@@ -245,9 +245,11 @@ pub async fn run_probe(req: ProbeRequest) -> Result<ProbeResponse, ProbeError> {
     }
 
     // 3d. 6 同步模式：直接对 req.rule 应用提取
-    let input = ExtractInput::from_material(&material, req.script_index).with_layer(req.source_layer);
+    let input =
+        ExtractInput::from_material(&material, req.script_index).with_layer(req.source_layer);
     let raw_hits = extractor::extract(&req.rule, &input).map_err(map_extract_error)?;
-    let final_hits = extractor::apply_post_processors(raw_hits, &req.post_processors, &material.final_url);
+    let final_hits =
+        extractor::apply_post_processors(raw_hits, &req.post_processors, &material.final_url);
 
     // 4. 0 命中 → ZeroHits
     if final_hits.is_empty() {
@@ -308,12 +310,16 @@ async fn run_nested_probe(
     for (idx, ph) in parent_hits.iter().enumerate() {
         // 用 context_html 构造子作用域素材（CSS 模式优先用元素 HTML，否则 fallback 到父值）
         let sub_material = make_sub_material_from_hit(ph, material);
-        let sub_input = ExtractInput::from_material(&sub_material, req.script_index).with_layer(req.source_layer);
+        let sub_input = ExtractInput::from_material(&sub_material, req.script_index)
+            .with_layer(req.source_layer);
 
         // 子规则单点失败不中断其他父作用域（FR-019）
         let child_raw = extractor::extract(&req.rule, &sub_input).unwrap_or_default();
-        let child_final =
-            extractor::apply_post_processors(child_raw, &req.post_processors, &sub_material.final_url);
+        let child_final = extractor::apply_post_processors(
+            child_raw,
+            &req.post_processors,
+            &sub_material.final_url,
+        );
 
         let child_hit = !child_final.is_empty();
         let first_value = child_final.first().map(|h| h.value.clone());
@@ -373,10 +379,7 @@ fn truncate_fragment(s: &str, max_chars: usize) -> String {
 
 /// 对非 CSS 模式（regex / prefix_suffix），fallback 到 `hit.value`。
 /// 与 engine.rs 同名函数对齐。
-fn make_sub_material_from_hit(
-    ph: &extractor::Hit,
-    parent: &SourceMaterial,
-) -> SourceMaterial {
+fn make_sub_material_from_hit(ph: &extractor::Hit, parent: &SourceMaterial) -> SourceMaterial {
     use crate::services::crawler::source_layer::{MetaTag, ScriptBlock};
     let html = ph.context_html.clone().unwrap_or_else(|| ph.value.clone());
     SourceMaterial {
@@ -443,7 +446,9 @@ fn follow_url_err_to_probe_error(
 /// - RuntimeError → Match / InvalidRule（脚本跑起来抛错）
 /// - Timeout → Match / InvalidRule（脚本超时，归类为运行期问题）
 /// - NetworkError → Fetch / UrlUnreachable（US3 ctx.fetch 失败，US1 不会触发）
-fn script_err_to_probe_error(err: crate::services::crawler::script_engine::ScriptError) -> ProbeError {
+fn script_err_to_probe_error(
+    err: crate::services::crawler::script_engine::ScriptError,
+) -> ProbeError {
     let (stage, category, hint): (ProbeStage, ProbeCategory, Option<&str>) = match err.category {
         ScriptFailureCategory::SyntaxError
         | ScriptFailureCategory::SecurityViolation
@@ -468,7 +473,11 @@ fn script_err_to_probe_error(err: crate::services::crawler::script_engine::Scrip
             Some("ctx.fetch 网络错（含 SSRF 拒绝 / 响应超阈值）"),
         ),
     };
-    let mut pe = ProbeError::new(stage, category, format!("[{}] {}", err.category.as_str(), err.message));
+    let mut pe = ProbeError::new(
+        stage,
+        category,
+        format!("[{}] {}", err.category.as_str(), err.message),
+    );
     if let Some(h) = hint {
         pe = pe.with_hint(h);
     }
@@ -556,7 +565,10 @@ mod tests {
         let err = run_probe(req).await.expect_err("404");
         assert_eq!(err.stage, ProbeStage::Fetch);
         assert!(
-            matches!(err.category, ProbeCategory::Http4xx5xx | ProbeCategory::Blocked),
+            matches!(
+                err.category,
+                ProbeCategory::Http4xx5xx | ProbeCategory::Blocked
+            ),
             "期望 Http4xx5xx 或 Blocked，实际 = {:?}",
             err.category
         );
@@ -808,7 +820,9 @@ mod tests {
                 },
             ],
             fetched_url: "https://x.com/".to_string(),
-            fetched_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
+            fetched_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                .unwrap()
+                .naive_utc(),
             duration_ms: 42,
             per_parent: None,
         };
@@ -833,7 +847,14 @@ mod tests {
 
     #[test]
     fn extractor_mode_six_kinds_exist() {
-        for s in ["css", "regex", "prefix_suffix", "json_path", "meta_attr", "header_field"] {
+        for s in [
+            "css",
+            "regex",
+            "prefix_suffix",
+            "json_path",
+            "meta_attr",
+            "header_field",
+        ] {
             assert!(crate::services::crawler::field_schema::ExtractorMode::from_str(s).is_some());
         }
     }
@@ -918,7 +939,11 @@ mod tests {
         );
         // body 通常 1 命中，但每条都应能匹配到 <a>
         for p in per_parent {
-            assert!(p.child_hit, "每条父命中下 <a> 都应命中，idx={}", p.parent_index);
+            assert!(
+                p.child_hit,
+                "每条父命中下 <a> 都应命中，idx={}",
+                p.parent_index
+            );
             assert!(p.child_value.is_some(), "child_value 必须填充");
             assert!(p.child_samples.is_some(), "child_samples 必须填充");
         }
@@ -962,10 +987,7 @@ mod tests {
             parent_node_id: None,
         };
         let resp = run_probe(req).await.expect("应抓取成功");
-        let per_parent = resp
-            .per_parent
-            .as_ref()
-            .expect("per_parent 必须填充");
+        let per_parent = resp.per_parent.as_ref().expect("per_parent 必须填充");
         assert!(per_parent.len() >= 2, "父命中至少 2 条");
         // 至少存在一条 child_hit=false 的（h1/p 作用域内通常无 <a>）
         let any_miss = per_parent.iter().any(|p| !p.child_hit);
@@ -1007,10 +1029,7 @@ mod tests {
             parent_node_id: None,
         };
         let resp = run_probe(req).await.expect("应抓取成功");
-        let per_parent = resp
-            .per_parent
-            .as_ref()
-            .expect("per_parent 必须填充");
+        let per_parent = resp.per_parent.as_ref().expect("per_parent 必须填充");
         for p in per_parent {
             if let Some(samples) = &p.child_samples {
                 assert!(

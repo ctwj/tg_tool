@@ -150,7 +150,9 @@ impl CrawlerTaskInput {
         let template_mode = !self.page_url_template.is_empty();
         // 045：入口模式（无模板）必须填 list_urls；模板模式 list_urls 可空（直接从模板第 1 页抓）
         if !template_mode && self.list_urls.is_empty() {
-            return Err("未配置 URL 模板时 list_urls（入口）不能为空；若用 URL 模板分页请填写模板".into());
+            return Err(
+                "未配置 URL 模板时 list_urls（入口）不能为空；若用 URL 模板分页请填写模板".into(),
+            );
         }
         if self.interval_minutes < 1 {
             return Err("interval_minutes 必须 >= 1".into());
@@ -204,11 +206,13 @@ mod tests {
     #[test]
     fn force_full_collect_defaults_to_true_when_absent() {
         // body 不传 force_full_collect 时，serde 默认应为 true（开关 ON = 全量采集）
-        let input: CrawlerTaskInput = serde_json::from_str(
-            r#"{"name":"t","list_urls":["https://x.com"]}"#,
-        )
-        .expect("反序列化成功");
-        assert!(input.force_full_collect, "缺省 force_full_collect 必须默认 true");
+        let input: CrawlerTaskInput =
+            serde_json::from_str(r#"{"name":"t","list_urls":["https://x.com"]}"#)
+                .expect("反序列化成功");
+        assert!(
+            input.force_full_collect,
+            "缺省 force_full_collect 必须默认 true"
+        );
     }
 
     #[test]
@@ -317,7 +321,10 @@ mod tests {
         let mut i = minimal_valid_input();
         i.page_url_template = "https://site.com/page-{page}.html".into();
         i.page_end = 0;
-        assert!(i.validate().is_err(), "模板模式 page_end=0 应拒绝（需终止边界）");
+        assert!(
+            i.validate().is_err(),
+            "模板模式 page_end=0 应拒绝（需终止边界）"
+        );
     }
 
     /// 045：入口模式（无模板）list_urls 为空应拒绝
@@ -326,6 +333,9 @@ mod tests {
         let mut i = minimal_valid_input();
         i.list_urls = vec![];
         // page_url_template 保持空 = 入口模式
-        assert!(i.validate().is_err(), "入口模式（无模板）list_urls 为空应拒绝");
+        assert!(
+            i.validate().is_err(),
+            "入口模式（无模板）list_urls 为空应拒绝"
+        );
     }
 }

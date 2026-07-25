@@ -95,8 +95,12 @@ mod tests {
             description: None,
             suggested_extractor: Some("css".into()),
             sort_order: sort,
-            created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
-            updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
+            created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                .unwrap()
+                .naive_utc(),
+            updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                .unwrap()
+                .naive_utc(),
         }
     }
 
@@ -122,7 +126,16 @@ mod tests {
         ];
         let groups = group_by_category(rows);
         let cats: Vec<_> = groups.iter().map(|g| g.category.as_str()).collect();
-        assert_eq!(cats, vec!["basic", "metadata", "classification", "interaction", "resource"]);
+        assert_eq!(
+            cats,
+            vec![
+                "basic",
+                "metadata",
+                "classification",
+                "interaction",
+                "resource"
+            ]
+        );
     }
 
     #[test]
@@ -140,10 +153,7 @@ mod tests {
 
     #[test]
     fn group_by_category_unknown_cat_goes_last() {
-        let rows = vec![
-            entry(2, "z", "custom_cat", 0),
-            entry(1, "a", "basic", 0),
-        ];
+        let rows = vec![entry(2, "z", "custom_cat", 0), entry(1, "a", "basic", 0)];
         let groups = group_by_category(rows);
         let cats: Vec<_> = groups.iter().map(|g| g.category.as_str()).collect();
         assert_eq!(cats, vec!["basic", "custom_cat"]);

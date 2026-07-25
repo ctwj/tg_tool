@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::services::crawler::field_schema::{
-    compile_regex, PostProcessor, PostProcessorOp, Rule, SourceLayer, SubRule,
+    PostProcessor, PostProcessorOp, Rule, SourceLayer, SubRule, compile_regex,
 };
 use crate::services::crawler::source_layer::{MetaKeyKind, MetaTag, ScriptBlock, SourceMaterial};
 
@@ -146,14 +146,20 @@ impl<'a> ExtractInput<'a> {
                 let block = self.script_blocks.get(idx_usize).ok_or_else(|| {
                     ExtractError::new(
                         ExtractErrorKind::SourceMissing,
-                        format!("script_index {idx} 越界（共 {} 个 script 块）", self.script_blocks.len()),
+                        format!(
+                            "script_index {idx} 越界（共 {} 个 script 块）",
+                            self.script_blocks.len()
+                        ),
                     )
                 })?;
                 // 外链脚本无内容（src 模式）：报错（外链需另发请求才能取内容，超出 extractor 范围）
                 let text = block.content.as_deref().ok_or_else(|| {
                     ExtractError::new(
                         ExtractErrorKind::SourceMissing,
-                        format!("script[{idx}] 是外链脚本（src={:?}），无内联内容", block.src),
+                        format!(
+                            "script[{idx}] 是外链脚本（src={:?}），无内联内容",
+                            block.src
+                        ),
                     )
                 })?;
                 Ok((text, "script"))
@@ -240,7 +246,10 @@ fn extract_css(
         ));
     }
     let selector = scraper::Selector::parse(&css.selector).map_err(|e| {
-        ExtractError::new(ExtractErrorKind::InvalidRule, format!("CSS 选择器非法: {e}"))
+        ExtractError::new(
+            ExtractErrorKind::InvalidRule,
+            format!("CSS 选择器非法: {e}"),
+        )
     })?;
     let document = scraper::Html::parse_document(input.html);
     let fragment = format!("css:{}", css.selector);
@@ -280,7 +289,10 @@ fn extract_regex(
 ) -> Result<Vec<Hit>, ExtractError> {
     let (text, _layer_label) = input.layer_text()?;
     let compiled = compile_regex(&re.pattern, &re.flags).map_err(|e| {
-        ExtractError::new(ExtractErrorKind::InvalidRule, format!("regex 编译失败: {e}"))
+        ExtractError::new(
+            ExtractErrorKind::InvalidRule,
+            format!("regex 编译失败: {e}"),
+        )
     })?;
     let group = re.group as usize;
     let fragment = format!("regex:{}", re.pattern);
@@ -292,7 +304,10 @@ fn extract_regex(
             .ok_or_else(|| {
                 ExtractError::new(
                     ExtractErrorKind::InvalidRule,
-                    format!("regex group {group} 不存在（pattern 仅有 {} 个捕获组）", cap.len() - 1),
+                    format!(
+                        "regex group {group} 不存在（pattern 仅有 {} 个捕获组）",
+                        cap.len() - 1
+                    ),
                 )
             })?
             .as_str()
@@ -325,19 +340,29 @@ fn extract_prefix_suffix(
 
     while cursor < total {
         let remaining = &text[cursor..];
-        let (prefix_start, prefix_end) = match find_substring(remaining, &ps.prefix, ps.case_sensitive) {
-            Some(offset) => (cursor + offset, cursor + offset + ps.prefix.len()),
-            None => break,
-        };
+        let (prefix_start, prefix_end) =
+            match find_substring(remaining, &ps.prefix, ps.case_sensitive) {
+                Some(offset) => (cursor + offset, cursor + offset + ps.prefix.len()),
+                None => break,
+            };
         let after_prefix = &text[prefix_end..];
-        let (suffix_rel_start, suffix_rel_end) = match find_substring(after_prefix, &ps.suffix, ps.case_sensitive) {
-            Some(offset) => (offset, offset + ps.suffix.len()),
-            None => break,
-        };
+        let (suffix_rel_start, suffix_rel_end) =
+            match find_substring(after_prefix, &ps.suffix, ps.case_sensitive) {
+                Some(offset) => (offset, offset + ps.suffix.len()),
+                None => break,
+            };
         let inner_start = prefix_end;
         let inner_end = prefix_end + suffix_rel_start;
-        let value_start = if ps.include_boundary { prefix_start } else { inner_start };
-        let value_end = if ps.include_boundary { prefix_end + suffix_rel_end } else { inner_end };
+        let value_start = if ps.include_boundary {
+            prefix_start
+        } else {
+            inner_start
+        };
+        let value_end = if ps.include_boundary {
+            prefix_end + suffix_rel_end
+        } else {
+            inner_end
+        };
         let value = &text[value_start..value_end];
         hits.push(Hit {
             value: value.to_string(),
@@ -409,7 +434,10 @@ fn extract_by_json_path(
         let content = block.content.as_deref().ok_or_else(|| {
             ExtractError::new(
                 ExtractErrorKind::SourceMissing,
-                format!("script[{idx}] 是外链脚本（src={:?}），无内联内容", block.src),
+                format!(
+                    "script[{idx}] 是外链脚本（src={:?}），无内联内容",
+                    block.src
+                ),
             )
         })?;
         owned_value = extract_json_from_text(content).ok_or_else(|| {
@@ -422,7 +450,10 @@ fn extract_by_json_path(
     };
 
     let path = serde_json_path::JsonPath::parse(&jp.path).map_err(|e| {
-        ExtractError::new(ExtractErrorKind::InvalidRule, format!("json_path 解析失败: {e}"))
+        ExtractError::new(
+            ExtractErrorKind::InvalidRule,
+            format!("json_path 解析失败: {e}"),
+        )
     })?;
     let nodes = path.query(value).all();
     let fragment = format!("json_path:{}", jp.path);
@@ -666,16 +697,18 @@ fn decode_one_entity(entity: &str) -> Option<String> {
         return Some(ch.to_string());
     }
     // 命名实体（最常见 6 个）
-    Some(match entity {
-        "amp" => "&",
-        "lt" => "<",
-        "gt" => ">",
-        "quot" => "\"",
-        "apos" => "'",
-        "nbsp" => "\u{00A0}",
-        _ => return None,
-    }
-    .to_string())
+    Some(
+        match entity {
+            "amp" => "&",
+            "lt" => "<",
+            "gt" => ">",
+            "quot" => "\"",
+            "apos" => "'",
+            "nbsp" => "\u{00A0}",
+            _ => return None,
+        }
+        .to_string(),
+    )
 }
 
 // ============================================================================
@@ -1027,7 +1060,11 @@ mod tests {
     #[test]
     fn post_processor_html_entity_decode_named() {
         let hits = make_hits(&["a&amp;b", "x&lt;y&gt;z &quot;q&quot;"]);
-        let out = apply_post_processors(hits, &[pp(PostProcessorOp::HtmlEntityDecode)], "https://example.com/");
+        let out = apply_post_processors(
+            hits,
+            &[pp(PostProcessorOp::HtmlEntityDecode)],
+            "https://example.com/",
+        );
         assert_eq!(out[0].value, "a&b");
         assert_eq!(out[1].value, "x<y>z \"q\"");
     }
@@ -1035,7 +1072,11 @@ mod tests {
     #[test]
     fn post_processor_html_entity_decode_numeric() {
         let hits = make_hits(&["&#65;&#66;&#67;", "&#x4e2d;"]);
-        let out = apply_post_processors(hits, &[pp(PostProcessorOp::HtmlEntityDecode)], "https://example.com/");
+        let out = apply_post_processors(
+            hits,
+            &[pp(PostProcessorOp::HtmlEntityDecode)],
+            "https://example.com/",
+        );
         assert_eq!(out[0].value, "ABC");
         assert_eq!(out[1].value, "中");
     }
@@ -1051,14 +1092,17 @@ mod tests {
         assert_eq!(out[0].value, "https://example.com/p/1");
         // resolve_url 对 //cdn.com 的处理：http(s) 才识别绝对；这里 //cdn.com 不是 http:// 开头
         // 按现有 resolve_url 实现，会拼到 base 目录（视为相对路径），所以验证 url 形式合法即可
-        assert!(out[1].value.contains("cdn.com") || out[1].value.starts_with("https://example.com"));
+        assert!(
+            out[1].value.contains("cdn.com") || out[1].value.starts_with("https://example.com")
+        );
         assert_eq!(out[2].value, "https://other.com/y");
     }
 
     #[test]
     fn post_processor_first_keeps_only_one() {
         let hits = make_hits(&["a", "b", "c"]);
-        let out = apply_post_processors(hits, &[pp(PostProcessorOp::First)], "https://example.com/");
+        let out =
+            apply_post_processors(hits, &[pp(PostProcessorOp::First)], "https://example.com/");
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].value, "a");
     }
@@ -1066,14 +1110,16 @@ mod tests {
     #[test]
     fn post_processor_first_noop_on_single() {
         let hits = make_hits(&["only"]);
-        let out = apply_post_processors(hits, &[pp(PostProcessorOp::First)], "https://example.com/");
+        let out =
+            apply_post_processors(hits, &[pp(PostProcessorOp::First)], "https://example.com/");
         assert_eq!(out.len(), 1);
     }
 
     #[test]
     fn post_processor_dedupe() {
         let hits = make_hits(&["a", "b", "a", "c", "b", "d"]);
-        let out = apply_post_processors(hits, &[pp(PostProcessorOp::Dedupe)], "https://example.com/");
+        let out =
+            apply_post_processors(hits, &[pp(PostProcessorOp::Dedupe)], "https://example.com/");
         let values: Vec<_> = out.iter().map(|h| h.value.as_str()).collect();
         assert_eq!(values, vec!["a", "b", "c", "d"]);
     }
@@ -1275,7 +1321,9 @@ mod tests {
     #[test]
     fn json_path_number_value() {
         // 数字节点 → 原生 to_string
-        let scripts = vec![make_json_value(serde_json::json!({"count": 42, "label": "x"}))];
+        let scripts = vec![make_json_value(
+            serde_json::json!({"count": 42, "label": "x"}),
+        )];
         let rule = Rule::JsonPath(crate::services::crawler::field_schema::JsonPathRule {
             path: "$.count".into(),
         });
@@ -1488,9 +1536,7 @@ mod tests {
 
     #[test]
     fn follow_url_rule_rejected_in_sync_extract() {
-        use crate::services::crawler::field_schema::{
-            CssRule, FollowUrlRule,
-        };
+        use crate::services::crawler::field_schema::{CssRule, FollowUrlRule};
         use crate::services::crawler::source_layer::SourceMaterial;
         let fu = FollowUrlRule {
             transit: SubRule::Css(CssRule {

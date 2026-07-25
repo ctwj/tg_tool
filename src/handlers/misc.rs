@@ -303,8 +303,12 @@ pub async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
         }
     };
 
-    let crawler_next_run_str = crawler_next_run_at
-        .map(|t| chrono::Local.from_utc_datetime(&t).format("%Y-%m-%d %H:%M:%S").to_string());
+    let crawler_next_run_str = crawler_next_run_at.map(|t| {
+        chrono::Local
+            .from_utc_datetime(&t)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string()
+    });
 
     let body = Json(json!({
         "success": db_ok,

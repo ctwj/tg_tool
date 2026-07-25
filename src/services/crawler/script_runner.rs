@@ -24,12 +24,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use rquickjs::{Ctx, Function, Object};
 use rquickjs::prelude::Opt;
+use rquickjs::{Ctx, Function, Object};
 
 use crate::services::crawler::field_schema::ScriptRule;
 use crate::services::crawler::script_engine::{
-    evaluate_blocking, ScriptError, ScriptFailureCategory,
+    ScriptError, ScriptFailureCategory, evaluate_blocking,
 };
 use crate::services::crawler::script_fetch::{self, FetchError, FetchOpts};
 
@@ -159,29 +159,34 @@ impl CtxInjectorData {
         // ctx.fetch(url, { headers:{...}, method, body, timeout_ms })  —— 脚本可覆盖/追加请求头
         if let Some(fc) = &self.fetch_context {
             let fc = fc.clone();
-            let fetch_fn = Function::new(ctx.clone(), move |url: String, call_opts: Opt<Object>| -> String {
-                let mut opts = FetchOpts::default();
-                if let Some(obj) = call_opts.0 {
-                    // headers: { key: value } plain object
-                    if let Ok(headers_obj) = obj.get::<_, Object>("headers") {
-                        for (k, v) in headers_obj.props::<String, String>().filter_map(Result::ok) {
-                            opts.headers.push((k, v));
+            let fetch_fn = Function::new(
+                ctx.clone(),
+                move |url: String, call_opts: Opt<Object>| -> String {
+                    let mut opts = FetchOpts::default();
+                    if let Some(obj) = call_opts.0 {
+                        // headers: { key: value } plain object
+                        if let Ok(headers_obj) = obj.get::<_, Object>("headers") {
+                            for (k, v) in
+                                headers_obj.props::<String, String>().filter_map(Result::ok)
+                            {
+                                opts.headers.push((k, v));
+                            }
+                        }
+                        if let Ok(m) = obj.get::<_, String>("method")
+                            && !m.is_empty()
+                        {
+                            opts.method = Some(m);
+                        }
+                        if let Ok(b) = obj.get::<_, String>("body") {
+                            opts.body = Some(b);
+                        }
+                        if let Ok(t) = obj.get::<_, u64>("timeout_ms") {
+                            opts.timeout_ms = Some(t);
                         }
                     }
-                    if let Ok(m) = obj.get::<_, String>("method")
-                        && !m.is_empty()
-                    {
-                        opts.method = Some(m);
-                    }
-                    if let Ok(b) = obj.get::<_, String>("body") {
-                        opts.body = Some(b);
-                    }
-                    if let Ok(t) = obj.get::<_, u64>("timeout_ms") {
-                        opts.timeout_ms = Some(t);
-                    }
-                }
-                fetch_sync(&fc, &url, opts)
-            })
+                    fetch_sync(&fc, &url, opts)
+                },
+            )
             .map_err(|e| {
                 ScriptError::new(
                     ScriptFailureCategory::RuntimeError,
@@ -210,18 +215,15 @@ fn fetch_sync(fc: &FetchContext, url: &str, mut opts: FetchOpts) -> String {
         .headers
         .iter()
         .any(|(k, _)| k.eq_ignore_ascii_case("referer"));
-    if !has_referer
-        && let Some(r) = &fc.referer
-    {
+    if !has_referer && let Some(r) = &fc.referer {
         opts.headers.push(("Referer".to_string(), r.clone()));
     }
     let handle = fc.handle.clone();
     let client = fc.client.clone();
     let max_bytes = fc.max_response_bytes;
     let url_s = url.to_string();
-    let result = handle.block_on(async move {
-        script_fetch::fetch_impl(&url_s, &opts, &client, max_bytes).await
-    });
+    let result = handle
+        .block_on(async move { script_fetch::fetch_impl(&url_s, &opts, &client, max_bytes).await });
     match result {
         Ok(r) => {
             if r.body_text.is_empty() {
@@ -306,13 +308,12 @@ pub async fn run_script(
         let injector = CtxInjectorData::build_closure(injector_data);
         evaluate_blocking(&body, &injector, timeout_ms)
     });
-    join.await
-        .map_err(|e| {
-            ScriptError::new(
-                ScriptFailureCategory::RuntimeError,
-                format!("spawn_blocking join 失败: {e}"),
-            )
-        })?
+    join.await.map_err(|e| {
+        ScriptError::new(
+            ScriptFailureCategory::RuntimeError,
+            format!("spawn_blocking join 失败: {e}"),
+        )
+    })?
 }
 
 impl CtxInjectorData {
@@ -487,9 +488,8 @@ mod tests {
     #[tokio::test]
     async fn t_run_script_reads_other_field_value() {
         // 配置 ctx_fields={"pan_type":"quark"}，脚本根据兄弟字段决定输出
-        let rule = make_rule(
-            "return ctx.fields.pan_type === 'quark' ? ctx.value + '?quark' : ctx.value",
-        );
+        let rule =
+            make_rule("return ctx.fields.pan_type === 'quark' ? ctx.value + '?quark' : ctx.value");
         let mut fields = HashMap::new();
         fields.insert("pan_type".into(), "quark".into());
         let opts = ScriptOpts::default();
@@ -505,16 +505,9 @@ mod tests {
         // JS 短路：undefined || 'default' → 'default'
         let rule = make_rule("return ctx.fields.nonexistent || 'default'");
         let opts = ScriptOpts::default();
-        let result = run_script(
-            &rule,
-            "v".into(),
-            HashMap::new(),
-            "/x",
-            None,
-            &opts,
-        )
-        .await
-        .unwrap();
+        let result = run_script(&rule, "v".into(), HashMap::new(), "/x", None, &opts)
+            .await
+            .unwrap();
         assert_eq!(result, "default");
     }
 
@@ -522,9 +515,7 @@ mod tests {
     async fn t_run_script_handles_failed_sibling_field() {
         // 失败字段（无 final_value，未放入 ctx_fields）→ 在 JS 侧等同 undefined
         // 脚本应能优雅降级，不应因兄弟字段失败而抛错
-        let rule = make_rule(
-            "return ctx.fields.failed_sibling ? 'has' : 'missing'",
-        );
+        let rule = make_rule("return ctx.fields.failed_sibling ? 'has' : 'missing'");
         let opts = ScriptOpts::default();
         let result = run_script(
             &rule,
@@ -561,16 +552,9 @@ mod tests {
         let rule = make_rule("return typeof ctx.fetch === 'function' ? 'has_fetch' : 'no_fetch'");
         let opts = ScriptOpts::default();
         let client = reqwest::Client::new();
-        let result = run_script(
-            &rule,
-            "".into(),
-            HashMap::new(),
-            "/x",
-            Some(&client),
-            &opts,
-        )
-        .await
-        .unwrap();
+        let result = run_script(&rule, "".into(), HashMap::new(), "/x", Some(&client), &opts)
+            .await
+            .unwrap();
         assert_eq!(result, "has_fetch");
     }
 
@@ -596,18 +580,10 @@ mod tests {
         let rule = make_rule(&body);
         let opts = ScriptOpts::default();
         let client = reqwest::Client::new();
-        let result = run_script(
-            &rule,
-            "".into(),
-            HashMap::new(),
-            "/x",
-            Some(&client),
-            &opts,
-        )
-        .await
-        .unwrap();
+        let result = run_script(&rule, "".into(), HashMap::new(), "/x", Some(&client), &opts)
+            .await
+            .unwrap();
         // 127.0.0.1 命中 SSRF 拒绝名单 → fetch_sync 返回空串
         assert_eq!(result, "empty");
     }
 }
-

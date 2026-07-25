@@ -157,14 +157,19 @@ pub async fn fetch_impl(
     let parsed = reqwest::Url::parse(url).map_err(|e| FetchError::InvalidUrl(e.to_string()))?;
 
     // 2. SSRF 校验：DNS 解析后逐 IP 判定
-    let host = parsed.host_str().ok_or_else(|| FetchError::InvalidUrl("missing host".into()))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| FetchError::InvalidUrl("missing host".into()))?;
     let _ips = resolve_and_check_ssrf(host).await?;
 
     // 3. 构造 reqwest 请求
     let method = opts
         .method
         .as_deref()
-        .map(|m| reqwest::Method::from_bytes(m.as_bytes()).map_err(|e| FetchError::Network(format!("非法 method: {e}"))))
+        .map(|m| {
+            reqwest::Method::from_bytes(m.as_bytes())
+                .map_err(|e| FetchError::Network(format!("非法 method: {e}")))
+        })
         .transpose()?
         .unwrap_or(reqwest::Method::GET);
 
@@ -180,7 +185,10 @@ pub async fn fetch_impl(
     }
 
     // 4. 发请求
-    let resp = req.send().await.map_err(|e| FetchError::Network(e.to_string()))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| FetchError::Network(e.to_string()))?;
     let status = resp.status().as_u16();
     let headers = resp
         .headers()
@@ -189,7 +197,10 @@ pub async fn fetch_impl(
         .collect::<Vec<_>>();
 
     // 5. 读 body（不流式，简单实现）；超阈值拒绝
-    let bytes = resp.bytes().await.map_err(|e| FetchError::Network(e.to_string()))?;
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| FetchError::Network(e.to_string()))?;
     if bytes.len() as u64 > max_response_bytes as u64 {
         return Err(FetchError::ResponseTooLarge {
             actual: bytes.len() as u64,

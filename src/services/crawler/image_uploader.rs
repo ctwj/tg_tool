@@ -146,10 +146,7 @@ struct PendingImage {
     updated_at: chrono::NaiveDateTime,
 }
 
-async fn fetch_pending_images(
-    db: &DbPool,
-    limit: i64,
-) -> Result<Vec<PendingImage>, String> {
+async fn fetch_pending_images(db: &DbPool, limit: i64) -> Result<Vec<PendingImage>, String> {
     match db {
         DbPool::Sqlite(pool) => {
             let rows = sqlx::query_as::<_, PendingImage>(
@@ -239,9 +236,10 @@ async fn process_one(state: &AppState, row: &PendingImage) -> Result<(), String>
     drop(tg_clients);
 
     // 5. 解析群组A peer
-    let target_chat = crate::services::tg_api::resolve_peer(target_id, &state.tg_clients, &state.peer_cache)
-        .await
-        .map_err(|e| format!("解析群组A失败: {e}"))?;
+    let target_chat =
+        crate::services::tg_api::resolve_peer(target_id, &state.tg_clients, &state.peer_cache)
+            .await
+            .map_err(|e| format!("解析群组A失败: {e}"))?;
 
     // 6. upload_file + send_message(photo)
     let uploaded = client
@@ -436,12 +434,18 @@ mod tests {
     #[test]
     fn ext_from_url_simple() {
         assert_eq!(ext_from_url("https://example.com/a.jpg").unwrap(), "jpg");
-        assert_eq!(ext_from_url("https://example.com/path/x.png").unwrap(), "png");
+        assert_eq!(
+            ext_from_url("https://example.com/path/x.png").unwrap(),
+            "png"
+        );
     }
 
     #[test]
     fn ext_from_url_with_query() {
-        assert_eq!(ext_from_url("https://example.com/a.jpeg?token=abc").unwrap(), "jpeg");
+        assert_eq!(
+            ext_from_url("https://example.com/a.jpeg?token=abc").unwrap(),
+            "jpeg"
+        );
     }
 
     #[test]

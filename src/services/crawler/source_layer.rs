@@ -60,9 +60,7 @@ pub struct ScriptBlock {
 impl PartialEq for ScriptBlock {
     fn eq(&self, other: &Self) -> bool {
         // json_value 不参与相等性判定（Value 比较开销小但语义上以脚本文本为准）
-        self.index == other.index
-            && self.src == other.src
-            && self.content == other.content
+        self.index == other.index && self.src == other.src && self.content == other.content
     }
 }
 
@@ -246,7 +244,11 @@ pub async fn fetch_source_material(
     // 4xx/5xx：构造错误返回，但仍把素材信息塞进 hint 供调试（headers 已收集）
     if (400..500).contains(&status) || (500..600).contains(&status) {
         let blocked = is_blocked_status(status, &body);
-        let category = if blocked { ProbeCategory::Blocked } else { ProbeCategory::Http4xx5xx };
+        let category = if blocked {
+            ProbeCategory::Blocked
+        } else {
+            ProbeCategory::Http4xx5xx
+        };
         return Err(ProbeError::new(
             ProbeStage::Fetch,
             category,
@@ -299,7 +301,9 @@ pub async fn fetch_detail_sample(
             ProbeCategory::ParentEmpty,
             "未找到能产出 URL 的 list_page 字段（需要 field_type=url/link_card/pagination）",
         )
-        .with_hint("在字段树中添加一个 url 类字段（如 link_card 下的 url 子字段）以让详情页 tab 取到样本")
+        .with_hint(
+            "在字段树中添加一个 url 类字段（如 link_card 下的 url 子字段）以让详情页 tab 取到样本",
+        )
     })?;
 
     if detail_url.trim().is_empty() {
@@ -415,7 +419,13 @@ fn find_first_detail_url(
         if spec.field_type != FieldType::Url {
             continue;
         }
-        if let Some(url) = extract_first_url_from_node(&spec.rule, spec.source_layer, spec.script_index, &spec.post_processors, material) {
+        if let Some(url) = extract_first_url_from_node(
+            &spec.rule,
+            spec.source_layer,
+            spec.script_index,
+            &spec.post_processors,
+            material,
+        ) {
             return Some(url);
         }
     }
@@ -480,11 +490,18 @@ fn find_first_detail_url(
         }
         // 用原始命中值判断（不绝对化后再判），避免误把文本当作 URL
         let hits = extract_to_hits(&spec.rule, spec.source_layer, spec.script_index, material);
-        let processed = crate::services::crawler::extractor::apply_post_processors(hits, &spec.post_processors, &material.final_url);
+        let processed = crate::services::crawler::extractor::apply_post_processors(
+            hits,
+            &spec.post_processors,
+            &material.final_url,
+        );
         if let Some(first) = processed.into_iter().next() {
             let v = first.value.trim();
             if v.starts_with("http://") || v.starts_with("https://") {
-                return Some(crate::services::crawler::engine::resolve_url(v, &material.final_url));
+                return Some(crate::services::crawler::engine::resolve_url(
+                    v,
+                    &material.final_url,
+                ));
             }
         }
     }
@@ -501,7 +518,11 @@ fn extract_first_url_from_node(
     material: &SourceMaterial,
 ) -> Option<String> {
     let hits = extract_to_hits(rule, source_layer, script_index, material);
-    let processed = crate::services::crawler::extractor::apply_post_processors(hits, post_processors, &material.final_url);
+    let processed = crate::services::crawler::extractor::apply_post_processors(
+        hits,
+        post_processors,
+        &material.final_url,
+    );
     processed
         .into_iter()
         .next()
@@ -533,10 +554,7 @@ fn make_sub_from_hit(
     ph: &crate::services::crawler::extractor::Hit,
     parent: &SourceMaterial,
 ) -> SourceMaterial {
-    let html = ph
-        .context_html
-        .clone()
-        .unwrap_or_else(|| ph.value.clone());
+    let html = ph.context_html.clone().unwrap_or_else(|| ph.value.clone());
     SourceMaterial {
         final_url: parent.final_url.clone(),
         status: parent.status,
@@ -568,12 +586,16 @@ fn is_blocked_status(status: u16, body: &str) -> bool {
 
 fn body_has_block_keywords(body: &str) -> bool {
     // 取前 8KB 足够（拦截页通常在头部）
-    let head: &str = if body.len() > 8192 { &body[..8192] } else { body };
+    let head: &str = if body.len() > 8192 {
+        &body[..8192]
+    } else {
+        body
+    };
     const KEYWORDS: &[&str] = &[
-        "Just a moment",            // Cloudflare challenge
-        "Checking your browser",    // Cloudflare
+        "Just a moment",         // Cloudflare challenge
+        "Checking your browser", // Cloudflare
         "cf-browser-verification",
-        "Attention Required",       // Cloudflare 403
+        "Attention Required", // Cloudflare 403
         "请输入验证码",
         "请登录后",
         "请先登录",
@@ -647,13 +669,14 @@ fn parse_metas(html: &str) -> Vec<MetaTag> {
                 (MetaKeyKind::HttpEquiv, "http-equiv"),
             ] {
                 if let Some(k) = v.attr(attr_name)
-                    && let Some(c) = v.attr("content") {
-                        return Some(MetaTag {
-                            key_kind: kind,
-                            key: k.to_string(),
-                            content: c.to_string(),
-                        });
-                    }
+                    && let Some(c) = v.attr("content")
+                {
+                    return Some(MetaTag {
+                        key_kind: kind,
+                        key: k.to_string(),
+                        content: c.to_string(),
+                    });
+                }
             }
             None
         })
@@ -676,7 +699,10 @@ mod tests {
         </head><body></body></html>"#;
         let metas = parse_metas(html);
         // 注意：scraper 会自动补全 <meta charset>，所以可能多出一条
-        let desc = metas.iter().find(|m| m.key == "description").expect("找到 description");
+        let desc = metas
+            .iter()
+            .find(|m| m.key == "description")
+            .expect("找到 description");
         assert_eq!(desc.content, "测试站点描述");
         assert_eq!(desc.key_kind, MetaKeyKind::Name);
     }
@@ -685,7 +711,10 @@ mod tests {
     fn parse_metas_og_property() {
         let html = r#"<meta property="og:title" content="分享标题">"#;
         let metas = parse_metas(html);
-        let og = metas.iter().find(|m| m.key == "og:title").expect("og:title");
+        let og = metas
+            .iter()
+            .find(|m| m.key == "og:title")
+            .expect("og:title");
         assert_eq!(og.content, "分享标题");
         assert_eq!(og.key_kind, MetaKeyKind::Property);
     }
@@ -732,8 +761,20 @@ mod tests {
         assert_eq!(scripts.len(), 2);
         assert_eq!(scripts[0].index, 0);
         assert!(scripts[0].src.is_none());
-        assert!(scripts[0].content.as_deref().unwrap_or("").contains("console.log"));
-        assert!(scripts[1].content.as_deref().unwrap_or("").contains("var x"));
+        assert!(
+            scripts[0]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("console.log")
+        );
+        assert!(
+            scripts[1]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("var x")
+        );
     }
 
     #[test]
@@ -742,7 +783,10 @@ mod tests {
                       <script src="https://cdn.com/b.js"></script>"#;
         let scripts = parse_scripts(html, "https://example.com/page");
         assert_eq!(scripts.len(), 2);
-        assert_eq!(scripts[0].src.as_deref(), Some("https://example.com/static/a.js"));
+        assert_eq!(
+            scripts[0].src.as_deref(),
+            Some("https://example.com/static/a.js")
+        );
         assert_eq!(scripts[1].src.as_deref(), Some("https://cdn.com/b.js"));
         assert!(scripts[0].content.is_none());
     }
@@ -799,19 +843,18 @@ mod tests {
 
     #[test]
     fn is_blocked_status_login_wall_keywords() {
-        assert!(is_blocked_status(200, "<html><body>请先登录后查看内容</body></html>"));
+        assert!(is_blocked_status(
+            200,
+            "<html><body>请先登录后查看内容</body></html>"
+        ));
         assert!(is_blocked_status(200, "Just a moment... Cloudflare"));
         assert!(!is_blocked_status(200, "<html>正常文章内容</html>"));
     }
 
     #[test]
     fn probe_error_with_hint_chain() {
-        let e = ProbeError::new(
-            ProbeStage::Fetch,
-            ProbeCategory::UrlUnreachable,
-            "GET 失败",
-        )
-        .with_hint("检查 URL 是否带 scheme");
+        let e = ProbeError::new(ProbeStage::Fetch, ProbeCategory::UrlUnreachable, "GET 失败")
+            .with_hint("检查 URL 是否带 scheme");
         assert_eq!(e.hint.as_deref(), Some("检查 URL 是否带 scheme"));
         assert_eq!(e.stage, ProbeStage::Fetch);
         assert_eq!(e.category, ProbeCategory::UrlUnreachable);
@@ -838,7 +881,10 @@ mod tests {
     // ===== US3 T046：find_first_detail_url 单元测试 =====
 
     /// 构造 FieldTreeNode 用于测试（不依赖 DB）
-    fn make_url_node(name: &str, selector: &str) -> crate::models::crawler_field_node::FieldTreeNode {
+    fn make_url_node(
+        name: &str,
+        selector: &str,
+    ) -> crate::models::crawler_field_node::FieldTreeNode {
         use crate::models::crawler_field_node::{FieldNodeRow, FieldTreeNode};
         FieldTreeNode {
             row: FieldNodeRow {
@@ -857,8 +903,12 @@ mod tests {
                 sort_order: 0,
                 is_active: true,
                 refresh_on_read: false,
-                created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
-                updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
+                created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                    .unwrap()
+                    .naive_utc(),
+                updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                    .unwrap()
+                    .naive_utc(),
             },
             children: Vec::new(),
         }
@@ -898,15 +948,27 @@ mod tests {
         use crate::models::crawler_field_node::{FieldNodeRow, FieldTreeNode};
         let nodes = vec![FieldTreeNode {
             row: FieldNodeRow {
-                id: 1, task_id: 1, parent_id: None, scope: "list_page".into(),
-                name: "title".into(), display_name: "title".into(),
+                id: 1,
+                task_id: 1,
+                parent_id: None,
+                scope: "list_page".into(),
+                name: "title".into(),
+                display_name: "title".into(),
                 field_type: "string".into(),
-                source_layer: "html".into(), extractor_mode: "css".into(),
+                source_layer: "html".into(),
+                extractor_mode: "css".into(),
                 rule_json: r#"{"selector":"a.link","attr":"text"}"#.into(),
-                post_processors_json: None, script_index: None,
-                sort_order: 0, is_active: true, refresh_on_read: false,
-                created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
-                updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
+                post_processors_json: None,
+                script_index: None,
+                sort_order: 0,
+                is_active: true,
+                refresh_on_read: false,
+                created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                    .unwrap()
+                    .naive_utc(),
+                updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                    .unwrap()
+                    .naive_utc(),
             },
             children: vec![],
         }];
@@ -929,15 +991,27 @@ mod tests {
         };
         let nodes = vec![FieldTreeNode {
             row: FieldNodeRow {
-                id: 1, task_id: 1, parent_id: None, scope: "list_page".into(),
-                name: "any".into(), display_name: "any".into(),
+                id: 1,
+                task_id: 1,
+                parent_id: None,
+                scope: "list_page".into(),
+                name: "any".into(),
+                display_name: "any".into(),
                 field_type: "string".into(),
-                source_layer: "html".into(), extractor_mode: "css".into(),
+                source_layer: "html".into(),
+                extractor_mode: "css".into(),
                 rule_json: r#"{"selector":"a.link","attr":"href"}"#.into(),
-                post_processors_json: None, script_index: None,
-                sort_order: 0, is_active: true, refresh_on_read: false,
-                created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
-                updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
+                post_processors_json: None,
+                script_index: None,
+                sort_order: 0,
+                is_active: true,
+                refresh_on_read: false,
+                created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                    .unwrap()
+                    .naive_utc(),
+                updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                    .unwrap()
+                    .naive_utc(),
             },
             children: vec![],
         }];
@@ -951,7 +1025,10 @@ mod tests {
     fn strip_fragment_removes_trailing_fragment() {
         assert_eq!(strip_fragment("https://x.com/p/1"), "https://x.com/p/1");
         assert_eq!(strip_fragment("https://x.com/p/1#top"), "https://x.com/p/1");
-        assert_eq!(strip_fragment("https://x.com/p/1?a=1#top"), "https://x.com/p/1?a=1");
+        assert_eq!(
+            strip_fragment("https://x.com/p/1?a=1#top"),
+            "https://x.com/p/1?a=1"
+        );
         assert_eq!(strip_fragment(""), "");
     }
 
@@ -1047,27 +1124,51 @@ mod tests {
         // link_card 父：选 .card 容器；url 子：a.bg-white.card-hover 取 href
         let nodes = vec![FieldTreeNode {
             row: FieldNodeRow {
-                id: 1, task_id: 1, parent_id: None, scope: "list_page".into(),
-                name: "link_card".into(), display_name: "链接卡片".into(),
+                id: 1,
+                task_id: 1,
+                parent_id: None,
+                scope: "list_page".into(),
+                name: "link_card".into(),
+                display_name: "链接卡片".into(),
                 field_type: "link_card".into(),
-                source_layer: "html".into(), extractor_mode: "css".into(),
+                source_layer: "html".into(),
+                extractor_mode: "css".into(),
                 rule_json: r#"{"selector":".card","attr":"text"}"#.into(),
-                post_processors_json: None, script_index: None,
-                sort_order: 0, is_active: true, refresh_on_read: false,
-                created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
-                updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
+                post_processors_json: None,
+                script_index: None,
+                sort_order: 0,
+                is_active: true,
+                refresh_on_read: false,
+                created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                    .unwrap()
+                    .naive_utc(),
+                updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                    .unwrap()
+                    .naive_utc(),
             },
             children: vec![FieldTreeNode {
                 row: FieldNodeRow {
-                    id: 2, task_id: 1, parent_id: Some(1), scope: "list_page".into(),
-                    name: "url".into(), display_name: "链接".into(),
+                    id: 2,
+                    task_id: 1,
+                    parent_id: Some(1),
+                    scope: "list_page".into(),
+                    name: "url".into(),
+                    display_name: "链接".into(),
                     field_type: "url".into(),
-                    source_layer: "html".into(), extractor_mode: "css".into(),
+                    source_layer: "html".into(),
+                    extractor_mode: "css".into(),
                     rule_json: r#"{"selector":"a.bg-white.card-hover","attr":"href"}"#.into(),
-                    post_processors_json: None, script_index: None,
-                    sort_order: 0, is_active: true, refresh_on_read: false,
-                    created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
-                    updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
+                    post_processors_json: None,
+                    script_index: None,
+                    sort_order: 0,
+                    is_active: true,
+                    refresh_on_read: false,
+                    created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                        .unwrap()
+                        .naive_utc(),
+                    updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                        .unwrap()
+                        .naive_utc(),
                 },
                 children: vec![],
             }],
@@ -1106,44 +1207,78 @@ mod tests {
         // 根级 pagination 字段：会提取出 /category/window/2（分页 URL）
         let pagination = FieldTreeNode {
             row: FieldNodeRow {
-                id: 1, task_id: 1, parent_id: None, scope: "list_page".into(),
-                name: "next_page".into(), display_name: "下一页".into(),
+                id: 1,
+                task_id: 1,
+                parent_id: None,
+                scope: "list_page".into(),
+                name: "next_page".into(),
+                display_name: "下一页".into(),
                 field_type: "pagination".into(),
-                source_layer: "html".into(), extractor_mode: "css".into(),
+                source_layer: "html".into(),
+                extractor_mode: "css".into(),
                 rule_json: r#"{"selector":".pg a","attr":"href"}"#.into(),
                 post_processors_json: Some(r#"[{"op":"absolutize_url"}]"#.into()),
                 script_index: None,
-                sort_order: 0, is_active: true, refresh_on_read: false,
-                created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
-                updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
+                sort_order: 0,
+                is_active: true,
+                refresh_on_read: false,
+                created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                    .unwrap()
+                    .naive_utc(),
+                updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                    .unwrap()
+                    .naive_utc(),
             },
             children: vec![],
         };
         // link_card 父字段 + url 子字段：提取出真实详情 URL
         let link_card = FieldTreeNode {
             row: FieldNodeRow {
-                id: 2, task_id: 1, parent_id: None, scope: "list_page".into(),
-                name: "link_card".into(), display_name: "链接卡片".into(),
+                id: 2,
+                task_id: 1,
+                parent_id: None,
+                scope: "list_page".into(),
+                name: "link_card".into(),
+                display_name: "链接卡片".into(),
                 field_type: "link_card".into(),
-                source_layer: "html".into(), extractor_mode: "css".into(),
+                source_layer: "html".into(),
+                extractor_mode: "css".into(),
                 rule_json: r#"{"selector":".card","attr":"html"}"#.into(),
-                post_processors_json: None, script_index: None,
-                sort_order: 1, is_active: true, refresh_on_read: false,
-                created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
-                updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
+                post_processors_json: None,
+                script_index: None,
+                sort_order: 1,
+                is_active: true,
+                refresh_on_read: false,
+                created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                    .unwrap()
+                    .naive_utc(),
+                updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                    .unwrap()
+                    .naive_utc(),
             },
             children: vec![FieldTreeNode {
                 row: FieldNodeRow {
-                    id: 3, task_id: 1, parent_id: Some(2), scope: "list_page".into(),
-                    name: "url".into(), display_name: "链接".into(),
+                    id: 3,
+                    task_id: 1,
+                    parent_id: Some(2),
+                    scope: "list_page".into(),
+                    name: "url".into(),
+                    display_name: "链接".into(),
                     field_type: "url".into(),
-                    source_layer: "html".into(), extractor_mode: "css".into(),
+                    source_layer: "html".into(),
+                    extractor_mode: "css".into(),
                     rule_json: r#"{"selector":"a.title","attr":"href"}"#.into(),
                     post_processors_json: Some(r#"[{"op":"absolutize_url"}]"#.into()),
                     script_index: None,
-                    sort_order: 0, is_active: true, refresh_on_read: false,
-                    created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
-                    updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
+                    sort_order: 0,
+                    is_active: true,
+                    refresh_on_read: false,
+                    created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                        .unwrap()
+                        .naive_utc(),
+                    updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                        .unwrap()
+                        .naive_utc(),
                 },
                 children: vec![],
             }],
@@ -1175,15 +1310,27 @@ mod tests {
         // Pass 3 也跳过 → 返回 None（让上层报 ParentEmpty 而非拿分页 URL 当详情）
         let nodes = vec![FieldTreeNode {
             row: FieldNodeRow {
-                id: 1, task_id: 1, parent_id: None, scope: "list_page".into(),
-                name: "next".into(), display_name: "下一页".into(),
+                id: 1,
+                task_id: 1,
+                parent_id: None,
+                scope: "list_page".into(),
+                name: "next".into(),
+                display_name: "下一页".into(),
                 field_type: "pagination".into(),
-                source_layer: "html".into(), extractor_mode: "css".into(),
+                source_layer: "html".into(),
+                extractor_mode: "css".into(),
                 rule_json: r#"{"selector":"a.next","attr":"href"}"#.into(),
-                post_processors_json: None, script_index: None,
-                sort_order: 0, is_active: true, refresh_on_read: false,
-                created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
-                updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc(),
+                post_processors_json: None,
+                script_index: None,
+                sort_order: 0,
+                is_active: true,
+                refresh_on_read: false,
+                created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                    .unwrap()
+                    .naive_utc(),
+                updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                    .unwrap()
+                    .naive_utc(),
             },
             children: vec![],
         }];

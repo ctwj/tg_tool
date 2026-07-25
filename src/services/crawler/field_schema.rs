@@ -464,9 +464,8 @@ pub struct FieldTreeNode {
 // ============================================================================
 
 /// name 合法性：`^[a-z][a-z0-9_]{0,31}$`（小写字母开头，后续字母/数字/下划线，总长 1-32）
-static NAME_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^[a-z][a-z0-9_]{0,31}$").expect("invalid name regex")
-});
+static NAME_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^[a-z][a-z0-9_]{0,31}$").expect("invalid name regex"));
 
 pub fn validate_name(name: &str) -> Result<(), String> {
     if NAME_RE.is_match(name) {
@@ -484,12 +483,12 @@ pub fn validate_name(name: &str) -> Result<(), String> {
 /// - 检查必填字段非空（CSS selector / Regex pattern / PrefixSuffix prefix+suffix / JsonPath path /
 ///   MetaAttr attr_name+attr_value / HeaderField header_name / FollowUrl transit+extract 递归非空）
 pub fn validate_rule(mode: ExtractorMode, rule_json: &str) -> Result<(), String> {
-    let value: Value = serde_json::from_str(rule_json)
-        .map_err(|e| format!("rule_json 不是合法 JSON: {e}"))?;
+    let value: Value =
+        serde_json::from_str(rule_json).map_err(|e| format!("rule_json 不是合法 JSON: {e}"))?;
     match mode {
         ExtractorMode::Css => {
-            let r: CssRule = serde_json::from_value(value)
-                .map_err(|e| format!("css 规则反序列化失败: {e}"))?;
+            let r: CssRule =
+                serde_json::from_value(value).map_err(|e| format!("css 规则反序列化失败: {e}"))?;
             validate_css_rule(&r)
         }
         ExtractorMode::Regex => {
@@ -529,9 +528,7 @@ pub fn validate_rule(mode: ExtractorMode, rule_json: &str) -> Result<(), String>
                 );
             }
             if r.target_layer == SourceLayer::Script && r.target_script_index.is_none() {
-                return Err(
-                    "follow_url.target_layer=script 时必须指定 target_script_index".into(),
-                );
+                return Err("follow_url.target_layer=script 时必须指定 target_script_index".into());
             }
             Ok(())
         }
@@ -576,9 +573,7 @@ pub fn validate_script_rule(r: &ScriptRule) -> Result<(), String> {
 /// 本函数在字段树 CRUD 入口被调用（handler 层组装完 FieldNodeSpec 后调用）。
 pub fn validate_field_node_spec(node: &FieldNodeSpec) -> Result<(), String> {
     if node.scope == Scope::ListPage && node.extractor_mode == ExtractorMode::Script {
-        return Err(
-            "script 模式仅 detail_page 作用域合法（list_page 不支持脚本字段）".into(),
-        );
+        return Err("script 模式仅 detail_page 作用域合法（list_page 不支持脚本字段）".into());
     }
     if node.refresh_on_read && node.extractor_mode != ExtractorMode::Script {
         return Err(format!(
@@ -659,40 +654,33 @@ fn validate_sub_rule(sub: &SubRule, path: &str) -> Result<(), String> {
 
 /// 把 DB 中的 (mode, rule_json) 反序列化为 [`Rule::Css`] 等（用于应用层 dispatch）
 pub fn deserialize_rule(mode: ExtractorMode, rule_json: &str) -> Result<Rule, String> {
-    let value: Value = serde_json::from_str(rule_json)
-        .map_err(|e| format!("rule_json 不是合法 JSON: {e}"))?;
+    let value: Value =
+        serde_json::from_str(rule_json).map_err(|e| format!("rule_json 不是合法 JSON: {e}"))?;
     Ok(match mode {
-        ExtractorMode::Css => Rule::Css(
-            serde_json::from_value(value)
-                .map_err(|e| format!("css 反序列化失败: {e}"))?,
-        ),
+        ExtractorMode::Css => {
+            Rule::Css(serde_json::from_value(value).map_err(|e| format!("css 反序列化失败: {e}"))?)
+        }
         ExtractorMode::Regex => Rule::Regex(
-            serde_json::from_value(value)
-                .map_err(|e| format!("regex 反序列化失败: {e}"))?,
+            serde_json::from_value(value).map_err(|e| format!("regex 反序列化失败: {e}"))?,
         ),
         ExtractorMode::PrefixSuffix => Rule::PrefixSuffix(
             serde_json::from_value(value)
                 .map_err(|e| format!("prefix_suffix 反序列化失败: {e}"))?,
         ),
         ExtractorMode::JsonPath => Rule::JsonPath(
-            serde_json::from_value(value)
-                .map_err(|e| format!("json_path 反序列化失败: {e}"))?,
+            serde_json::from_value(value).map_err(|e| format!("json_path 反序列化失败: {e}"))?,
         ),
         ExtractorMode::MetaAttr => Rule::MetaAttr(
-            serde_json::from_value(value)
-                .map_err(|e| format!("meta_attr 反序列化失败: {e}"))?,
+            serde_json::from_value(value).map_err(|e| format!("meta_attr 反序列化失败: {e}"))?,
         ),
         ExtractorMode::HeaderField => Rule::HeaderField(
-            serde_json::from_value(value)
-                .map_err(|e| format!("header_field 反序列化失败: {e}"))?,
+            serde_json::from_value(value).map_err(|e| format!("header_field 反序列化失败: {e}"))?,
         ),
         ExtractorMode::FollowUrl => Rule::FollowUrl(
-            serde_json::from_value(value)
-                .map_err(|e| format!("follow_url 反序列化失败: {e}"))?,
+            serde_json::from_value(value).map_err(|e| format!("follow_url 反序列化失败: {e}"))?,
         ),
         ExtractorMode::Script => Rule::Script(
-            serde_json::from_value(value)
-                .map_err(|e| format!("script 反序列化失败: {e}"))?,
+            serde_json::from_value(value).map_err(|e| format!("script 反序列化失败: {e}"))?,
         ),
     })
 }
@@ -708,7 +696,10 @@ pub fn serialize_rule(rule: &Rule) -> (String, String) {
     let value: Value = serde_json::from_str(&json).unwrap_or(Value::Null);
     // 取 "spec" key 下的内容（不是 .values().next()，那会拿到 "mode" 字符串）
     let inner = value.get("spec").cloned().unwrap_or(Value::Null);
-    (mode, serde_json::to_string(&inner).unwrap_or_else(|_| "{}".to_string()))
+    (
+        mode,
+        serde_json::to_string(&inner).unwrap_or_else(|_| "{}".to_string()),
+    )
 }
 
 /// 编译 regex —— 把 pattern 与 flags 拼接为 `(?flags:pattern)`
@@ -1112,7 +1103,10 @@ mod tests {
         let m: ExtractorMode = serde_json::from_str("\"script\"").unwrap();
         assert_eq!(m, ExtractorMode::Script);
         // from_str / as_str 对齐
-        assert_eq!(ExtractorMode::from_str("script"), Some(ExtractorMode::Script));
+        assert_eq!(
+            ExtractorMode::from_str("script"),
+            Some(ExtractorMode::Script)
+        );
         assert_eq!(ExtractorMode::Script.as_str(), "script");
     }
 

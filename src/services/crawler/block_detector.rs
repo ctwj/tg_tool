@@ -79,11 +79,7 @@ const EMPTY_BODY_THRESHOLD: usize = 200;
 /// 主入口：检测拦截
 ///
 /// `headers` 为响应头（key 不区分大小写，调用方任意大小写均可）
-pub fn detect_block(
-    status: u16,
-    body: &str,
-    headers: &[(String, String)],
-) -> Option<BlockType> {
+pub fn detect_block(status: u16, body: &str, headers: &[(String, String)]) -> Option<BlockType> {
     // 1. HTTP 状态码优先
     if matches!(status, 403 | 429 | 503) {
         // 进一步：检查是否 Cloudflare

@@ -5,8 +5,8 @@ use chrono::Utc;
 
 use crate::errors::AppError;
 use crate::models::transfer_task::{
-    self, CreateTransferTask, TransferTask, STATUS_FAILED, STATUS_PENDING, STATUS_PROCESSING,
-    STATUS_SUCCEEDED,
+    self, CreateTransferTask, STATUS_FAILED, STATUS_PENDING, STATUS_PROCESSING, STATUS_SUCCEEDED,
+    TransferTask,
 };
 use crate::services::{link_checker, link_parser, pan::quark, pan_account, share, staging};
 use crate::state::DbPool;
@@ -75,18 +75,18 @@ pub async fn create_task(
 
 pub async fn get_task(db: &DbPool, id: i64) -> Result<TransferTask, AppError> {
     match db {
-        DbPool::Sqlite(p) => sqlx::query_as::<_, TransferTask>(
-            "SELECT * FROM transfer_tasks WHERE id = ?",
-        )
-        .bind(id)
-        .fetch_optional(p)
-        .await?,
-        DbPool::Postgres(p) => sqlx::query_as::<_, TransferTask>(
-            "SELECT * FROM transfer_tasks WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_optional(p)
-        .await?,
+        DbPool::Sqlite(p) => {
+            sqlx::query_as::<_, TransferTask>("SELECT * FROM transfer_tasks WHERE id = ?")
+                .bind(id)
+                .fetch_optional(p)
+                .await?
+        }
+        DbPool::Postgres(p) => {
+            sqlx::query_as::<_, TransferTask>("SELECT * FROM transfer_tasks WHERE id = $1")
+                .bind(id)
+                .fetch_optional(p)
+                .await?
+        }
     }
     .ok_or_else(|| AppError::NotFound(format!("转存任务 {id} 不存在")))
 }
@@ -136,9 +136,13 @@ async fn run_task_inner(
             let pwd_id = parsed
                 .pwd_id
                 .ok_or_else(|| AppError::Internal("缺少 pwd_id".into()))?;
-            let saved =
-                quark::transfer_share(&cookie, &pwd_id, parsed.passcode.as_deref(), &account.target_dir)
-                    .await?;
+            let saved = quark::transfer_share(
+                &cookie,
+                &pwd_id,
+                parsed.passcode.as_deref(),
+                &account.target_dir,
+            )
+            .await?;
             if saved.is_empty() {
                 return Err(AppError::Internal("转存返回空文件列表".into()));
             }
@@ -149,7 +153,8 @@ async fn run_task_inner(
                 .collect::<Vec<_>>()
                 .join(",");
             let remote_id = saved.first().map(|f| f.fid.clone());
-            let (share_url, share_pwd) = quark::create_share(&cookie, &fid_list, &title, None).await?;
+            let (share_url, share_pwd) =
+                quark::create_share(&cookie, &fid_list, &title, None).await?;
             let share_id =
                 share::create(db, account.id, &title, &share_url, share_pwd, remote_id).await?;
             mark_succeeded(db, task_id, share_id).await?;
@@ -201,18 +206,22 @@ async fn account_exists(db: &DbPool, id: i64) -> Result<bool, AppError> {
 
 async fn find_by_idem(db: &DbPool, key: &str) -> Result<Option<TransferTask>, AppError> {
     Ok(match db {
-        DbPool::Sqlite(p) => sqlx::query_as::<_, TransferTask>(
-            "SELECT * FROM transfer_tasks WHERE idempotency_key = ?",
-        )
-        .bind(key)
-        .fetch_optional(p)
-        .await?,
-        DbPool::Postgres(p) => sqlx::query_as::<_, TransferTask>(
-            "SELECT * FROM transfer_tasks WHERE idempotency_key = $1",
-        )
-        .bind(key)
-        .fetch_optional(p)
-        .await?,
+        DbPool::Sqlite(p) => {
+            sqlx::query_as::<_, TransferTask>(
+                "SELECT * FROM transfer_tasks WHERE idempotency_key = ?",
+            )
+            .bind(key)
+            .fetch_optional(p)
+            .await?
+        }
+        DbPool::Postgres(p) => {
+            sqlx::query_as::<_, TransferTask>(
+                "SELECT * FROM transfer_tasks WHERE idempotency_key = $1",
+            )
+            .bind(key)
+            .fetch_optional(p)
+            .await?
+        }
     })
 }
 
@@ -330,20 +339,24 @@ pub async fn list_tasks(
         where_sql.push_str(&format!(" AND target_account_id = {aid}"));
     }
     let items = match db {
-        DbPool::Sqlite(p) => sqlx::query_as::<_, TransferTask>(&format!(
-            "SELECT * FROM transfer_tasks {where_sql} ORDER BY id DESC LIMIT ? OFFSET ?"
-        ))
-        .bind(page_size)
-        .bind(offset)
-        .fetch_all(p)
-        .await?,
-        DbPool::Postgres(p) => sqlx::query_as::<_, TransferTask>(&format!(
-            "SELECT * FROM transfer_tasks {where_sql} ORDER BY id DESC LIMIT $1 OFFSET $2"
-        ))
-        .bind(page_size)
-        .bind(offset)
-        .fetch_all(p)
-        .await?,
+        DbPool::Sqlite(p) => {
+            sqlx::query_as::<_, TransferTask>(&format!(
+                "SELECT * FROM transfer_tasks {where_sql} ORDER BY id DESC LIMIT ? OFFSET ?"
+            ))
+            .bind(page_size)
+            .bind(offset)
+            .fetch_all(p)
+            .await?
+        }
+        DbPool::Postgres(p) => {
+            sqlx::query_as::<_, TransferTask>(&format!(
+                "SELECT * FROM transfer_tasks {where_sql} ORDER BY id DESC LIMIT $1 OFFSET $2"
+            ))
+            .bind(page_size)
+            .bind(offset)
+            .fetch_all(p)
+            .await?
+        }
     };
     let (total,): (i64,) = match db {
         DbPool::Sqlite(p) => {
@@ -412,12 +425,12 @@ pub async fn cleanup_expired(db: &DbPool, retention_days: i64) -> Result<i64, Ap
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::Engine;
-    use sqlx::sqlite::SqlitePoolOptions;
     use crate::models::transfer_task::{
         CreateTransferTask, SOURCE_ORIGIN_MANUAL, STATUS_FAILED, STATUS_PENDING,
     };
     use crate::state::DbPool;
+    use base64::Engine;
+    use sqlx::sqlite::SqlitePoolOptions;
 
     fn pan_key() -> String {
         base64::engine::general_purpose::STANDARD.encode([0x42u8; 32])
@@ -544,7 +557,15 @@ mod tests {
         }
         // run 最新一个 → uc failed
         let (items, _) = list_tasks(&db, None, None, 1, 10).await.unwrap();
-        run_task(&db, &pan_key(), std::path::Path::new("/tmp/x"), &empty_cache(), items[0].id).await.unwrap();
+        run_task(
+            &db,
+            &pan_key(),
+            std::path::Path::new("/tmp/x"),
+            &empty_cache(),
+            items[0].id,
+        )
+        .await
+        .unwrap();
 
         let (_, total) = list_tasks(&db, None, None, 1, 10).await.unwrap();
         assert_eq!(total, 3);
@@ -569,7 +590,15 @@ mod tests {
         )
         .await
         .unwrap();
-        run_task(&db, &pan_key(), std::path::Path::new("/tmp/x"), &empty_cache(), t.id).await.unwrap(); // uc → failed
+        run_task(
+            &db,
+            &pan_key(),
+            std::path::Path::new("/tmp/x"),
+            &empty_cache(),
+            t.id,
+        )
+        .await
+        .unwrap(); // uc → failed
         assert_eq!(get_task(&db, t.id).await.unwrap().status, STATUS_FAILED);
         let retried = retry_task(&db, t.id).await.unwrap();
         assert_eq!(retried.status, STATUS_PENDING);
