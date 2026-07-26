@@ -8,7 +8,8 @@ use crate::errors::AppError;
 
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 const FILE_SORT_URL: &str = "https://drive-pc.quark.cn/1/clouddrive/file/sort";
-// 注：/1/clouddrive/capacity 实测返回 404，容量端点待确认；health_check 暂不取容量数值
+// 容量端点：/1/clouddrive/member（对齐 OpenList quark_uc 驱动），返回 use_capacity/total_capacity
+const MEMBER_URL: &str = "https://drive-pc.quark.cn/1/clouddrive/member";
 // 转存/分享端点（research.md §夸克；②③用 drive-h，④⑤用 drive-pc）
 const SHARE_TOKEN_URL: &str = "https://drive-h.quark.cn/1/clouddrive/share/sharepage/token";
 const SHARE_DETAIL_URL: &str = "https://drive-h.quark.cn/1/clouddrive/share/sharepage/detail";
@@ -76,14 +77,57 @@ pub async fn health_check(cookie: &str) -> Result<QuarkHealth, AppError> {
         });
     }
 
-    // 2. 容量端点待确认（/capacity 实测 404）；暂返回 None，不影响健康判定
-    let capacity_bytes: Option<i64> = None;
+    // 2. 调用 /member 取总容量（best-effort：失败不影响健康判定）
+    let capacity_bytes = match fetch_total_capacity(&client, cookie).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("夸克容量查询失败（不影响健康判定）: {e}");
+            None
+        }
+    };
 
     Ok(QuarkHealth {
         valid: true,
         capacity_bytes,
         message: None,
     })
+}
+
+/// 调用 /member 端点取 total_capacity（总配额字节）。
+/// 失败返回 Err，由调用方决定是否降级。
+async fn fetch_total_capacity(
+    client: &reqwest::Client,
+    cookie: &str,
+) -> Result<Option<i64>, AppError> {
+    let resp = client
+        .get(MEMBER_URL)
+        .header("cookie", cookie)
+        .query(&[
+            ("pr", "ucpro"),
+            ("fr", "pc"),
+            ("uc_param_str", ""),
+            ("fetch_subscribe", "false"),
+            ("_ch", "home"),
+            ("fetch_identity", "false"),
+        ])
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("夸克 /member 请求失败: {e}")))?;
+
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Internal(format!("夸克 /member 响应解析失败: {e}")))?;
+
+    Ok(parse_total_capacity(&body))
+}
+
+/// 从 /member 响应中解析 total_capacity（字节）。
+/// 抽出以便单元测试，无需联网。
+fn parse_total_capacity(body: &serde_json::Value) -> Option<i64> {
+    body.get("data")
+        .and_then(|d| d.get("total_capacity"))
+        .and_then(|v| v.as_i64())
 }
 
 /// 转存夸克分享到自己网盘指定目录，返回保存的文件列表（research.md §夸克 4 步链路）
@@ -679,4 +723,46 @@ fn http_date_now() -> String {
     chrono::Utc::now()
         .format("%a, %d %b %Y %H:%M:%S GMT")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_total_capacity_extracts_value() {
+        // 对齐 OpenList MemberResp 真实结构（数值即字节数）
+        let body = serde_json::json!({
+            "status": 200,
+            "code": 0,
+            "message": "ok",
+            "data": {
+                "member_type": "REGULAR",
+                "use_capacity": 123_456_789,
+                "total_capacity": 1_099_511_627_776_i64, // 1 TiB
+                "is_new_user": false,
+                "member_status": { "VIP": "0", "Z_VIP": "0", "MINI_VIP": "0", "SUPER_VIP": "0" }
+            },
+            "metadata": { "server_cur_time": 0 }
+        });
+        assert_eq!(
+            parse_total_capacity(&body),
+            Some(1_099_511_627_776_i64),
+            "应取到 total_capacity 字节值"
+        );
+    }
+
+    #[test]
+    fn parse_total_capacity_returns_none_when_missing() {
+        // 响应合法但缺字段（如夸克改字段名）→ None，不报错
+        let body = serde_json::json!({ "code": 0, "data": { "use_capacity": 100 } });
+        assert_eq!(parse_total_capacity(&body), None);
+    }
+
+    #[test]
+    fn parse_total_capacity_returns_none_on_error_body() {
+        // code != 0 的错误响应（且无 data.total_capacity）→ None
+        let body = serde_json::json!({ "code": 32003, "message": "登录态失效" });
+        assert_eq!(parse_total_capacity(&body), None);
+    }
 }
