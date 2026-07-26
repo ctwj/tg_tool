@@ -8,6 +8,7 @@ export interface PanAccount {
   status: string // active | disabled | expired
   target_dir: string
   capacity_bytes: number | null
+  used_capacity_bytes: number | null
   last_checked_at: string | null
   created_at: string
   updated_at: string

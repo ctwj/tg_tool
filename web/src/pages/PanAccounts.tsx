@@ -11,6 +11,7 @@ import {
   Popconfirm,
   message,
   Card,
+  Tooltip,
 } from 'antd'
 import {
   PlusOutlined,
@@ -45,10 +46,22 @@ const statusTag = (status: string) => {
   return <Tag color={s.color}>{s.text}</Tag>
 }
 
-const formatBytes = (b: number | null) => {
-  if (!b) return '-'
+const formatBytes = (b: number | null | undefined) => {
+  if (!b && b !== 0) return '-'
   const gb = b / 1024 / 1024 / 1024
   return gb >= 1 ? `${gb.toFixed(1)} GB` : `${(b / 1024 / 1024).toFixed(0)} MB`
+}
+
+/** 渲染容量列：已用 / 总；附使用率提示（无总容量则仅显示已用） */
+const renderCapacity = (used: number | null, total: number | null) => {
+  if (!total && !used) return '-'
+  if (!total) return formatBytes(used)
+  const usedStr = formatBytes(used)
+  const totalStr = formatBytes(total)
+  const pct = total > 0 && used != null ? Math.min(100, (used / total) * 100) : null
+  const label = `${usedStr} / ${totalStr}`
+  if (pct == null) return label
+  return <Tooltip title={`使用率 ${pct.toFixed(1)}%`}>{label}</Tooltip>
 }
 
 const PanAccounts: React.FC = () => {
@@ -139,10 +152,10 @@ const PanAccounts: React.FC = () => {
     { title: '状态', dataIndex: 'status', width: 90, render: statusTag },
     { title: '目标目录', dataIndex: 'target_dir' },
     {
-      title: '容量',
-      dataIndex: 'capacity_bytes',
-      width: 110,
-      render: formatBytes,
+      title: '容量（已用 / 总）',
+      width: 160,
+      render: (_: unknown, r: PanAccount) =>
+        renderCapacity(r.used_capacity_bytes, r.capacity_bytes),
     },
     {
       title: '最后校验',

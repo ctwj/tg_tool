@@ -29,7 +29,10 @@ pub struct SavedFile {
 #[derive(Debug, Clone)]
 pub struct QuarkHealth {
     pub valid: bool,
+    /// 总配额（字节）
     pub capacity_bytes: Option<i64>,
+    /// 已用容量（字节）
+    pub used_capacity_bytes: Option<i64>,
     pub message: Option<String>,
 }
 
@@ -73,32 +76,34 @@ pub async fn health_check(cookie: &str) -> Result<QuarkHealth, AppError> {
         return Ok(QuarkHealth {
             valid: false,
             capacity_bytes: None,
+            used_capacity_bytes: None,
             message: Some(format!("Cookie 无效或已失效: {msg}")),
         });
     }
 
-    // 2. 调用 /member 取总容量（best-effort：失败不影响健康判定）
-    let capacity_bytes = match fetch_total_capacity(&client, cookie).await {
+    // 2. 调用 /member 取容量（best-effort：失败不影响健康判定）
+    let (capacity_bytes, used_capacity_bytes) = match fetch_capacity(&client, cookie).await {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!("夸克容量查询失败（不影响健康判定）: {e}");
-            None
+            (None, None)
         }
     };
 
     Ok(QuarkHealth {
         valid: true,
         capacity_bytes,
+        used_capacity_bytes,
         message: None,
     })
 }
 
-/// 调用 /member 端点取 total_capacity（总配额字节）。
+/// 调用 /member 端点取 (total_capacity, use_capacity)。
 /// 失败返回 Err，由调用方决定是否降级。
-async fn fetch_total_capacity(
+async fn fetch_capacity(
     client: &reqwest::Client,
     cookie: &str,
-) -> Result<Option<i64>, AppError> {
+) -> Result<(Option<i64>, Option<i64>), AppError> {
     let resp = client
         .get(MEMBER_URL)
         .header("cookie", cookie)
@@ -119,15 +124,20 @@ async fn fetch_total_capacity(
         .await
         .map_err(|e| AppError::Internal(format!("夸克 /member 响应解析失败: {e}")))?;
 
-    Ok(parse_total_capacity(&body))
+    Ok(parse_capacity(&body))
 }
 
-/// 从 /member 响应中解析 total_capacity（字节）。
+/// 从 /member 响应中解析 (total_capacity, use_capacity)。
 /// 抽出以便单元测试，无需联网。
-fn parse_total_capacity(body: &serde_json::Value) -> Option<i64> {
-    body.get("data")
+fn parse_capacity(body: &serde_json::Value) -> (Option<i64>, Option<i64>) {
+    let data = body.get("data");
+    let total = data
         .and_then(|d| d.get("total_capacity"))
-        .and_then(|v| v.as_i64())
+        .and_then(|v| v.as_i64());
+    let used = data
+        .and_then(|d| d.get("use_capacity"))
+        .and_then(|v| v.as_i64());
+    (total, used)
 }
 
 /// 转存夸克分享到自己网盘指定目录，返回保存的文件列表（research.md §夸克 4 步链路）
@@ -730,7 +740,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_total_capacity_extracts_value() {
+    fn parse_capacity_extracts_both_values() {
         // 对齐 OpenList MemberResp 真实结构（数值即字节数）
         let body = serde_json::json!({
             "status": 200,
@@ -745,24 +755,35 @@ mod tests {
             },
             "metadata": { "server_cur_time": 0 }
         });
-        assert_eq!(
-            parse_total_capacity(&body),
-            Some(1_099_511_627_776_i64),
-            "应取到 total_capacity 字节值"
-        );
+        let (total, used) = parse_capacity(&body);
+        assert_eq!(total, Some(1_099_511_627_776_i64), "应取到 total_capacity");
+        assert_eq!(used, Some(123_456_789), "应取到 use_capacity");
     }
 
     #[test]
-    fn parse_total_capacity_returns_none_when_missing() {
-        // 响应合法但缺字段（如夸克改字段名）→ None，不报错
-        let body = serde_json::json!({ "code": 0, "data": { "use_capacity": 100 } });
-        assert_eq!(parse_total_capacity(&body), None);
+    fn parse_capacity_returns_none_when_data_missing() {
+        // 响应合法但 data 缺失 → (None, None)
+        let body = serde_json::json!({ "code": 0 });
+        let (total, used) = parse_capacity(&body);
+        assert_eq!(total, None);
+        assert_eq!(used, None);
     }
 
     #[test]
-    fn parse_total_capacity_returns_none_on_error_body() {
-        // code != 0 的错误响应（且无 data.total_capacity）→ None
+    fn parse_capacity_partial_fields() {
+        // 只有 total_capacity，无 use_capacity → (Some, None)
+        let body = serde_json::json!({ "code": 0, "data": { "total_capacity": 100 } });
+        let (total, used) = parse_capacity(&body);
+        assert_eq!(total, Some(100));
+        assert_eq!(used, None);
+    }
+
+    #[test]
+    fn parse_capacity_returns_none_on_error_body() {
+        // code != 0 的错误响应（无 data）→ (None, None)
         let body = serde_json::json!({ "code": 32003, "message": "登录态失效" });
-        assert_eq!(parse_total_capacity(&body), None);
+        let (total, used) = parse_capacity(&body);
+        assert_eq!(total, None);
+        assert_eq!(used, None);
     }
 }

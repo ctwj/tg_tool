@@ -964,6 +964,17 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::info!("SQLite migration 040 applied (pan management tables)");
                 }
             }
+            // Migration 041: pan_accounts 加 used_capacity_bytes 列（feature 047）
+            {
+                let m41 = include_str!("../migrations/041_pan_accounts_used_capacity_sqlite.sql");
+                if let Err(e) = sqlx::raw_sql(m41).execute(pool).await {
+                    tracing::warn!("SQLite migration 041 failed (ignored): {e}");
+                } else {
+                    tracing::info!(
+                        "SQLite migration 041 applied (pan_accounts.used_capacity_bytes)"
+                    );
+                }
+            }
             // 043：种子化 crawler_field_library（若表为空则用应用层 BUILTIN_PRESETS 补种）
             {
                 if let Err(e) =
@@ -1526,6 +1537,17 @@ async fn run_migrations(pool: &DbPool) {
                     tracing::warn!("PostgreSQL migration 040 failed (ignored): {e}");
                 } else {
                     tracing::info!("PostgreSQL migration 040 applied (pan management tables)");
+                }
+            }
+            // Migration 041: pan_accounts 加 used_capacity_bytes 列（feature 047）
+            {
+                let m41 = include_str!("../migrations/041_pan_accounts_used_capacity_postgres.sql");
+                if let Err(e) = sqlx::raw_sql(m41).execute(pool).await {
+                    tracing::warn!("PostgreSQL migration 041 failed (ignored): {e}");
+                } else {
+                    tracing::info!(
+                        "PostgreSQL migration 041 applied (pan_accounts.used_capacity_bytes)"
+                    );
                 }
             }
             // 043：种子化 crawler_field_library

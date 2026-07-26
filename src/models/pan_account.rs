@@ -12,6 +12,7 @@ pub struct PanAccount {
     pub status: String, // active | disabled | expired
     pub target_dir: String,
     pub capacity_bytes: Option<i64>,
+    pub used_capacity_bytes: Option<i64>,
     pub last_checked_at: Option<NaiveDateTime>,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
@@ -26,6 +27,7 @@ pub struct PanAccountView {
     pub status: String,
     pub target_dir: String,
     pub capacity_bytes: Option<i64>,
+    pub used_capacity_bytes: Option<i64>,
     pub last_checked_at: Option<NaiveDateTime>,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
@@ -40,6 +42,7 @@ impl From<PanAccount> for PanAccountView {
             status: a.status,
             target_dir: a.target_dir,
             capacity_bytes: a.capacity_bytes,
+            used_capacity_bytes: a.used_capacity_bytes,
             last_checked_at: a.last_checked_at,
             created_at: a.created_at,
             updated_at: a.updated_at,

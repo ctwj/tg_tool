@@ -225,10 +225,11 @@ async fn refresh_health(db: &DbPool, pan_key: &str, id: i64) -> Result<(), AppEr
     match db {
         DbPool::Sqlite(p) => {
             sqlx::query(
-                "UPDATE pan_accounts SET status = ?, capacity_bytes = ?, last_checked_at = ?, updated_at = ? WHERE id = ?",
+                "UPDATE pan_accounts SET status = ?, capacity_bytes = ?, used_capacity_bytes = ?, last_checked_at = ?, updated_at = ? WHERE id = ?",
             )
             .bind(new_status)
             .bind(health.capacity_bytes)
+            .bind(health.used_capacity_bytes)
             .bind(now)
             .bind(now)
             .bind(id)
@@ -237,10 +238,11 @@ async fn refresh_health(db: &DbPool, pan_key: &str, id: i64) -> Result<(), AppEr
         }
         DbPool::Postgres(p) => {
             sqlx::query(
-                "UPDATE pan_accounts SET status = $1, capacity_bytes = $2, last_checked_at = $3, updated_at = $4 WHERE id = $5",
+                "UPDATE pan_accounts SET status = $1, capacity_bytes = $2, used_capacity_bytes = $3, last_checked_at = $4, updated_at = $5 WHERE id = $6",
             )
             .bind(new_status)
             .bind(health.capacity_bytes)
+            .bind(health.used_capacity_bytes)
             .bind(now)
             .bind(now)
             .bind(id)
