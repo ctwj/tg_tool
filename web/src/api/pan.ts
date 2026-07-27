@@ -55,6 +55,44 @@ export async function checkPanAccount(id: number): Promise<PanAccount> {
   return res.data.data
 }
 
+/** 诊断样本文件项 */
+export interface DiagnoseFileItem {
+  fid: string
+  file_name: string
+  is_dir: boolean
+  size: number
+}
+
+/** 能力受限说明 */
+export interface CapabilityLimitation {
+  capability: string
+  reason: string
+}
+
+/** 综合诊断结果（不写库，仅展示） */
+export interface AccountDiagnosis {
+  account_id: number
+  platform: string
+  valid: boolean
+  message: string | null
+  capacity_bytes: number | null
+  used_capacity_bytes: number | null
+  root_files_sample: DiagnoseFileItem[]
+  root_files_total: number
+  root_files_ok: boolean
+  root_files_error: string | null
+  capabilities: string[]
+  unsupported: CapabilityLimitation[]
+}
+
+/** 综合诊断：cookie + 容量 + 根目录样本 + 能力清单 */
+export async function diagnosePanAccount(
+  id: number,
+): Promise<AccountDiagnosis> {
+  const res = await apiClient.post(`/pan/accounts/${id}/diagnose`)
+  return res.data.data
+}
+
 /** 转存/上传任务 */
 export interface TransferTask {
   id: number

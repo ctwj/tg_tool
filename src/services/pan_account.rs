@@ -4,7 +4,10 @@
 use chrono::Utc;
 
 use crate::errors::AppError;
-use crate::models::pan_account::{CreatePanAccount, PanAccount, PanAccountView, UpdatePanAccount};
+use crate::models::pan_account::{
+    AccountDiagnosis, CapabilityLimitation, CreatePanAccount, DiagnoseFileItem, PanAccount,
+    PanAccountView, UpdatePanAccount,
+};
 use crate::services::pan::credential;
 use crate::state::DbPool;
 
@@ -212,6 +215,106 @@ pub async fn check_account(
     get_account_view(db, id).await
 }
 
+/// 综合诊断：cookie 有效性 + 容量 + 根目录样本 + 能力清单。
+/// 比 check_account 更详细，但不写库（status/capacity 由 check_account 负责）。
+/// 各步骤独立降级：health_check 失败仍返回诊断结构；list_files 失败仅置 root_files_ok=false。
+pub async fn diagnose_account(
+    db: &DbPool,
+    pan_key: &str,
+    id: i64,
+) -> Result<AccountDiagnosis, AppError> {
+    let acc = get_account_full(db, id).await?;
+    let platform = acc.platform.clone();
+    let cookie =
+        credential::decrypt_credential(&acc.credential_cipher, &acc.credential_nonce, pan_key)?;
+
+    // 步骤 1：health_check（cookie 有效性 + 容量）
+    let (valid, message, capacity_bytes, used_capacity_bytes) = match platform.as_str() {
+        "quark" => match crate::services::pan::quark::health_check(&cookie).await {
+            Ok(h) => (h.valid, h.message, h.capacity_bytes, h.used_capacity_bytes),
+            Err(e) => (false, Some(format!("健康校验异常: {e}")), None, None),
+        },
+        other => {
+            return Err(AppError::BadRequest(format!(
+                "平台 {other} 的驱动暂未实现，无法诊断"
+            )));
+        }
+    };
+
+    // 步骤 2：list_files 根目录（best-effort，失败不影响整体诊断）
+    let (root_sample, root_total, root_ok, root_err) = if valid {
+        match crate::services::pan::quark::list_files(&cookie, "0", 1, 10).await {
+            Ok((items, total)) => (
+                items
+                    .into_iter()
+                    .map(|f| DiagnoseFileItem {
+                        fid: f.fid,
+                        file_name: f.file_name,
+                        is_dir: f.is_dir,
+                        size: f.size,
+                    })
+                    .collect::<Vec<_>>(),
+                total,
+                true,
+                None,
+            ),
+            Err(e) => (Vec::new(), 0, false, Some(format!("列根目录失败: {e}"))),
+        }
+    } else {
+        (Vec::new(), 0, false, Some("Cookie 失效，跳过".into()))
+    };
+
+    Ok(AccountDiagnosis {
+        account_id: id,
+        platform: platform.clone(),
+        valid,
+        message,
+        capacity_bytes,
+        used_capacity_bytes,
+        root_files_sample: root_sample,
+        root_files_total: root_total,
+        root_files_ok: root_ok,
+        root_files_error: root_err,
+        capabilities: platform_capabilities(&platform),
+        unsupported: platform_unsupported(&platform),
+    })
+}
+
+/// 各平台已实现能力清单（与 quark.rs 顶部注释一致）
+fn platform_capabilities(platform: &str) -> Vec<String> {
+    match platform {
+        "quark" => vec![
+            "health_check".into(),
+            "transfer_share".into(),
+            "create_share".into(),
+            "upload_file".into(),
+            "list_files".into(),
+            "check_share_validity".into(),
+            "check_instant_transfer".into(),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// 各平台受限/未实现能力（带原因，用于 UI 展示）
+fn platform_unsupported(platform: &str) -> Vec<CapabilityLimitation> {
+    match platform {
+        "quark" => vec![CapabilityLimitation {
+            capability: "offline_download".into(),
+            reason: "夸克网页版已下线原生磁力链离线下载；社区逆向端点需 kps/sign/vcode 动态签名易失效。如需，建议走 aria2 委托模式（OpenList 路线）。".into(),
+        }],
+        "uc" => vec![CapabilityLimitation {
+            capability: "all".into(),
+            reason: "UC 网盘驱动尚未实现（占位）。API 与夸克同源（drive-pc.uc.cn），未来可快速接入。".into(),
+        }],
+        "baidu" => vec![CapabilityLimitation {
+            capability: "all".into(),
+            reason: "百度网盘驱动尚未实现（占位）。需适配百度 OAuth + bdstoken 双重校验。".into(),
+        }],
+        _ => Vec::new(),
+    }
+}
+
 async fn refresh_health(db: &DbPool, pan_key: &str, id: i64) -> Result<(), AppError> {
     let acc = get_account_full(db, id).await?;
     let plain =
@@ -289,5 +392,53 @@ mod tests {
         assert!(DRIVER_READY_PLATFORMS.contains(&"quark"));
         assert!(!DRIVER_READY_PLATFORMS.contains(&"uc"));
         assert!(!DRIVER_READY_PLATFORMS.contains(&"baidu"));
+    }
+
+    #[test]
+    fn platform_capabilities_quark_has_all_seven() {
+        let caps = platform_capabilities("quark");
+        assert!(caps.contains(&"health_check".to_string()));
+        assert!(caps.contains(&"transfer_share".to_string()));
+        assert!(caps.contains(&"create_share".to_string()));
+        assert!(caps.contains(&"upload_file".to_string()));
+        assert!(caps.contains(&"list_files".to_string()));
+        assert!(caps.contains(&"check_share_validity".to_string()));
+        assert!(caps.contains(&"check_instant_transfer".to_string()));
+        // 离线下载不在已实现清单中（独立通过 unsupported 暴露）
+        assert!(!caps.contains(&"offline_download".to_string()));
+        assert_eq!(caps.len(), 7);
+    }
+
+    #[test]
+    fn platform_capabilities_uc_baidu_empty() {
+        // UC/百度驱动未实现 → 能力清单为空，由 unsupported.all 统一说明
+        assert!(platform_capabilities("uc").is_empty());
+        assert!(platform_capabilities("baidu").is_empty());
+    }
+
+    #[test]
+    fn platform_unsupported_quark_lists_offline_download() {
+        let unsup = platform_unsupported("quark");
+        assert_eq!(unsup.len(), 1);
+        assert_eq!(unsup[0].capability, "offline_download");
+        // 原因包含关键提示词
+        assert!(unsup[0].reason.contains("网页版"), "应说明网页版下线原因");
+    }
+
+    #[test]
+    fn platform_unsupported_uc_baidu_mark_all_unimplemented() {
+        // UC/百度整平台未实现 → unsupported[0].capability = "all"
+        assert_eq!(
+            platform_unsupported("uc")
+                .first()
+                .map(|c| c.capability.as_str()),
+            Some("all")
+        );
+        assert_eq!(
+            platform_unsupported("baidu")
+                .first()
+                .map(|c| c.capability.as_str()),
+            Some("all")
+        );
     }
 }

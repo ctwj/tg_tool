@@ -112,6 +112,9 @@ async fn setup_test_db() -> DbPool {
     // Migration 040: 网盘账号管理表（feature 047）
     let m40 = include_str!("../migrations/040_pan_management_sqlite.sql");
     let _ = sqlx::raw_sql(m40).execute(&pool).await;
+    // Migration 041: pan_accounts 加 used_capacity_bytes（feature 047 quark 容量扩展）
+    let m41 = include_str!("../migrations/041_pan_accounts_used_capacity_sqlite.sql");
+    let _ = sqlx::raw_sql(m41).execute(&pool).await;
 
     // 插入 root 用户（使用当前 bcrypt 版本生成 hash）
     let hash = crypto::hash_password("123456").expect("Failed to hash root password");
@@ -356,6 +359,108 @@ async fn test_pan_accounts_rejects_unsupported_platform() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn test_pan_account_diagnose_rejects_unimplemented_platform() {
+    // UC 平台驱动未实现 → diagnose 端点应返回 400（拒绝诊断），不发起网络调用
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 建 UC 账号（uc 创建后 disabled，不会触发网络）
+    let acc_body =
+        serde_json::json!({"platform":"uc","display_name":"UC","credential":"c","target_dir":"0"})
+            .to_string();
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/pan/accounts",
+            &token,
+            Some(acc_body),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let acc_id = parse_body(resp.into_body()).await["data"]["id"]
+        .as_i64()
+        .unwrap();
+
+    // 调 diagnose → 400
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            &format!("/api/pan/accounts/{acc_id}/diagnose"),
+            &token,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body = parse_body(resp.into_body()).await;
+    let msg = body["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("驱动") || msg.contains("未实现"),
+        "应明确拒绝原因，实际: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_pan_account_diagnose_quark_invalid_cookie_returns_gracefully() {
+    // 夸克账号用假 cookie 调 diagnose：网络可能失败或夸克返回 code!=0；
+    // 无论哪种，端点都应优雅返回结构化结果（valid=false 或 500），不能 panic
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+    let mut app = build_test_app(state);
+    let token = get_root_token(&mut app).await;
+
+    // 夸克账号（创建时会触发 health_check 网络，可能失败但不阻断创建）
+    let acc_body = serde_json::json!({
+        "platform":"quark",
+        "display_name":"假cookie测试",
+        "credential":"__fake_cookie_for_diagnose_test__",
+        "target_dir":"0"
+    })
+    .to_string();
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            "/api/pan/accounts",
+            &token,
+            Some(acc_body),
+        ))
+        .await
+        .unwrap();
+    // 创建可能因网络失败而返回非 200，跳过后续断言
+    if resp.status() != 200 {
+        eprintln!("夸克账号创建失败（CI 网络受限），跳过 diagnose 测试");
+        return;
+    }
+    let acc_id = parse_body(resp.into_body()).await["data"]["id"]
+        .as_i64()
+        .unwrap();
+
+    // diagnose 应在合理时间内返回（即使失败）
+    let resp = app
+        .clone()
+        .oneshot(build_auth_request(
+            "POST",
+            &format!("/api/pan/accounts/{acc_id}/diagnose"),
+            &token,
+            None,
+        ))
+        .await
+        .unwrap();
+    // 接受 200（valid=false 优雅降级）或 500（网络异常）
+    assert!(
+        resp.status() == 200 || resp.status() == 500,
+        "diagnose 应优雅返回，实际: {}",
+        resp.status()
+    );
 }
 
 #[tokio::test]

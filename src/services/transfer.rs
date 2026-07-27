@@ -446,8 +446,11 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        let m = include_str!("../../migrations/040_pan_management_sqlite.sql");
-        sqlx::raw_sql(m).execute(&pool).await.unwrap();
+        let m040 = include_str!("../../migrations/040_pan_management_sqlite.sql");
+        sqlx::raw_sql(m040).execute(&pool).await.unwrap();
+        // 041 添加 used_capacity_bytes 列（create_account 视图回写时需此列存在）
+        let m041 = include_str!("../../migrations/041_pan_accounts_used_capacity_sqlite.sql");
+        sqlx::raw_sql(m041).execute(&pool).await.unwrap();
         DbPool::Sqlite(pool)
     }
 

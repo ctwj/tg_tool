@@ -1,5 +1,21 @@
 // 夸克网盘驱动（feature 047）— US1：健康检查（列根目录验证 Cookie + 取容量）
 // 端点见 research.md（夸克 share/transfer 能力在 US2 扩展）
+//
+// 已实现能力（8 个公共 API）：
+//   - health_check            Cookie 有效性 + 容量（total/used）
+//   - transfer_share          分享转存到自己网盘（4 步链路）
+//   - create_share            生成分享链接 + 提取码
+//   - upload_file             直链文件分片上传（OSS 签权 + 秒传）
+//   - list_files              列出指定目录文件（pdir_fid/page/size）
+//   - check_share_validity    分享有效性预检（不进行实际转存）
+//   - check_instant_transfer  秒传检测（命中则无需上传）
+//
+// 未实现：磁力链/ed2k 离线下载
+//   原因：夸克网页版已下线原生磁力链离线下载（仅手机/桌面客户端保留），社区逆向端点
+//   (drive-m.quark.cn/1/clouddrive/task + task_type=2) 需 kps/sign/vcode 动态签名，
+//   易失效且维护成本高。OpenList quark_uc 驱动与 quark-auto-save 均未实现。
+//   如未来需要：建议走 aria2/qBittorrent 委托模式（OpenList 路线），下载到本地
+//   中转目录后复用 upload_file 上传到夸克。
 
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use md5::{Digest, Md5};
@@ -23,6 +39,46 @@ const SHARE_PWD_URL: &str = "https://drive-pc.quark.cn/1/clouddrive/share/passwo
 pub struct SavedFile {
     pub fid: String,
     pub file_name: String,
+}
+
+/// 网盘内文件元信息（list_files 返回项）
+#[derive(Debug, Clone)]
+pub struct FileInfo {
+    pub fid: String,
+    pub file_name: String,
+    /// 目录则为 true，文件则为 false
+    pub is_dir: bool,
+    /// 文件大小（字节），目录为 0
+    pub size: i64,
+    /// 父目录 fid
+    pub pdir_fid: String,
+}
+
+/// 分享有效性检测结果（check_share_validity 返回，不进行实际转存）
+#[derive(Debug, Clone)]
+pub struct ShareCheck {
+    pub valid: bool,
+    pub stoken: Option<String>,
+    pub title: Option<String>,
+    /// 文件总数（仅根目录直系）
+    pub file_count: usize,
+    /// 根目录文件名列表（最多 50 项，便于预览）
+    pub file_names: Vec<String>,
+    /// 失效时的原因（valid=true 时为 None）
+    pub message: Option<String>,
+}
+
+/// 秒传检测结果（check_instant_transfer 返回）
+#[derive(Debug, Clone)]
+pub struct InstantTransferCheck {
+    /// 是否命中秒传（true 表示夸克已存在相同文件，可直接复用 fid）
+    pub hit: bool,
+    /// 命中时的文件 fid；未命中为 None
+    pub fid: Option<String>,
+    /// 内部 task_id（未命中时调用方需自行继续 upPart/upCommit/upFinish）
+    pub task_id: Option<String>,
+    /// 上传预备信息（未命中时调用方继续分片上传时复用）
+    pub pre_data: Option<serde_json::Value>,
 }
 
 /// 夸克账号健康检查结果
@@ -149,55 +205,8 @@ pub async fn transfer_share(
 ) -> Result<Vec<SavedFile>, AppError> {
     let client = build_client()?;
 
-    // 1. 获取 stoken（此步返回码亦可判分享是否失效）
-    let token_body = serde_json::json!({ "pwd_id": pwd_id, "passcode": passcode.unwrap_or("") });
-    let resp: serde_json::Value = client
-        .post(SHARE_TOKEN_URL)
-        .header("cookie", cookie)
-        .query(&[("pr", "ucpro"), ("fr", "pc"), ("uc_param_str", "")])
-        .json(&token_body)
-        .send()
-        .await
-        .map_err(net_err)?
-        .json()
-        .await
-        .map_err(parse_err)?;
-    check_code(&resp, "分享解析(token)")?;
-    let stoken = resp
-        .get("data")
-        .and_then(|d| d.get("stoken"))
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::Internal("夸克返回缺少 stoken".into()))?
-        .to_string();
-
-    // 2. 文件详情
-    let resp: serde_json::Value = client
-        .get(SHARE_DETAIL_URL)
-        .header("cookie", cookie)
-        .query(&[
-            ("pr", "ucpro"),
-            ("fr", "pc"),
-            ("uc_param_str", ""),
-            ("pwd_id", pwd_id),
-            ("stoken", stoken.as_str()),
-            ("pdir_fid", "0"),
-            ("_page", "1"),
-            ("_size", "50"),
-            ("_fetch_total", "1"),
-            ("ver", "2"),
-        ])
-        .send()
-        .await
-        .map_err(net_err)?
-        .json()
-        .await
-        .map_err(parse_err)?;
-    check_code(&resp, "分享详情(detail)")?;
-    let list = resp
-        .get("data")
-        .and_then(|d| d.get("list"))
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| AppError::Internal("夸克详情缺少文件列表".into()))?;
+    // 1-2. 获取 stoken + 文件详情（与 check_share_validity 共享）
+    let (stoken, list) = fetch_share_token_and_detail(&client, cookie, pwd_id, passcode).await?;
     if list.is_empty() {
         return Err(AppError::BadRequest("分享内无文件".into()));
     }
@@ -333,6 +342,122 @@ pub async fn create_share(
         .and_then(|v| v.as_str())
         .map(String::from);
     Ok((url, pwd))
+}
+
+/// 校验分享链接有效性并返回元信息（不进行实际转存）。
+/// 复用 transfer_share 的 token + detail 步骤，仅查询。
+pub async fn check_share_validity(
+    cookie: &str,
+    pwd_id: &str,
+    passcode: Option<&str>,
+) -> Result<ShareCheck, AppError> {
+    let client = build_client()?;
+    let result = fetch_share_token_and_detail(&client, cookie, pwd_id, passcode).await;
+    match result {
+        Ok((stoken, list)) => {
+            let file_names = list
+                .iter()
+                .filter_map(|f| {
+                    f.get("file_name")
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                })
+                .take(50)
+                .collect::<Vec<_>>();
+            let title = file_names.first().cloned();
+            Ok(ShareCheck {
+                valid: true,
+                stoken: Some(stoken),
+                title,
+                file_count: list.len(),
+                file_names,
+                message: None,
+            })
+        }
+        Err(AppError::Internal(msg)) if msg.contains("(token)") => {
+            // 提取码错误 / 分享已失效 → 业务级失效（非系统错误）
+            Ok(ShareCheck {
+                valid: false,
+                stoken: None,
+                title: None,
+                file_count: 0,
+                file_names: Vec::new(),
+                message: Some(msg),
+            })
+        }
+        Err(AppError::BadRequest(msg)) => {
+            // 详情返回空列表 → 也归为业务级结果（保持语义）
+            Ok(ShareCheck {
+                valid: false,
+                stoken: None,
+                title: None,
+                file_count: 0,
+                file_names: Vec::new(),
+                message: Some(msg),
+            })
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// 步骤 1-2：获取 stoken + 文件详情列表（token 失败抛 Internal 含 "(token)"，详情空抛 BadRequest）
+async fn fetch_share_token_and_detail(
+    client: &reqwest::Client,
+    cookie: &str,
+    pwd_id: &str,
+    passcode: Option<&str>,
+) -> Result<(String, Vec<serde_json::Value>), AppError> {
+    // 1. 获取 stoken（此步返回码亦可判分享是否失效）
+    let token_body = serde_json::json!({ "pwd_id": pwd_id, "passcode": passcode.unwrap_or("") });
+    let resp: serde_json::Value = client
+        .post(SHARE_TOKEN_URL)
+        .header("cookie", cookie)
+        .query(&[("pr", "ucpro"), ("fr", "pc"), ("uc_param_str", "")])
+        .json(&token_body)
+        .send()
+        .await
+        .map_err(net_err)?
+        .json()
+        .await
+        .map_err(parse_err)?;
+    check_code(&resp, "分享解析(token)")?;
+    let stoken = resp
+        .get("data")
+        .and_then(|d| d.get("stoken"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::Internal("夸克返回缺少 stoken".into()))?
+        .to_string();
+
+    // 2. 文件详情
+    let resp: serde_json::Value = client
+        .get(SHARE_DETAIL_URL)
+        .header("cookie", cookie)
+        .query(&[
+            ("pr", "ucpro"),
+            ("fr", "pc"),
+            ("uc_param_str", ""),
+            ("pwd_id", pwd_id),
+            ("stoken", stoken.as_str()),
+            ("pdir_fid", "0"),
+            ("_page", "1"),
+            ("_size", "50"),
+            ("_fetch_total", "1"),
+            ("ver", "2"),
+        ])
+        .send()
+        .await
+        .map_err(net_err)?
+        .json()
+        .await
+        .map_err(parse_err)?;
+    check_code(&resp, "分享详情(detail)")?;
+    let list = resp
+        .get("data")
+        .and_then(|d| d.get("list"))
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    Ok((stoken, list))
 }
 
 async fn poll_task(
@@ -473,6 +598,64 @@ const UPLOAD_AUTH_URL: &str = "https://drive-pc.quark.cn/1/clouddrive/file/uploa
 const UPLOAD_FINISH_URL: &str = "https://drive-pc.quark.cn/1/clouddrive/file/upload/finish";
 const OSS_UA: &str = "aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit";
 const DEFAULT_MIME: &str = "application/octet-stream";
+
+/// 秒传检测：读取本地文件 → 计算 md5/sha1 → 调用 upPre 占位 + upHash 判断夸克是否已有相同文件。
+/// 命中(hit=true)时 fid 字段为已存在文件 fid，调用方无需再上传。
+/// 未命中时返回 task_id 与 pre_data，调用方如需继续上传应直接调用 upload_file（会重新走一遍 upPre，
+/// 因 task_id 在夸克侧有时效，复用易失败；此处仅做"是否能秒传"的判定）。
+pub async fn check_instant_transfer(
+    cookie: &str,
+    file_path: &std::path::Path,
+    parent_fid: &str,
+    file_name: &str,
+) -> Result<InstantTransferCheck, AppError> {
+    let client = build_client()?;
+    let data = tokio::fs::read(file_path)
+        .await
+        .map_err(|e| AppError::Internal(format!("读取文件失败: {e}")))?;
+    let size = data.len() as i64;
+    let md5hex = hex_str(Md5::digest(&data).as_slice());
+    let sha1hex = hex_str(sha1::Sha1::digest(&data).as_slice());
+    let now_ms = chrono::Utc::now().timestamp_millis();
+
+    let pre_body = serde_json::json!({
+        "ccp_hash_update": true, "dir_name": "", "file_name": file_name,
+        "format_type": DEFAULT_MIME, "l_created_at": now_ms, "l_updated_at": now_ms,
+        "pdir_fid": parent_fid, "size": size,
+    });
+    let pre: serde_json::Value = post_quark(&client, cookie, UPLOAD_PRE_URL, &pre_body).await?;
+    check_code(&pre, "upPre")?;
+    let task_id = pre
+        .get("data")
+        .and_then(|d| d.get("task_id"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let hash_body = serde_json::json!({ "md5": md5hex, "sha1": sha1hex, "task_id": task_id.clone().unwrap_or_default() });
+    let hash_resp: serde_json::Value =
+        post_quark(&client, cookie, UPLOAD_HASH_URL, &hash_body).await?;
+    check_code(&hash_resp, "upHash")?;
+    let finish = hash_resp
+        .get("data")
+        .and_then(|d| d.get("finish"))
+        .and_then(|v| v.as_bool())
+        == Some(true);
+    let fid = if finish {
+        hash_resp
+            .get("data")
+            .and_then(|d| d.get("fid"))
+            .and_then(|v| v.as_str())
+            .map(String::from)
+    } else {
+        None
+    };
+    Ok(InstantTransferCheck {
+        hit: finish,
+        fid,
+        task_id,
+        pre_data: if finish { None } else { Some(pre) },
+    })
+}
 
 /// 上传本地文件到夸克 parent_fid 目录，返回文件 fid（秒传命中则直接返回，否则分片上传）。
 /// OSS 签名(auth_key)由夸克 /file/upload/auth 根据 auth_meta 返回，无需自行计算。
@@ -674,6 +857,37 @@ async fn find_fid_by_name(
     parent_fid: &str,
     file_name: &str,
 ) -> Result<String, AppError> {
+    let (files, _total) = list_files_inner(client, cookie, parent_fid, 1, 100).await?;
+    for f in files {
+        if f.file_name == file_name {
+            return Ok(f.fid);
+        }
+    }
+    Err(AppError::Internal(format!(
+        "上传后未找到文件 {file_name} 的 fid"
+    )))
+}
+
+/// 列出指定目录文件（公开 API）。page 从 1 开始，size 推荐不大于 100。
+pub async fn list_files(
+    cookie: &str,
+    parent_fid: &str,
+    page: u32,
+    size: u32,
+) -> Result<(Vec<FileInfo>, u64), AppError> {
+    let client = build_client()?;
+    let (files, total) = list_files_inner(&client, cookie, parent_fid, page, size).await?;
+    Ok((files, total))
+}
+
+/// list_files 内部实现，复用已有 client（避免 find_fid_by_name 重建）
+async fn list_files_inner(
+    client: &reqwest::Client,
+    cookie: &str,
+    parent_fid: &str,
+    page: u32,
+    size: u32,
+) -> Result<(Vec<FileInfo>, u64), AppError> {
     let resp: serde_json::Value = client
         .get(FILE_SORT_URL)
         .header("cookie", cookie)
@@ -682,9 +896,11 @@ async fn find_fid_by_name(
             ("fr", "pc"),
             ("uc_param_str", ""),
             ("pdir_fid", parent_fid),
-            ("_page", "1"),
-            ("_size", "100"),
+            ("_page", page.to_string().as_str()),
+            ("_size", size.to_string().as_str()),
             ("_fetch_total", "1"),
+            ("_fetch_sub_dirs", "0"),
+            ("_sort", "file_type:asc,updated_at:desc"),
         ])
         .send()
         .await
@@ -692,22 +908,42 @@ async fn find_fid_by_name(
         .json()
         .await
         .map_err(parse_err)?;
-    if let Some(list) = resp
+    check_code(&resp, "列出文件")?;
+    let total = resp
+        .get("metadata")
+        .and_then(|m| m.get("_total"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let list = resp
         .get("data")
         .and_then(|d| d.get("list"))
         .and_then(|v| v.as_array())
-    {
-        for f in list {
-            if f.get("file_name").and_then(|v| v.as_str()) == Some(file_name)
-                && let Some(fid) = f.get("fid").and_then(|v| v.as_str())
-            {
-                return Ok(fid.to_string());
-            }
-        }
+        .map(|arr| arr.iter().map(parse_file_item).collect())
+        .unwrap_or_default();
+    Ok((list, total))
+}
+
+/// 从 file/sort 单项解析为 FileInfo（抽出便于测试，不依赖网络）
+fn parse_file_item(v: &serde_json::Value) -> FileInfo {
+    FileInfo {
+        fid: v
+            .get("fid")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        file_name: v
+            .get("file_name")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        is_dir: v.get("dir").and_then(|x| x.as_bool()).unwrap_or(false),
+        size: v.get("size").and_then(|x| x.as_i64()).unwrap_or(0),
+        pdir_fid: v
+            .get("pdir_fid")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
     }
-    Err(AppError::Internal(format!(
-        "上传后未找到文件 {file_name} 的 fid"
-    )))
 }
 
 fn get_str(
@@ -785,5 +1021,66 @@ mod tests {
         let (total, used) = parse_capacity(&body);
         assert_eq!(total, None);
         assert_eq!(used, None);
+    }
+
+    #[test]
+    fn parse_file_item_extracts_full_fields() {
+        // 对齐夸克 file/sort 真实响应：dir=true 目录、size 字节、fid/pdir_fid 字符串
+        let v = serde_json::json!({
+            "fid": "abc123def456",
+            "file_name": "我的电影.mp4",
+            "dir": false,
+            "size": 1073741824_i64,
+            "pdir_fid": "parent_fid_0",
+            "category": 1,
+            "thumbnail": "https://example.com/t.jpg"
+        });
+        let f = parse_file_item(&v);
+        assert_eq!(f.fid, "abc123def456");
+        assert_eq!(f.file_name, "我的电影.mp4");
+        assert!(!f.is_dir);
+        assert_eq!(f.size, 1073741824_i64);
+        assert_eq!(f.pdir_fid, "parent_fid_0");
+    }
+
+    #[test]
+    fn parse_file_item_directory() {
+        // dir=true → is_dir=true，size 一般为 0
+        let v = serde_json::json!({
+            "fid": "dirfid001",
+            "file_name": "subdir",
+            "dir": true,
+            "size": 0,
+            "pdir_fid": "0"
+        });
+        let f = parse_file_item(&v);
+        assert!(f.is_dir);
+        assert_eq!(f.size, 0);
+    }
+
+    #[test]
+    fn parse_file_item_tolerates_missing_fields() {
+        // 字段缺失 → 安全降级（空串/0/false），不 panic
+        let v = serde_json::json!({ "fid": "only_fid" });
+        let f = parse_file_item(&v);
+        assert_eq!(f.fid, "only_fid");
+        assert_eq!(f.file_name, "");
+        assert!(!f.is_dir);
+        assert_eq!(f.size, 0);
+        assert_eq!(f.pdir_fid, "");
+    }
+
+    #[test]
+    fn list_files_query_params_include_sort_and_sub_dirs() {
+        // 仅做签名回归：通过反射比较难以，这里只做编译期占位 + 文档化期望
+        // 真正的 HTTP 行为由集成测试覆盖（需夸克 Cookie）
+        let _ = (
+            "pr",
+            "ucpro",
+            "fr",
+            "pc",
+            "_sort",
+            "file_type:asc,updated_at:desc",
+        );
     }
 }

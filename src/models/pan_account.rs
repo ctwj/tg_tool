@@ -66,3 +66,45 @@ pub struct UpdatePanAccount {
     pub credential: Option<String>,
     pub target_dir: Option<String>,
 }
+
+/// 诊断结果（综合检测：cookie 有效性 + 容量 + 根目录样本 + 能力清单）
+/// 用于 /api/pan/accounts/:id/diagnose 端点，比 check 更详细，便于管理员一次性验证全部能力
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountDiagnosis {
+    pub account_id: i64,
+    pub platform: String,
+    pub valid: bool,
+    pub message: Option<String>,
+    /// 总容量（字节）
+    pub capacity_bytes: Option<i64>,
+    /// 已用容量（字节）
+    pub used_capacity_bytes: Option<i64>,
+    /// 根目录前 N 个文件样本（best-effort，失败则空数组）
+    pub root_files_sample: Vec<DiagnoseFileItem>,
+    /// 根目录文件总数（metadata._total，失败为 0）
+    pub root_files_total: u64,
+    /// 根目录列文件是否成功
+    pub root_files_ok: bool,
+    /// 根目录列文件失败原因（root_files_ok=false 时填充）
+    pub root_files_error: Option<String>,
+    /// 该平台当前已实现的能力清单
+    pub capabilities: Vec<String>,
+    /// 未实现/受限的能力（带原因说明）
+    pub unsupported: Vec<CapabilityLimitation>,
+}
+
+/// 诊断样本文件项（精简版 FileInfo，仅用于展示）
+#[derive(Debug, Clone, Serialize)]
+pub struct DiagnoseFileItem {
+    pub fid: String,
+    pub file_name: String,
+    pub is_dir: bool,
+    pub size: i64,
+}
+
+/// 能力受限说明（如离线下载因夸克网页版下线而未实现）
+#[derive(Debug, Clone, Serialize)]
+pub struct CapabilityLimitation {
+    pub capability: String,
+    pub reason: String,
+}

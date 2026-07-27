@@ -64,3 +64,13 @@ pub async fn check(
     let acc = pan_account::check_account(&state.db, &state.config.pan_cred_key, id).await?;
     Ok(Json(json!({ "success": true, "data": acc })))
 }
+
+/// POST /api/pan/accounts/{id}/diagnose — 综合诊断（cookie + 容量 + 根目录样本 + 能力清单）
+/// 比 check 更详细但不写库；用于管理员一次性验证账号全部能力
+pub async fn diagnose(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    let d = pan_account::diagnose_account(&state.db, &state.config.pan_cred_key, id).await?;
+    Ok(Json(json!({ "success": true, "data": d })))
+}

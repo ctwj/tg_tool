@@ -410,6 +410,10 @@ pub fn build_router(state: AppState) -> Router {
             "/pan/accounts/{id}/check",
             post(handlers::pan_account::check),
         )
+        .route(
+            "/pan/accounts/{id}/diagnose",
+            post(handlers::pan_account::diagnose),
+        )
         // Pan transfers (feature 047 US2/US5) — 转存/上传任务 + 历史列表/重试/清理
         .route(
             "/pan/transfers",
