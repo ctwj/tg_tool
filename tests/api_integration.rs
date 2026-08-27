@@ -5513,3 +5513,153 @@ async fn t_field_node_crud_rejects_refresh_on_read_with_non_script_mode() {
         "非 script + refresh_on_read=true 必须拒绝"
     );
 }
+
+// ============ Bot /id 命令监听器（图床群组 chat id 查询辅助） ============
+
+/// 串行化 TG_BOT_API_BASE 的 set/restore（同 binary 内并行测试互踩防护）
+static BOT_CMD_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// RAII：测试期间覆写 TG_BOT_API_BASE 指向 wiremock，drop 时恢复
+struct BotCmdEnvGuard;
+
+impl BotCmdEnvGuard {
+    fn set(base: &str) -> Self {
+        // SAFETY：BOT_CMD_ENV_LOCK 串行化本文件所有对该 env 的写；被测函数的读
+        // 发生在 set 之后的同一测试任务内，不存在并发写。
+        unsafe { std::env::set_var("TG_BOT_API_BASE", base) };
+        BotCmdEnvGuard
+    }
+}
+
+impl Drop for BotCmdEnvGuard {
+    fn drop(&mut self) {
+        // SAFETY：同上
+        unsafe { std::env::remove_var("TG_BOT_API_BASE") };
+    }
+}
+
+/// Bot 监听器 tick：群组内 /id 命令应触发 sendMessage 回复 chat id，
+/// 且同批 updates 二次 tick 不重复回复（update_id 单调去重）
+#[tokio::test]
+// BOT_CMD_ENV_LOCK 需在整个异步测试期间持锁（串行化 TG_BOT_API_BASE 覆写），跨 await 持锁是有意为之
+#[allow(clippy::await_holding_lock)]
+async fn bot_command_tick_replies_id_in_group() {
+    use tgTool::services::bot_command;
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+
+    // 插入一个 Bot 客户端（token 指向 wiremock）
+    if let tgTool::state::DbPool::Sqlite(pool) = &state.db {
+        sqlx::query(
+            "INSERT INTO clients (id, user_id, client_type, phone, token, status, name, username) \
+             VALUES ('bot1', 1, 'Bot', '', 'TESTTOKEN', 'active', 'TestBot', 'my_bot')",
+        )
+        .execute(pool)
+        .await
+        .expect("插入 Bot 行失败");
+    }
+
+    let server = MockServer::start().await;
+    let _lock = BOT_CMD_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let _env = BotCmdEnvGuard::set(&server.uri());
+
+    let now = chrono::Utc::now().timestamp();
+    let updates_body = format!(
+        r#"{{"ok":true,"result":[{{"update_id":11,"message":{{"message_id":1,"date":{now},"chat":{{"id":-1001234567890,"type":"supergroup","title":"测试图床群"}},"text":"/id"}}}}]}}"#
+    );
+
+    // getUpdates 被两个 tick 各调一次
+    Mock::given(method("GET"))
+        .and(path("/botTESTTOKEN/getUpdates"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(updates_body))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    // sendMessage 仅第一次 tick 触发（第二次去重后不再发送）
+    Mock::given(method("POST"))
+        .and(path("/botTESTTOKEN/sendMessage"))
+        .and(query_param("chat_id", "-1001234567890"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(r#"{"ok":true,"result":{"message_id":42}}"#),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // 第一次 tick：应回复 chat id 并推进游标
+    let mut cursors = std::collections::HashMap::new();
+    bot_command::tick(&state, &mut cursors)
+        .await
+        .expect("tick 应成功");
+    assert_eq!(
+        cursors["bot1"].max_seen_update_id, 11,
+        "游标应推进到 update_id 11"
+    );
+
+    // 第二次 tick：同批 pending updates 仍会返回，但游标去重后不重复回复
+    bot_command::tick(&state, &mut cursors)
+        .await
+        .expect("第二次 tick 应成功");
+
+    server.verify().await;
+}
+
+/// Bot 监听器 tick：超时间窗的旧 /id 消息不回复（服务重启后 pending 残留场景）
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn bot_command_tick_ignores_stale_id_message() {
+    use tgTool::services::bot_command;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let db = setup_test_db().await;
+    let (state, _) = make_test_state(db);
+
+    if let tgTool::state::DbPool::Sqlite(pool) = &state.db {
+        sqlx::query(
+            "INSERT INTO clients (id, user_id, client_type, phone, token, status, name, username) \
+             VALUES ('bot2', 1, 'Bot', '', 'TESTTOKEN2', 'active', 'TestBot2', 'my_bot2')",
+        )
+        .execute(pool)
+        .await
+        .expect("插入 Bot 行失败");
+    }
+
+    let server = MockServer::start().await;
+    let _lock = BOT_CMD_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let _env = BotCmdEnvGuard::set(&server.uri());
+
+    // 20 分钟前的 /id 消息（超出 600s 时间窗）
+    let stale_date = chrono::Utc::now().timestamp() - 1200;
+    Mock::given(method("GET"))
+        .and(path("/botTESTTOKEN2/getUpdates"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"{{"ok":true,"result":[{{"update_id":21,"message":{{"message_id":1,"date":{stale_date},"chat":{{"id":-1001234567890,"type":"supergroup","title":"测试群"}},"text":"/id"}}}}]}}"#
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/botTESTTOKEN2/sendMessage"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(r#"{"ok":true,"result":{"message_id":1}}"#),
+        )
+        .expect(0) // 关键：旧消息不应触发回复
+        .mount(&server)
+        .await;
+
+    let mut cursors = std::collections::HashMap::new();
+    bot_command::tick(&state, &mut cursors)
+        .await
+        .expect("tick 应成功");
+
+    server.verify().await;
+}

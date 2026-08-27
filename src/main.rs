@@ -285,6 +285,14 @@ async fn main() {
     tgTool::services::crawler::scheduler::start_scheduler(state.clone()).await;
     tgTool::services::crawler::image_uploader::start_uploader(state.clone()).await;
 
+    // Bot /id 命令监听器：所有 Bot 客户端每 10s 轮询 getUpdates，
+    // 群组内发送 /id 时回复当前会话 chat id（图床配置"图床群组"填 ID 辅助）
+    tgTool::services::bot_command::start_bot_command_listener(
+        state.bot_command_listener.clone(),
+        state.clone(),
+    )
+    .await;
+
     // Build router
     let app = tgTool::routes::build_router(state.clone())
         .layer(tgTool::middleware::cors::cors_layer())
@@ -303,6 +311,7 @@ async fn main() {
     let scheduler_shutdown = state.scheduler.clone();
     let extract_scheduler_shutdown = state.extract_scheduler.clone();
     let forward_scheduler_shutdown = state.forward_scheduler.clone();
+    let bot_command_shutdown = state.bot_command_listener.clone();
 
     // feature 030 SEC-008：axum with_graceful_shutdown —— 信号后 drain 在途 HTTP（非立即中断）
     let result = axum::serve(listener, app)
@@ -317,6 +326,7 @@ async fn main() {
     tgTool::services::scheduler::stop_scheduler(scheduler_shutdown).await;
     tgTool::services::scheduler::stop_extract_scheduler(extract_scheduler_shutdown).await;
     tgTool::services::forward_queue::stop_forward_scheduler(forward_scheduler_shutdown).await;
+    tgTool::services::bot_command::stop_bot_command_listener(bot_command_shutdown).await;
     tracing::info!("Schedulers stopped");
 
     // Telegram 客户端优雅断开（timeout 兜底）

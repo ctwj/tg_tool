@@ -100,6 +100,8 @@ pub struct AppState {
     pub crawler_scheduler: crate::services::crawler::scheduler::CrawlerSchedulerHandle,
     /// 爬虫图片上传 worker（feature 042 T023）
     pub crawler_image_uploader: crate::services::crawler::image_uploader::ImageUploaderHandle,
+    /// Bot /id 命令监听器（群组内发送 /id 回复 chat id，图床配置辅助）
+    pub bot_command_listener: crate::services::bot_command::BotCommandListenerHandle,
     pub peer_cache: PeerCache,
     pub rate_limiter: crate::middleware::rate_limit::RateLimiter,
     pub captcha_store: CaptchaStore,
@@ -132,6 +134,7 @@ impl AppState {
             forward_scheduler: crate::services::forward_queue::create_forward_scheduler(),
             crawler_scheduler: crate::services::crawler::create_scheduler(),
             crawler_image_uploader: crate::services::crawler::image_uploader::create_uploader(),
+            bot_command_listener: crate::services::bot_command::create_bot_command_listener(),
             peer_cache: Arc::new(RwLock::new(HashMap::new())),
             rate_limiter,
             captcha_store: Arc::new(DashMap::new()),

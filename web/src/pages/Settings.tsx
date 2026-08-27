@@ -605,7 +605,8 @@ const Settings: React.FC = () => {
                       <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 16 }}>
                         阶段1：客户端用 copy_media 不下载地把图片转发到「图床群组A」，记录消息 ID。<br />
                         阶段2：Bot 用 forwardMessage 把消息从群组A 转发到「Bot 中转群组B」，同步获取 file_id 写入映射表。<br />
-                        客户端和 Bot 均需加入群组A；Bot 单独加入群组B（开启清理时需为管理员）。
+                        客户端和 Bot 均需加入群组A；Bot 单独加入群组B（开启清理时需为管理员）。<br />
+                        不知道群组 Chat ID？将 Bot 加入目标群组后在群里发送 /id，Bot 会直接回复该群的 Chat ID（约 10 秒内响应）。
                       </Text>
                     </div>
                     <Form.Item
@@ -652,7 +653,7 @@ const Settings: React.FC = () => {
                     <Form.Item
                       name="ImageGroupChatId"
                       label="图床群组A（客户端转存目标）"
-                      help="选择 Bot 后自动加载群组列表，也可手动输入。客户端与 Bot 均需加入此群组"
+                      help="选择 Bot 后自动加载群组列表，也可手动输入。若列表中没有目标群组，可将 Bot 拉进群组后发送 /id，Bot 会在群内回复该群的 Chat ID（约 10 秒内），复制填入即可"
                     >
                       <Space.Compact style={{ width: '100%' }}>
                         <AutoComplete
@@ -711,7 +712,7 @@ const Settings: React.FC = () => {
                     <Form.Item
                       name="ImageGroupChatId2"
                       label="Bot 中转群组B（可选）"
-                      help="留空则跳过阶段2，任务将停留在 awaiting_bot 状态、API 返回 404。配置后 Bot 从群组A 转发到此群组以获取 file_id"
+                      help="留空则跳过阶段2，任务将停留在 awaiting_bot 状态、API 返回 404。配置后 Bot 从群组A 转发到此群组以获取 file_id；获取 Chat ID 方式同群组A（群里发送 /id）"
                     >
                       <AutoComplete
                         style={{ width: '100%' }}

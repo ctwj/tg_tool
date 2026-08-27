@@ -74,6 +74,19 @@ pub async fn add_client(
                     .execute(pool).await?;
             }
         }
+
+        // 注册 /id 命令自动补全（群组内输入 / 可提示）— best effort，失败不影响添加。
+        // 注意 setMyCommands 会整体替换 default scope 命令列表，本工具 Bot 为专用图床 Bot，可接受
+        if let Err(e) = crate::services::bot_api::set_my_commands(
+            token,
+            &[("id", "查询当前会话 Chat ID")],
+            proxy_url.as_deref(),
+        )
+        .await
+        {
+            tracing::warn!("注册 /id 命令补全失败(不影响使用): {e}");
+        }
+
         return Ok(Json(
             json!({ "success": true, "data": { "id": id, "client_type": "Bot" } }),
         ));
