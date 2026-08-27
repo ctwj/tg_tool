@@ -219,9 +219,17 @@ curl http://127.0.0.1:3000/api/status
 浏览器访问 `http://your-domain.com`，默认账号：
 
 - 用户名：`root`
-- 密码：`123456`
+- 密码：**首次启动随机生成**（安全加固后不再是 `123456`），在首次启动的日志中打印一次：
 
-**首次登录后请立即修改默认密码。**
+```bash
+journalctl -u tgtool | grep 初始随机口令
+# 或查看 LOG_DIR 配置的日志文件
+```
+
+**首次登录后请立即修改默认密码。** 若初始口令日志已丢失，重置方法见 [README · 重置 root 密码](README.md#重置-root-密码)：
+
+- 无数据可弃：删除 `data.db` 重新初始化（⚠️ 清空全部数据）
+- 需保留数据：生成 bcrypt hash 后更新 `users` 表中 root 的 `password` 字段（`sqlite3 data.db "UPDATE users SET password='<hash>', must_change_password=0 WHERE username='root';"`）
 
 ## 7. 更新部署
 

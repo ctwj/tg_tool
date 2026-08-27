@@ -58,7 +58,16 @@ cp .env.example .env
 cargo run
 ```
 
-服务默认监听 `http://localhost:3000`，默认管理员账号 `root / 123456`。
+服务默认监听 `http://localhost:3000`。首次启动会自动创建管理员账号 `root`，密码为**随机生成的强口令**（安全加固后不再是 `123456`），只在首次创建用户的那次启动日志中打印一次：
+
+```bash
+# 在启动日志中查找初始口令（tracing 输出到 stderr）
+cargo run 2>&1 | grep 初始随机口令
+# Docker 部署
+docker logs <容器名> 2>&1 | grep 初始随机口令
+```
+
+**首次登录后请立即修改密码。** 若初始口令日志已丢失，参见 [重置 root 密码](#重置-root-密码)。
 
 ### 前端开发
 
@@ -105,6 +114,44 @@ services:
       - RUST_LOG=info
     restart: unless-stopped
 ```
+
+## 重置 root 密码
+
+初始随机口令只在首次创建 root 用户的**那一次启动**中打印（之后再启动不会重复输出）。若日志已丢失，按以下任一方式重置。
+
+### 方式一：重新初始化（⚠️ 会清空全部数据）
+
+适合刚部署、还没有业务数据的场景：
+
+```bash
+rm data.db    # SQLite 默认路径；Docker 部署为容器内 /app/data.db
+```
+
+重启（或重建容器）后会重新创建 root，并在启动日志中再次打印新的随机口令。
+
+### 方式二：保留数据，直接改库重置
+
+**本地 / 裸二进制部署：**
+
+```bash
+# 1. 生成新密码的 bcrypt hash（需 python + bcrypt：pip install bcrypt）
+python -c "import bcrypt; print(bcrypt.hashpw(b'新密码', bcrypt.gensalt()).decode())"
+
+# 2. 写入 root 账号
+sqlite3 data.db "UPDATE users SET password='<第 1 步生成的 hash>', must_change_password=0 WHERE username='root';"
+```
+
+**Docker 部署**（容器内无 sqlite3，先停容器再拷出来改）：
+
+```bash
+docker stop <容器名>
+docker cp <容器名>:/app/data.db ./data.db
+# ...执行上面两条命令...
+docker cp ./data.db <容器名>:/app/data.db
+docker start <容器名>
+```
+
+> PostgreSQL 部署：用 `psql` 执行同样的 UPDATE，布尔值写 `FALSE` 而非 `0`。
 
 ## 配置项
 
