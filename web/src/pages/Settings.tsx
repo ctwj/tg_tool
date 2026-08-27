@@ -72,11 +72,14 @@ const Settings: React.FC = () => {
         setEndpoints([])
       }
 
-      // 如果已配置图床 Bot，自动加载群组列表
+      // 如果已配置图床 Bot，自动加载群组列表（失败提示原因：如 webhook 冲突、网络代理问题）
       if (data.ImageBotId) {
         apiClient.get(`/clients/${data.ImageBotId}/bot-chats`)
           .then(res => setBotChats(res.data.data?.chats ?? []))
-          .catch(() => {})
+          .catch((e: any) => {
+            const reason = e?.response?.data?.message || e?.message
+            if (reason) message.warning(`获取 Bot 群组列表失败：${reason}`)
+          })
       }
     } catch {
       /* ignore */
@@ -641,9 +644,10 @@ const Settings: React.FC = () => {
                               .then(res => {
                                 setBotChats(res.data.data?.chats ?? [])
                               })
-                              .catch(() => {
+                              .catch((e: any) => {
                                 setBotChats([])
-                                message.warning('获取 Bot 群组列表失败，请手动输入 Chat ID')
+                                const reason = e?.response?.data?.message || e?.message || '网络错误'
+                                message.warning(`获取 Bot 群组列表失败：${reason}`)
                               })
                               .finally(() => setBotChatsLoading(false))
                           }

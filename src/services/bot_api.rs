@@ -465,7 +465,17 @@ pub async fn get_updates(token: &str, proxy_url: Option<&str>) -> Result<Vec<Bot
 
     let resp = client
         .get(&url)
-        .query(&[("timeout", "0"), ("limit", "100")])
+        .query(&[
+            ("timeout", "0"),
+            ("limit", "100"),
+            // allowed_updates 会在 Telegram 服务端持久保存到下次显式变更：若该 Bot 曾被
+            // 其他工具设置过不含 message 的过滤，不带此参数会沿用旧值，getUpdates 恒为空。
+            // 显式声明所需类型以覆盖遗留设置。
+            (
+                "allowed_updates",
+                r#"["message","channel_post","my_chat_member"]"#,
+            ),
+        ])
         .send()
         .await
         .map_err(|e| AppError::Internal(format!("getUpdates 请求失败: {e}")))?;
@@ -476,6 +486,15 @@ pub async fn get_updates(token: &str, proxy_url: Option<&str>) -> Result<Vec<Bot
     if !api_resp.ok {
         let code = api_resp.error_code.unwrap_or(0);
         let desc = api_resp.description.unwrap_or_default();
+        // webhook 型 409 是永久性故障且 getMe 不受影响（添加 Bot 时发现不了）：
+        // 单独给出可操作的诊断信息（文案不含 "409"，调用方据此跳过无意义的重试）
+        if code == 409 && desc.contains("webhook") {
+            return Err(AppError::Internal(
+                "该 Bot 已设置 Webhook（可能被其他程序占用），无法通过 getUpdates 拉取消息；\
+                 请对该 Bot 调用 deleteWebhook 或更换专用 Bot Token"
+                    .to_string(),
+            ));
+        }
         return Err(AppError::Internal(format!(
             "Bot API getUpdates 错误: code={code}, desc={desc}"
         )));
@@ -486,7 +505,8 @@ pub async fn get_updates(token: &str, proxy_url: Option<&str>) -> Result<Vec<Bot
 
 /// 获取 Bot 所在的群组/频道列表（通过 getUpdates 提取最近活跃的聊天）
 pub async fn get_bot_chats(token: &str, proxy_url: Option<&str>) -> Result<Vec<BotChat>, AppError> {
-    // 与后台 /id 命令轮询器并发 getUpdates 会 409 Conflict：错峰后重试一次
+    // 与后台 /id 命令轮询器并发 getUpdates 会 409 Conflict：错峰后重试一次。
+    // webhook 型 409 的错误文案（见 get_updates）不含 "409"，不会落入重试分支
     let updates = match get_updates(token, proxy_url).await {
         Ok(v) => v,
         Err(e) if e.to_string().contains("409") => {
@@ -736,6 +756,62 @@ mod tests {
         assert_eq!(chats.len(), 1);
         assert_eq!(chats[0].id, -1001234567890);
         assert_eq!(chats[0].title, "测试群");
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    // ENV_LOCK 需在整个异步测试期间持锁（串行化 TG_BOT_API_BASE 覆写），跨 await 持锁是有意为之
+    #[allow(clippy::await_holding_lock)]
+    async fn t_get_updates_409_webhook_err_not_retryable() {
+        let server = MockServer::start().await;
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = EnvBaseGuard::set(&server.uri());
+
+        Mock::given(method("GET"))
+            .and(path(format!("/bot{TOKEN}/getUpdates")))
+            .respond_with(ResponseTemplate::new(409).set_body_string(
+                r#"{"ok":false,"error_code":409,"description":"Conflict: can't use getUpdates method while webhook is active"}"#,
+            ))
+            // 直调 get_updates 1 次 + get_bot_chats 1 次 = 2 次；若误入重试分支
+            // 会发出第 3 次请求，verify 会以 "expected 2, received 3" 报错
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let err = get_updates(TOKEN, None).await.expect_err("webhook 409 应返回 Err");
+        let msg = err.to_string();
+        assert!(msg.contains("Webhook"), "应指明 webhook 冲突: {msg}");
+        assert!(msg.contains("deleteWebhook"), "应给出可操作建议: {msg}");
+        // 文案不含 "409"：get_bot_chats 据此识别为永久故障、跳过重试
+        assert!(!msg.contains("409"), "webhook 型错误不应落入 409 重试分支: {msg}");
+
+        // get_bot_chats 收到 webhook 型 409 应直接失败，不发第二次请求（expect(1)）
+        let err2 = get_bot_chats(TOKEN, None).await.expect_err("webhook 409 不应重试成功");
+        assert!(err2.to_string().contains("Webhook"));
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    // ENV_LOCK 需在整个异步测试期间持锁（串行化 TG_BOT_API_BASE 覆写），跨 await 持锁是有意为之
+    #[allow(clippy::await_holding_lock)]
+    async fn t_get_updates_sends_allowed_updates() {
+        let server = MockServer::start().await;
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = EnvBaseGuard::set(&server.uri());
+
+        // 覆盖外部工具遗留的持久过滤设置：必须显式带上所需的 update 类型
+        Mock::given(method("GET"))
+            .and(path(format!("/bot{TOKEN}/getUpdates")))
+            .and(query_param(
+                "allowed_updates",
+                r#"["message","channel_post","my_chat_member"]"#,
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true,"result":[]}"#))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        get_updates(TOKEN, None).await.expect("应成功");
         server.verify().await;
     }
 }

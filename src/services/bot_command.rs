@@ -138,16 +138,27 @@ pub async fn tick(
         let updates = match bot_api::get_updates(&bot.token, proxy_url.as_deref()).await {
             Ok(v) => v,
             Err(e) => {
-                // 409（与 get_bot_chats 并发）与瞬时网络错误都按本 tick 跳过；
+                // 409（与 get_bot_chats 并发）、webhook 冲突与瞬时网络错误都按本 tick 跳过；
                 // 连续失败指数退避（2→4→…→60s 封顶）防刷日志
                 cur.consec_failures += 1;
                 let backoff = MAX_BACKOFF_SECS.min(1u64 << cur.consec_failures.min(6));
                 cur.skip_until = Some(Instant::now() + Duration::from_secs(backoff));
-                tracing::debug!(
-                    "bot {} getUpdates 失败(连续 {} 次): {e}",
-                    bot.id,
-                    cur.consec_failures
-                );
+                // 首次失败 warn（生产 RUST_LOG=info 可见——"群里发 /id 没反应"先看这里）；
+                // 持续失败每 30 次（约 30 分钟）再提醒一次，其余 debug 防刷屏
+                if cur.consec_failures == 1 || cur.consec_failures.is_multiple_of(30) {
+                    tracing::warn!(
+                        "bot {} getUpdates 失败(连续 {} 次，退避 {}s): {e}",
+                        bot.id,
+                        cur.consec_failures,
+                        backoff
+                    );
+                } else {
+                    tracing::debug!(
+                        "bot {} getUpdates 失败(连续 {} 次): {e}",
+                        bot.id,
+                        cur.consec_failures
+                    );
+                }
                 continue;
             }
         };
