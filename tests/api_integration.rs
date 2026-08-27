@@ -5563,9 +5563,7 @@ async fn bot_command_tick_replies_id_in_group() {
     }
 
     let server = MockServer::start().await;
-    let _lock = BOT_CMD_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _lock = BOT_CMD_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = BotCmdEnvGuard::set(&server.uri());
 
     let now = chrono::Utc::now().timestamp();
@@ -5632,9 +5630,7 @@ async fn bot_command_tick_ignores_stale_id_message() {
     }
 
     let server = MockServer::start().await;
-    let _lock = BOT_CMD_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _lock = BOT_CMD_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = BotCmdEnvGuard::set(&server.uri());
 
     // 20 分钟前的 /id 消息（超出 600s 时间窗）

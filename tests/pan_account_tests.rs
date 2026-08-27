@@ -22,6 +22,11 @@ async fn setup() -> DbPool {
         .execute(&pool)
         .await
         .expect("run migration 040");
+    let m = include_str!("../migrations/041_pan_accounts_used_capacity_sqlite.sql");
+    sqlx::raw_sql(m)
+        .execute(&pool)
+        .await
+        .expect("run migration 041");
     DbPool::Sqlite(pool)
 }
 

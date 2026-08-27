@@ -614,9 +614,10 @@ mod tests {
             .and(path(format!("/bot{TOKEN}/sendMessage")))
             .and(query_param("chat_id", "-1001234567890"))
             .and(query_param("text", "hello"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                r#"{"ok":true,"result":{"message_id":42}}"#,
-            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(r#"{"ok":true,"result":{"message_id":42}}"#),
+            )
             .expect(1)
             .mount(&server)
             .await;
@@ -723,16 +724,15 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path(format!("/bot{TOKEN}/getUpdates")))
-            .respond_with(ResponseTemplate::new(409).set_body_string(
-                r#"{"ok":false,"error_code":409,"description":"Conflict"}"#,
-            ))
+            .respond_with(
+                ResponseTemplate::new(409)
+                    .set_body_string(r#"{"ok":false,"error_code":409,"description":"Conflict"}"#),
+            )
             .up_to_n_times(1)
             .mount(&server)
             .await;
 
-        let chats = get_bot_chats(TOKEN, None)
-            .await
-            .expect("409 重试后应成功");
+        let chats = get_bot_chats(TOKEN, None).await.expect("409 重试后应成功");
         assert_eq!(chats.len(), 1);
         assert_eq!(chats[0].id, -1001234567890);
         assert_eq!(chats[0].title, "测试群");
