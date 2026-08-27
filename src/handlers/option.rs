@@ -171,7 +171,7 @@ pub async fn test_ai_endpoint(
                 }))),
                 Ok(_) => Ok(Json(json!({
                     "success": false,
-                    "message": format!("响应格式异常：未找到 choices 字段"),
+                    "message": "响应格式异常：未找到 choices 字段".to_string(),
                     "latency_ms": elapsed,
                 }))),
                 Err(e) => Ok(Json(json!({
