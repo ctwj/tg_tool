@@ -778,15 +778,22 @@ mod tests {
             .mount(&server)
             .await;
 
-        let err = get_updates(TOKEN, None).await.expect_err("webhook 409 应返回 Err");
+        let err = get_updates(TOKEN, None)
+            .await
+            .expect_err("webhook 409 应返回 Err");
         let msg = err.to_string();
         assert!(msg.contains("Webhook"), "应指明 webhook 冲突: {msg}");
         assert!(msg.contains("deleteWebhook"), "应给出可操作建议: {msg}");
         // 文案不含 "409"：get_bot_chats 据此识别为永久故障、跳过重试
-        assert!(!msg.contains("409"), "webhook 型错误不应落入 409 重试分支: {msg}");
+        assert!(
+            !msg.contains("409"),
+            "webhook 型错误不应落入 409 重试分支: {msg}"
+        );
 
         // get_bot_chats 收到 webhook 型 409 应直接失败，不发第二次请求（expect(1)）
-        let err2 = get_bot_chats(TOKEN, None).await.expect_err("webhook 409 不应重试成功");
+        let err2 = get_bot_chats(TOKEN, None)
+            .await
+            .expect_err("webhook 409 不应重试成功");
         assert!(err2.to_string().contains("Webhook"));
         server.verify().await;
     }

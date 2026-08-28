@@ -202,7 +202,7 @@ fn serialize_message(msg: &Message) -> String {
     let mut json = serde_json::json!({
         "id": msg.id(),
         "date": msg.date().timestamp(),
-        "text": msg.text(),
+        "text": crate::services::collector::message_text_with_links(msg),
         "outgoing": msg.outgoing(),
         "chat_id": msg.chat().id(),
     });

@@ -19,8 +19,11 @@ pub async fn forward_message(
     db: &DbPool,
     source_client_id: &str,
 ) -> Result<(), AppError> {
+    // 隐藏超链接（TextUrl entity）的 URL 不在纯文本中，需展开后再交给下游
+    let text_with_links = crate::services::collector::message_text_with_links(msg);
+
     let result = match method {
-        "WebHook" | "Webhook" => forward_webhook(target, config, msg.text()).await,
+        "WebHook" | "Webhook" => forward_webhook(target, config, &text_with_links).await,
         "Chat" => forward_chat(target, source_client_id, msg, tg_clients, peer_cache).await,
         _ => Err(AppError::BadRequest(format!("未知的转发方式: {method}"))),
     };
@@ -37,7 +40,7 @@ pub async fn forward_message(
                 "INSERT INTO messages (rule_id, content, status, error_reason) VALUES (?, ?, ?, ?)",
             )
             .bind(rule_id)
-            .bind(msg.text())
+            .bind(&text_with_links)
             .bind(status)
             .bind(&error_reason)
             .execute(pool)
@@ -48,7 +51,7 @@ pub async fn forward_message(
                 "INSERT INTO messages (rule_id, content, status, error_reason) VALUES ($1, $2, $3, $4)",
             )
             .bind(rule_id)
-            .bind(msg.text())
+            .bind(&text_with_links)
             .bind(status)
             .bind(&error_reason)
             .execute(pool)
@@ -143,15 +146,24 @@ async fn forward_chat(
     if let Some(media) = msg.media() {
         // Use copy_media to reference the existing media by remote ID
         // send_album accepts a Vec<InputMedia>, sends as a new message (no "forwarded from")
-        let input_media = InputMedia::caption(msg.text()).copy_media(&media);
+        // fmt_entities 随迁：caption 中的隐藏超链接/粗体等格式在目标 chat 原生保留
+        let mut input_media = InputMedia::caption(msg.text()).copy_media(&media);
+        if let Some(entities) = msg.fmt_entities() {
+            input_media = input_media.fmt_entities(entities.clone());
+        }
         client
             .send_album(packed, vec![input_media])
             .await
             .map_err(|e| AppError::Internal(format!("转发媒体消息失败: {e}")))?;
     } else {
-        // Text-only: send as plain message
+        // Text-only: send as plain message, reusing original entities
+        // so hidden hyperlinks (TextUrl) render as clickable links, not lost
+        let mut input = grammers_client::InputMessage::text(msg.text());
+        if let Some(entities) = msg.fmt_entities() {
+            input = input.fmt_entities(entities.clone());
+        }
         client
-            .send_message(packed, msg.text())
+            .send_message(packed, input)
             .await
             .map_err(|e| AppError::Internal(format!("发送消息失败: {e}")))?;
     }

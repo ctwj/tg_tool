@@ -215,7 +215,7 @@ fn serialize_message_for_collection(msg: &grammers_client::types::Message) -> St
     let mut json = serde_json::json!({
         "id": msg.id(),
         "date": msg.date().timestamp(),
-        "text": msg.text(),
+        "text": message_text_with_links(msg),
         "outgoing": msg.outgoing(),
         "chat_id": msg.chat().id(),
     });
@@ -236,4 +236,186 @@ fn serialize_message_for_collection(msg: &grammers_client::types::Message) -> St
     }
 
     json.to_string()
+}
+
+/// 展开消息文本中隐藏的超链接（TextUrl entity）为 markdown 形式
+///
+/// Telegram 消息里 "点击跳转" 这类超链接的 URL 存于 message entity，不在纯文本中；
+/// 采集入库只存文本会导致 URL 永久丢失、资源提取找不到任何链接。
+/// 此函数把 entity 携带的 URL 以 `[显示文字](URL)` 内联回文本。
+pub fn message_text_with_links(msg: &grammers_client::types::Message) -> String {
+    let text = msg.text();
+    let entities = match msg.fmt_entities() {
+        Some(e) if !e.is_empty() => e,
+        _ => return text.to_string(),
+    };
+    let links: Vec<(i32, i32, String)> = entities
+        .iter()
+        .filter_map(|e| match e {
+            grammers_client::grammers_tl_types::enums::MessageEntity::TextUrl(t) => {
+                Some((t.offset, t.length, t.url.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    inline_text_urls(text, &links)
+}
+
+/// 将 `links`（UTF-16 offset/length + URL）以 `[原文](URL)` 形式内联替换进 `text`
+///
+/// Telegram entity 的 offset/length 按 UTF-16 code unit 计（emoji 占 2），
+/// 需转换为 byte 偏移后从后向前替换，避免前面的替换使后面的偏移失效。
+fn inline_text_urls(text: &str, links: &[(i32, i32, String)]) -> String {
+    if links.is_empty() {
+        return text.to_string();
+    }
+    // utf16_to_byte[i] = 前 i 个 UTF-16 code unit 对应的 byte 偏移
+    let mut utf16_to_byte: Vec<usize> = Vec::with_capacity(text.encode_utf16().count() + 1);
+    utf16_to_byte.push(0);
+    let mut acc = 0usize;
+    for c in text.chars() {
+        acc += c.len_utf8();
+        for _ in 0..c.len_utf16() {
+            utf16_to_byte.push(acc);
+        }
+    }
+    let total_u16 = utf16_to_byte.len() - 1;
+
+    // 按 offset 降序替换：后面的改动不影响前面待替换区间的 byte 偏移
+    let mut sorted = links.to_vec();
+    sorted.sort_by_key(|(o, _, _)| std::cmp::Reverse(*o));
+
+    let mut result = text.to_string();
+    for (offset, length, url) in sorted {
+        let start = offset.max(0) as usize;
+        let end = (offset.saturating_add(length)).max(0) as usize;
+        if start >= end || start >= total_u16 || end > total_u16 {
+            tracing::debug!(
+                "TextUrl entity 越界忽略: offset={offset} length={length} total_utf16={total_u16}"
+            );
+            continue;
+        }
+        let b_start = utf16_to_byte[start];
+        let b_end = utf16_to_byte[end];
+        if b_start >= b_end || b_end > result.len() {
+            continue;
+        }
+        let label = result[b_start..b_end].to_string();
+        result.replace_range(b_start..b_end, &format!("[{label}]({url})"));
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 计算子串的 UTF-16 code unit 偏移（测试辅助，避免手数 emoji 长度）
+    fn utf16_offset(text: &str, needle: &str) -> i32 {
+        let b = text.find(needle).expect("needle 不在文本中");
+        text[..b].encode_utf16().count() as i32
+    }
+
+    #[test]
+    fn t_inline_text_urls_expands_hidden_link_with_emoji_prefix() {
+        // 复现用户场景：emoji 开头的消息，链接藏于 "点击跳转" entity
+        let text = "🔗 链接： 点击跳转";
+        let off = utf16_offset(text, "点击跳转");
+        let out = inline_text_urls(
+            text,
+            &[(
+                off,
+                "点击跳转".encode_utf16().count() as i32,
+                "https://pan.quark.cn/s/abc123".to_string(),
+            )],
+        );
+        assert_eq!(out, "🔗 链接： [点击跳转](https://pan.quark.cn/s/abc123)");
+    }
+
+    #[test]
+    fn t_inline_text_urls_plain_ascii_boundary() {
+        let text = "see this link now";
+        let off = utf16_offset(text, "link");
+        let out = inline_text_urls(text, &[(off, 4, "https://example.com/x".to_string())]);
+        assert_eq!(out, "see this [link](https://example.com/x) now");
+    }
+
+    #[test]
+    fn t_inline_text_urls_no_links_returns_original() {
+        assert_eq!(inline_text_urls("纯文本", &[]), "纯文本");
+    }
+
+    #[test]
+    fn t_inline_text_urls_out_of_range_entity_ignored() {
+        let text = "短文本";
+        // 越界 entity 不 panic、不改动
+        assert_eq!(
+            inline_text_urls(text, &[(100, 5, "https://x.io/1".to_string())]),
+            "短文本"
+        );
+        // 空长度忽略
+        assert_eq!(
+            inline_text_urls(text, &[(0, 0, "https://x.io/2".to_string())]),
+            "短文本"
+        );
+    }
+
+    #[test]
+    fn t_inline_text_urls_multiple_links_reversed_order() {
+        // 两个链接（乱序传入），均正确展开
+        let text = "第一处 here 第二处 there";
+        let o1 = utf16_offset(text, "here");
+        let o2 = utf16_offset(text, "there");
+        let links = vec![
+            (o1, 4, "https://a.io/1".to_string()),
+            (o2, 5, "https://b.io/2".to_string()),
+        ];
+        let out = inline_text_urls(text, &links);
+        assert_eq!(
+            out,
+            "第一处 [here](https://a.io/1) 第二处 [there](https://b.io/2)"
+        );
+    }
+
+    /// 端到端复现：修复前该消息提取结果为空（AI/规则均无反应），展开后规则引擎可识别
+    #[test]
+    fn t_expanded_text_yields_netdisk_resource() {
+        let text = "🎬 袒露 (2026)\n\n🔗 链接： 点击跳转";
+        let label_len = "点击跳转".encode_utf16().count() as i32;
+        let off = utf16_offset(text, "点击跳转");
+        let expanded = inline_text_urls(
+            text,
+            &[(
+                off,
+                label_len,
+                "https://pan.quark.cn/s/abcdef123".to_string(),
+            )],
+        );
+        let drafts = crate::services::extractor::extract_resources(&expanded);
+        assert_eq!(drafts.len(), 1, "展开后应提取出 1 条资源: {expanded}");
+        assert!(
+            drafts[0]
+                .url
+                .iter()
+                .any(|u| u == "https://pan.quark.cn/s/abcdef123"),
+            "URL 不应带 markdown 尾括号: {:?}",
+            drafts[0].url
+        );
+        assert_eq!(drafts[0].category, "quark");
+    }
+
+    /// markdown 内联展开后的 URL 提取：不平衡尾括号修剪、平衡括号保留
+    #[test]
+    fn t_url_extraction_trims_unbalanced_parens() {
+        use crate::services::extractor::extract_all_urls;
+        let urls = extract_all_urls("[跳转](https://pan.quark.cn/s/abc123)");
+        assert_eq!(urls, vec!["https://pan.quark.cn/s/abc123".to_string()]);
+
+        // 平衡括号 URL（如 Wikipedia）保持原样
+        let balanced = extract_all_urls("[w](https://zh.wikipedia.org/wiki/Foo_(bar))");
+        assert_eq!(
+            balanced,
+            vec!["https://zh.wikipedia.org/wiki/Foo_(bar)".to_string()]
+        );
+    }
 }

@@ -345,8 +345,21 @@ pub fn split_multiple_resources(text: &str, links: &[(String, String)]) -> Vec<R
 pub fn extract_all_urls(text: &str) -> Vec<String> {
     URL_REGEX
         .find_iter(text)
-        .map(|m| m.as_str().to_string())
+        .map(|m| trim_unbalanced_parens(m.as_str()).to_string())
         .collect()
+}
+
+/// 修剪 URL 尾部不平衡的右括号
+///
+/// URL 合法字符包含括号（如 Wikipedia `wiki/Foo_(bar)`），不能在正则里直接排除；
+/// 但 markdown 内联展开 `[文字](URL)` 会让 URL 尾部紧跟 `)`，被 URL_REGEX 一并吃入。
+/// 按 GitHub Autolink 的启发式：仅当 `)` 数量多于 `(` 时逐个修剪尾部，平衡括号保持原样。
+fn trim_unbalanced_parens(url: &str) -> &str {
+    let mut s = url;
+    while s.ends_with(')') && s.matches(')').count() > s.matches('(').count() {
+        s = &s[..s.len() - 1];
+    }
+    s
 }
 
 /// 主入口：从原始消息文本中提取结构化资源列表
