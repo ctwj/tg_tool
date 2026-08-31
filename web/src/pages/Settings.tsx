@@ -1192,7 +1192,7 @@ curl -I https://img.example.com/file/{file_id}
             label="请求延迟 (ms)"
             help="每次请求后的等待时间，避免 API 限流。NVIDIA 建议 2000ms 以上"
           >
-            <InputNumber min={0} max={10000} step={100} style={{ width: '100%' }} placeholder="1000" />
+            <InputNumber min={0} max={300000} step={100} style={{ width: '100%' }} placeholder="1000" />
           </Form.Item>
 
           <Form.Item
