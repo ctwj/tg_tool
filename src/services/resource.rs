@@ -1358,6 +1358,24 @@ async fn build_and_send_push_request(
     .await
 }
 
+/// 归一化图床域名：trim、去尾斜杠、无协议时补 `https://`
+///
+/// 配置值缺协议（如 `img.example.com`）时，拼接出的 `{domain}/{file_id}` 会被
+/// 浏览器当作相对路径解析到系统域名下，产生
+/// `https://sys.example.com/img.example.com/{file_id}` 这类坏 URL。
+/// 保存与消费两侧统一走本函数。
+pub fn normalize_image_domain(domain: &str) -> String {
+    let d = domain.trim().trim_end_matches('/');
+    if d.is_empty() {
+        return String::new();
+    }
+    if d.starts_with("http://") || d.starts_with("https://") {
+        d.to_string()
+    } else {
+        format!("https://{d}")
+    }
+}
+
 /// 构建并发送推送请求 — 接受直接参数（供 push_config 按配置推送使用）
 /// 返回 (http_status, response_body, is_success, request_info)
 ///
@@ -1376,9 +1394,9 @@ pub async fn build_and_send_push_with_params(
     custom_headers_str: &str,
     image_domain: Option<&str>,
 ) -> Result<(u16, String, bool, serde_json::Value), AppError> {
-    // 规范化图床域名：trim + 去尾部斜杠
+    // 规范化图床域名：trim + 去尾斜杠 + 补协议
     let domain_norm = image_domain
-        .map(|d| d.trim().trim_end_matches('/'))
+        .map(normalize_image_domain)
         .filter(|d| !d.is_empty());
 
     // 转换为推送格式
@@ -1397,7 +1415,7 @@ pub async fn build_and_send_push_with_params(
                 if fid.is_empty() {
                     return None;
                 }
-                match domain_norm {
+                match domain_norm.as_deref() {
                     Some(d) => Some(format!("{d}/{fid}")),
                     None => Some(fid.to_string()),
                 }
@@ -1866,6 +1884,33 @@ pub async fn push_single_resource(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- 图床域名归一化（修复缺协议配置产生相对路径坏 URL） ---
+
+    #[test]
+    fn t_normalize_image_domain_missing_scheme() {
+        // 复现用户案例：img.l9.lc（无协议）曾拼出 https://tg.l9.lc/img.l9.lc/...
+        assert_eq!(normalize_image_domain("img.l9.lc"), "https://img.l9.lc");
+    }
+
+    #[test]
+    fn t_normalize_image_domain_keeps_scheme_and_trims() {
+        assert_eq!(
+            normalize_image_domain("https://img.l9.lc/"),
+            "https://img.l9.lc"
+        );
+        assert_eq!(
+            normalize_image_domain("  http://img.example.com  "),
+            "http://img.example.com"
+        );
+    }
+
+    #[test]
+    fn t_normalize_image_domain_empty() {
+        assert_eq!(normalize_image_domain(""), "");
+        assert_eq!(normalize_image_domain("   "), "");
+        assert_eq!(normalize_image_domain("///"), "");
+    }
 
     #[test]
     fn test_build_where_clause_all() {

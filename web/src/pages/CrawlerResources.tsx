@@ -10,6 +10,7 @@ import {
   RedoOutlined,
 } from '@ant-design/icons'
 import { fmtUtc } from '../utils/time'
+import { normalizeImageDomain } from '../utils/imageDomain'
 import PageHeader from '../components/PageHeader'
 import { useTableScrollY } from '../hooks/useTableScroll'
 import apiClient from '../api/client'
@@ -289,7 +290,7 @@ const CrawlerResources: React.FC = () => {
   // 拼接图片可访问 URL
   const buildImageUrl = (fileId: string | null, msgId: number | null): string | null => {
     if (fileId) {
-      const d = imageDomain ? imageDomain.replace(/\/+$/, '') : ''
+      const d = normalizeImageDomain(imageDomain)
       return d ? `${d}/${fileId}` : `/api/images/${fileId}`
     }
     if (msgId) return `/api/images/${msgId}`
@@ -314,7 +315,7 @@ const CrawlerResources: React.FC = () => {
         const url = cover
           ? cover
           : thumb
-            ? (imageDomain ? `${imageDomain.replace(/\/+$/, '')}/${thumb}` : `/api/images/${thumb}`)
+            ? (() => { const d = normalizeImageDomain(imageDomain); return d ? `${d}/${thumb}` : `/api/images/${thumb}` })()
             : null
         return url ? (
           <AntImage

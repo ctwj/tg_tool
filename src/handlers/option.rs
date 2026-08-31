@@ -52,7 +52,13 @@ pub async fn update_options(
     if let Some(obj) = body.as_object() {
         let mut cache = state.option_cache.write().await;
         for (key, value) in obj {
-            let val_str = value.as_str().unwrap_or("").to_string();
+            let mut val_str = value.as_str().unwrap_or("").to_string();
+
+            // 图床域名归一化：缺协议的值（img.example.com）拼接 URL 时会被
+            // 浏览器按相对路径解析到系统域名下，保存时统一补 https://
+            if key == "TelegramImageDomain" && !val_str.trim().is_empty() {
+                val_str = crate::services::resource::normalize_image_domain(&val_str);
+            }
 
             match &state.db {
                 crate::state::DbPool::Sqlite(pool) => {

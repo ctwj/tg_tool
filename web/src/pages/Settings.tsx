@@ -4,6 +4,7 @@ import { CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined, PlusOutl
 import apiClient from '../api/client'
 import type { AiEndpoint } from '../types'
 import PageHeader from '../components/PageHeader'
+import { normalizeImageDomain } from '../utils/imageDomain'
 
 const { Text, Paragraph } = Typography
 
@@ -767,7 +768,7 @@ const Settings: React.FC = () => {
                       style={{ maxWidth: 400 }}
                     />
                     {testFileId && (() => {
-                      const domain = form.getFieldValue('TelegramImageDomain')?.replace(/\/+$/, '')
+                      const domain = normalizeImageDomain(form.getFieldValue('TelegramImageDomain'))
                       const apiUrl = `${window.location.origin}/api/images/${testFileId}`
                       const imgUrl = domain ? `${domain}/${testFileId}` : null
                       return (
