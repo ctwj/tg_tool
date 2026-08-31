@@ -298,6 +298,8 @@ pub async fn ai_extract(
     rule_result: &ResourceDraft,
     option_cache: &OptionCache,
 ) -> ResourceDraft {
+    // 展平 TextUrl 展开产生的 markdown 内联链接，避免 `#)` 等语法残片干扰 AI
+    let raw_data = &crate::services::extractor::flatten_markdown_links(raw_data);
     let endpoints = parse_ai_endpoints_async(option_cache).await;
     if endpoints.is_empty() {
         tracing::warn!("AI 提取模式已启用但未配置端点，回退到规则结果");
@@ -419,6 +421,8 @@ pub async fn ai_extract_batch(
     rule_results: &[ResourceDraft],
     option_cache: &OptionCache,
 ) -> Vec<ResourceDraft> {
+    // 展平 TextUrl 展开产生的 markdown 内联链接，避免 `#)` 等语法残片干扰 AI
+    let raw_data = &crate::services::extractor::flatten_markdown_links(raw_data);
     let endpoints = parse_ai_endpoints_async(option_cache).await;
     if endpoints.is_empty() {
         tracing::warn!("AI 批量提取模式已启用但未配置端点，回退到规则结果");

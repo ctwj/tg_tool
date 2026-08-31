@@ -120,7 +120,11 @@ static URL_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"https?://[^\s<>"'），。、；：？！】》]+"#).unwrap());
 
 /// 标签正则，用于匹配 #标签
-static TAG_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"#([^\s#]+)").unwrap());
+///
+/// `#` 必须位于行首或空白之后（词边界）：URL 内的 `#`（如
+/// `?password=8888#` 尾锚点、`/a#section` fragment）不构成标签，
+/// 否则 TextUrl 展开产生的 `#)` 会被提取出 ")" 这类垃圾标签。
+static TAG_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)(?:^|\s)#([^\s#]+)").unwrap());
 
 /// 白名单 URL 前缀 — 不截断广告
 const WHITELIST_PREFIXES: &[&str] = &[];
@@ -228,6 +232,11 @@ pub fn extract_description_by_keywords(text: &str) -> Option<String> {
             let mut paragraphs = Vec::new();
             for line in after.lines() {
                 if line == "." || line.is_empty() {
+                    // 关键词后紧跟换行（"简介：\n内容"）产生前导空行，跳过；
+                    // 已收集到内容后的空行才是段落结束
+                    if paragraphs.is_empty() {
+                        continue;
+                    }
                     break;
                 }
                 paragraphs.push(line.trim());
@@ -268,10 +277,14 @@ pub fn extract_links_by_keyword(text: &str) -> Vec<String> {
 
 /// 提取 #标签
 /// 移植自 demo/common/extract-info.go extractKeywordsInfo
+///
+/// 过滤纯标点标签（如 `)`）：markdown 链接展开残片等极端情况下
+/// 词边界正则仍可能匹配到无字母数字的串
 pub fn extract_tags(text: &str) -> Vec<String> {
     TAG_REGEX
         .captures_iter(text)
         .filter_map(|cap| cap.get(1).map(|m| m.as_str().to_string()))
+        .filter(|t| t.chars().any(|c| c.is_alphanumeric()))
         .collect()
 }
 
@@ -360,6 +373,19 @@ fn trim_unbalanced_parens(url: &str) -> &str {
         s = &s[..s.len() - 1];
     }
     s
+}
+
+/// markdown 内联链接正则（TextUrl 展开产物）
+static MARKDOWN_LINK_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\[([^\]]*)\]\((https?://[^\s)]+)\)").unwrap());
+
+/// 把 markdown 内联链接 `[文字](URL)` 展平为 `文字 URL`
+///
+/// TextUrl 展开入库的文本带 markdown 语法，直接喂给 AI 会产生干扰：
+/// `...8888#)` 被当作 `#)` 标签、方括号/圆括号残片混入标题描述。
+/// AI 提取只需要可读文字 + 裸链接，发送前统一展平。
+pub fn flatten_markdown_links(text: &str) -> String {
+    MARKDOWN_LINK_REGEX.replace_all(text, "$1 $2").to_string()
 }
 
 /// 主入口：从原始消息文本中提取结构化资源列表
@@ -666,6 +692,89 @@ mod tests {
     #[test]
     fn test_extract_tags_empty() {
         assert!(extract_tags("没有标签的文本").is_empty());
+    }
+
+    /// 复现真实案例：TextUrl 展开后 URL 尾部 `#` + markdown `)` 组成 `#)`，
+    /// 被 TAG_REGEX 误识别为标签 ")"
+    #[test]
+    fn t_extract_tags_ignores_hash_inside_expanded_url() {
+        let text = "🔗 链接： [点击跳转](https://115cdn.com/s/sws5vv13npm?password=8888#)";
+        let tags = extract_tags(text);
+        assert!(
+            !tags.contains(&")".to_string()),
+            "URL 尾部 # 后的 ) 不应成为标签: {tags:?}"
+        );
+    }
+
+    /// URL 内部 fragment（#xxx）后跟空格时，也不应被当作标签
+    #[test]
+    fn t_extract_tags_ignores_url_fragment() {
+        let text = "链接 https://example.com/a#section 是 fragment";
+        let tags = extract_tags(text);
+        assert!(
+            !tags.iter().any(|t| t.contains("section") || t == "section"),
+            "URL fragment 不应成为标签: {tags:?}"
+        );
+    }
+
+    /// 复现真实案例："简介：" 关键词后紧跟换行（"简介：\n内容"），
+    /// 前导空行导致提取提前 break，描述丢失
+    #[test]
+    fn t_extract_description_keyword_on_next_line() {
+        let text = "📖 简介：\n潮汕阿嬷叶淑柔一直守着平淡的日子。\n随着晓伟的调查，真相被揭开。";
+        assert_eq!(
+            extract_description_by_keywords(text),
+            Some("潮汕阿嬷叶淑柔一直守着平淡的日子。 随着晓伟的调查，真相被揭开。".to_string())
+        );
+    }
+
+    /// 复现真实案例整链：展开后的消息走规则引擎，标签不得为纯标点、描述非空
+    #[test]
+    fn t_extract_resources_real_message_with_expanded_link() {
+        let text = "🎬 给阿嬷的情书 (2026)\n\n🌟 评分： 8.9\n\n📖 简介：\n潮汕阿嬷叶淑柔一直守着平淡的日子。\n\n🔗 链接： [点击跳转](https://115cdn.com/s/sws5vv13npm?password=8888#)\n\n🙋 投稿人： 热心网友";
+        let drafts = extract_resources(text);
+        assert_eq!(drafts.len(), 1);
+        let d = &drafts[0];
+        assert_eq!(d.category, SERVICE_115);
+        assert!(
+            d.url
+                .iter()
+                .any(|u| u.starts_with("https://115cdn.com/s/sws5vv13npm")),
+            "URL 应正确提取: {:?}",
+            d.url
+        );
+        assert!(
+            !d.tags
+                .split(',')
+                .filter(|t| !t.is_empty())
+                .any(|t| t.chars().all(|c| !c.is_alphanumeric())),
+            "标签不应为纯标点: {:?}",
+            d.tags
+        );
+        assert!(
+            d.description.contains("潮汕阿嬷"),
+            "简介应被提取（关键词在行尾、内容在次行）: {:?}",
+            d.description
+        );
+    }
+
+    /// flatten_markdown_links：AI 输入净化，`[文字](URL)` → `文字 URL`
+    #[test]
+    fn t_flatten_markdown_links_real_case() {
+        let text = "🔗 链接： [点击跳转](https://115cdn.com/s/sws5vv13npm?password=8888#)";
+        assert_eq!(
+            flatten_markdown_links(text),
+            "🔗 链接： 点击跳转 https://115cdn.com/s/sws5vv13npm?password=8888#"
+        );
+        // 展平后无 `#)` 组合，标签提取不再误判
+        let flattened = flatten_markdown_links(text);
+        assert!(extract_tags(&flattened).is_empty());
+    }
+
+    #[test]
+    fn t_flatten_markdown_links_no_links_unchanged() {
+        let text = "普通文本 https://pan.quark.cn/s/abc 无 markdown";
+        assert_eq!(flatten_markdown_links(text), text);
     }
 
     // --- T009: 多资源拆分 ---
