@@ -1,10 +1,7 @@
 use axum::{
     body::Body,
-    http::{Request, Response, StatusCode},
+    http::{Request, Response, StatusCode, header},
 };
-
-#[cfg(feature = "embed-frontend")]
-use axum::http::header;
 
 #[cfg(feature = "embed-frontend")]
 use rust_embed::Embed;
@@ -25,6 +22,8 @@ pub async fn static_handler(req: Request<Body>) -> Response<Body> {
         if path.starts_with("api/") || path.starts_with("ws") {
             return Response::builder()
                 .status(StatusCode::NOT_FOUND)
+                // 防 CDN 缓存路由未命中的 404（反代路径拼错时曾产生此类响应）
+                .header(header::CACHE_CONTROL, "no-store")
                 .body(Body::from("Not Found"))
                 .unwrap();
         }
@@ -52,6 +51,7 @@ pub async fn static_handler(req: Request<Body>) -> Response<Body> {
 
         Response::builder()
             .status(StatusCode::NOT_FOUND)
+            .header(header::CACHE_CONTROL, "no-store")
             .body(Body::from(
                 "Not Found - Frontend not built. Run: cd web && npm run build",
             ))
@@ -63,6 +63,7 @@ pub async fn static_handler(req: Request<Body>) -> Response<Body> {
         let _ = req;
         Response::builder()
             .status(StatusCode::NOT_FOUND)
+            .header(header::CACHE_CONTROL, "no-store")
             .body(Body::from(
                 "Frontend not embedded. Build with --features embed-frontend",
             ))

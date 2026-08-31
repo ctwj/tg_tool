@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    http::StatusCode,
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
 use serde_json::json;
@@ -54,7 +54,9 @@ impl IntoResponse for AppError {
             "message": message,
         });
 
-        (status, Json(body)).into_response()
+        // 错误响应禁止缓存：防止 CDN（Cloudflare 等）把瞬时错误页
+        // （如源站未就绪时的 404/5xx）长期缓存，修复后仍持续吐旧错误
+        (status, [(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
     }
 }
 
@@ -119,5 +121,23 @@ mod tests {
         // Internal → 500
         let resp = AppError::Internal("test".into()).into_response();
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// 错误响应必须带 Cache-Control: no-store（防 CDN 长期缓存错误页）
+    #[tokio::test]
+    async fn test_error_response_no_store_header() {
+        for resp in [
+            AppError::BadRequest("t".into()).into_response(),
+            AppError::NotFound("t".into()).into_response(),
+            AppError::Internal("t".into()).into_response(),
+        ] {
+            assert_eq!(
+                resp.headers()
+                    .get(header::CACHE_CONTROL)
+                    .and_then(|v| v.to_str().ok()),
+                Some("no-store"),
+                "错误响应缺 no-store 头"
+            );
+        }
     }
 }
